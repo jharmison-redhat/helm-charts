@@ -1,0 +1,100 @@
+{{- range $operator, $config := .Values.operators }}
+{{- $manualInstall := eq ($config.installPlanApproval | default "Automatic") "Manual" }}
+{{- $approveCSVs := $config.approveCSVs | default list }}
+{{- if $manualInstall }}
+{{- if not $config.startingCSV }}
+{{- fail "Manual approvals with this chart require pinning a specific CSV with startingCSV for the operator" }}
+{{- end }}
+{{- $approveCSVs = append $approveCSVs $config.startingCSV }}
+{{- end }}
+{{- if $approveCSVs }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: approve-{{ $operator }}
+  namespace: {{ $config.namespace | default "openshift-operators" }}
+  labels:
+    {{- include "install-operators.labels" $ | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: approve-{{ $operator }}
+  namespace: {{ $config.namespace | default "openshift-operators" }}
+  labels:
+    {{- include "install-operators.labels" $ | nindent 4 }}
+rules:
+  - apiGroups:
+      - operators.coreos.com
+    resources:
+      - installplans
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: approve-{{ $operator }}
+  namespace: {{ $config.namespace | default "openshift-operators" }}
+  labels:
+    {{- include "install-operators.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: approve-{{ $operator }}
+subjects:
+- kind: ServiceAccount
+  name: approve-{{ $operator }}
+  namespace: {{ $config.namespace | default "openshift-operators" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: approve-{{ $operator }}-script
+  namespace: {{ $config.namespace | default "openshift-operators" }}
+  labels:
+    {{- include "install-operators.labels" $ | nindent 4 }}
+data:
+  approve-operator.sh: |-
+    {{- tpl ($.Files.Get "files/approve-operator.sh") (list $operator $config) | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: approve-{{ $operator }}
+  namespace: {{ $config.namespace | default "openshift-operators" }}
+  labels:
+    {{- include "install-operators.labels" $ | nindent 4 }}
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: approve-{{ $operator }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: approve-operator
+          image: {{ $.Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/mnt/approve-operator.sh"]
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: approve-operator-script
+              mountPath: /mnt
+      volumes:
+        - name: approve-operator-script
+          configMap:
+            name: approve-{{ $operator }}-script
+            defaultMode: 493
+{{- end }}
+{{- end }}
