@@ -8,6 +8,7 @@ following example for the install-operators Chart:
 
 ```
 helm upgrade --install \
+    install-operators \
     oci://ghcr.io/jharmison-redhat/helm-charts/install-operators \
     --set-json=operators='{
         "cloudnative-pg": {
