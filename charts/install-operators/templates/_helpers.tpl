@@ -51,6 +51,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Per-operator enabled gate: renders "true" unless `enabled` is explicitly false.
+Callers must compare with `eq (include ...) "true"` — an `if` on the string
+output directly would treat "false" as truthy.
+*/}}
+{{- define "install-operators.operatorEnabled" -}}
+{{- printf "%v" (or (not (hasKey . "enabled")) .enabled) -}}
+{{- end -}}
+
+{{/*
 Subscription manifest
 */}}
 {{- define "install-operators.subscription" -}}

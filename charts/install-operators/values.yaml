@@ -20,8 +20,8 @@ operators: {}
 #   namespace: openshift-lws-operator
 #   operatorGroup:
 #     enabled: true
-#   targetNamespaces:
-#     - openshift-lws-operator
+#     targetNamespaces:
+#       - openshift-lws-operator
 # rhods-operator:
 #   enabled: true
 #   channel: fast-3.x

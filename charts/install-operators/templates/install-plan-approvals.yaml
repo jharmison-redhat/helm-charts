@@ -1,5 +1,5 @@
 {{- range $operator, $config := .Values.operators }}
-{{- if or (not (hasKey $config "enabled")) $config.enabled }}
+{{- if eq (include "install-operators.operatorEnabled" $config) "true" }}
 {{- $manualInstall := eq ($config.installPlanApproval | default "Automatic") "Manual" }}
 {{- $approveCSVs := $config.approveCSVs | default list }}
 {{- if $manualInstall }}
