@@ -1,4 +1,5 @@
 {{- range $operator, $config := .Values.operators }}
+{{- if or (not (hasKey $config "enabled")) $config.enabled }}
 {{- if $config.namespace }}
 {{- if $config.operatorGroup }}
 {{- if $config.operatorGroup.enabled }}
@@ -15,7 +16,8 @@ spec:
   {{- with $config.operatorGroup.targetNamespaces }}
   targetNamespaces:
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

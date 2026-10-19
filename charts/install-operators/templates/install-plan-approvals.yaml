@@ -1,4 +1,5 @@
 {{- range $operator, $config := .Values.operators }}
+{{- if or (not (hasKey $config "enabled")) $config.enabled }}
 {{- $manualInstall := eq ($config.installPlanApproval | default "Automatic") "Manual" }}
 {{- $approveCSVs := $config.approveCSVs | default list }}
 {{- if $manualInstall }}
@@ -69,6 +70,9 @@ metadata:
   namespace: {{ $config.namespace | default "openshift-operators" }}
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 4
   template:
@@ -96,5 +100,6 @@ spec:
           configMap:
             name: approve-{{ $operator }}-script
             defaultMode: 493
+{{- end }}
 {{- end }}
 {{- end }}

@@ -2,17 +2,47 @@ global:
   toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
 
 operators: {}
+# Each operator config supports an `enabled` toggle (default: true). Set it to
+# `false` to skip rendering that operator's resources entirely.
+#
+# devspaces:
+#   enabled: true
+#   channel: stable
+# openshift-cert-manager-operator:
+#   enabled: true
+#   channel: stable-v1
+#   namespace: cert-manager-operator
+#   operatorGroup:
+#     enabled: true
+# leader-worker-set:
+#   enabled: true
+#   channel: stable-v1.0
+#   namespace: openshift-lws-operator
+#   operatorGroup:
+#     enabled: true
+#   targetNamespaces:
+#     - openshift-lws-operator
 # rhods-operator:
+#   enabled: true
 #   channel: fast-3.x
 #   installPlanApproval: Manual
 #   startingCSV: rhods-operator.3.2.0
 #   namespace: redhat-ods-operator
 #   operatorGroup:
 #     enabled: true
-# cloudnative-pg:
-#   channel: stable-v1
-#   catalog: certified-operators
 # rhcl-operator:
 #   channel: stable
 #   approveCSVs:
 #     - rhcl-operator.v1.2.1
+# cloudnative-pg:
+#   enabled: true
+#   channel: stable-v1
+#   catalog: certified-operators
+# cluster-observability-operator:
+#   enabled: true
+#   channel: stable
+#   namespace: openshift-cluster-observability-operator
+#   installPlanApproval: Manual
+#   startingCSV: cluster-observability-operator.v1.4.0
+#   operatorGroup:
+#     enabled: true

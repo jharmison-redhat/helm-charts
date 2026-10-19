@@ -1,4 +1,5 @@
 {{- range $operator, $config := .Values.operators }}
+{{- if or (not (hasKey $config "enabled")) $config.enabled }}
 {{- $sub := dict "operator" $operator "config" $config "root" $ }}
 {{- if or (not (hasKey $config "ownSubscription")) $config.ownSubscription }}
 ---
@@ -96,5 +97,6 @@ spec:
           configMap:
             name: install-{{ $operator }}-script
             defaultMode: 493
+{{- end }}
 {{- end }}
 {{- end }}
