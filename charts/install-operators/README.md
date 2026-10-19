@@ -20,8 +20,10 @@ OperatorGroup, etc.) including the following features:
   reconciling it continuously (to enable behaviors like the `ingress` ClusterOperator's ownership of an OSSM
   Subscription without conflicts)
 - Specifying an `env` array for a Subscription easily for an operator, to override default behavior.
-- Toggling any operator off entirely with `enabled: false` (default is `true` when unset), so its Namespace, OperatorGroup, Subscription, and approval resources are not rendered.
-- Manual InstallPlan approval Jobs run as Helm `post-install,post-upgrade` hooks (recreated on re-runs via `before-hook-creation`); under ArgoCD these map to `PostSync` and behave the same way.
+- Toggling any operator off entirely with `enabled: false` (default is `true` when unset), so its Namespace,
+  OperatorGroup, Subscription, and approval resources are not rendered.
+- Manual InstallPlan approval Jobs run as Helm `post-install,post-upgrade` hooks (recreated on re-runs via
+  `before-hook-creation`); under ArgoCD these map to `PostSync` and behave the same way.
 
 An example `values.yaml` you could use to actuate some of these features would look like this:
 
