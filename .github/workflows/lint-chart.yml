@@ -19,11 +19,24 @@ permissions: {}
 jobs:
   charts:
     runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@v7
+      - id: discover
+        run: |
+          set -euo pipefail
+          dirs=$(find charts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0))')
+          echo "chart=${dirs}" >> "$GITHUB_OUTPUT"
+    outputs:
+      chart: ${{ steps.discover.outputs.chart }}
+
+  lint-charts:
+    needs: charts
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        chart:
-          - install-operators
+        chart: ${{ fromJSON(needs.charts.outputs.chart) }}
     steps:
       - id: checkout
         uses: actions/checkout@v7

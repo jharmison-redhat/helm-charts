@@ -1,6 +1,0 @@
-dependencies:
-- name: install-operators
-  repository: oci://ghcr.io/jharmison-redhat/helm-charts
-  version: 0.2.0
-digest: sha256:89d59bfb4ecfcb72a6ecac2d5169736f61591414661cdd517460b2e01b5b9e8e
-generated: "2026-10-20T08:44:09.089373979-04:00"
