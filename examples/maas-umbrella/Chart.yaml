@@ -1,9 +1,8 @@
 apiVersion: v2
 name: maas-umbrella
 description: >-
-  Example harness (not published) that composes the published charts of this repository as subcharts the way a future
-  consumer umbrella, such as the maas-code-assistant one, will. It exists to battle-test subchart composition and the
-  lint/render CI matrix.
+  Example umbrella chart (not published) that demonstrates how to compose the published charts of this repository as
+  subchart dependencies with values overlays.
 type: application
 version: 0.1.0
 dependencies:

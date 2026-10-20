@@ -4,15 +4,8 @@ install-operators:
     cloudnative-pg:
       channel: stable-v1
       catalog: certified-operators
-# Future charts will slot in under their own keys, the way any umbrella
-# consumer composes these charts as subcharts:
+# Additional charts from this repository compose under their own keys:
 #
-# openshift-ai:
-#   enabled: true
-#   <chart values>
-# kuadrant:
-#   enabled: true
-#   <chart values>
 # keycloak:
 #   enabled: true
 #   <chart values>

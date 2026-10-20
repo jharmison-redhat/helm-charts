@@ -1,19 +1,18 @@
 maas-umbrella
 ===
 
-This is an example harness (not a published chart) that composes the charts of this repository as subcharts, the way a
-future consumer umbrella — such as the one that will replace the maas-code-assistant quickstart deployment — will. It
-exists to battle-test subchart composition and to exercise the lint/render CI matrix; it is deliberately placed outside
-`charts/` so the version-gated publishing script never discovers it.
+This is an example umbrella chart (not published) that composes the published charts of this repository as subchart
+dependencies with values overlays. It is deliberately placed outside `charts/` so the version-gated publishing script
+never discovers it.
 
-How a consumer umbrella uses it
+Composing charts from this repository
 ---
 
 Each chart in this repository is subchart-friendly: values are namespaced under the chart's own key, charts support an
-`enabled` toggle for conditional inclusion, and `global.*` passthrough compatibility is preserved. An umbrella consumer
+`enabled` toggle for conditional inclusion, and `global.*` passthrough compatibility is preserved. An umbrella chart
 declares the published OCI charts as dependencies in its `Chart.yaml` and configures them entirely through values, as
-`values.yaml` in this harness demonstrates. Future charts (openshift-ai, kuadrant, keycloak, etc.) will slot in under
-their own keys once they are published.
+`values.yaml` in this example demonstrates. Placeholder entries for other charts in this repository (keycloak, etc.)
+show how additional dependencies slot in under their own keys.
 
 Running locally
 ---
@@ -24,7 +23,7 @@ Build the dependencies (Helm 3.8+ supports OCI dependencies; anonymous pulls wor
 helm dependency build examples/maas-umbrella
 ```
 
-Lint and render against the harness:
+Lint and render the example:
 
 ```
 helm lint examples/maas-umbrella
