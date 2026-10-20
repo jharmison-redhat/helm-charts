@@ -1,0 +1,62 @@
+name: Lint & Render Helm Charts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "charts/**"
+      - "examples/**"
+      - .github/workflows/lint-chart.yml
+  pull_request:
+    paths:
+      - "charts/**"
+      - "examples/**"
+      - .github/workflows/lint-chart.yml
+
+permissions: {}
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chart:
+          - install-operators
+    steps:
+      - id: checkout
+        uses: actions/checkout@v7
+      - id: setup-helm
+        uses: azure/setup-helm@v4
+      - id: lint
+        run: |
+          set -euo pipefail
+          helm lint "charts/${{ matrix.chart }}"
+      - id: render
+        run: |
+          set -euo pipefail
+          helm template "charts/${{ matrix.chart }}" > /dev/null
+
+  umbrella:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@v7
+      - id: setup-helm
+        uses: azure/setup-helm@v4
+      - id: log-in
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+      - id: deps
+        run: |
+          set -euo pipefail
+          helm dependency build examples/maas-umbrella
+      - id: lint
+        run: |
+          set -euo pipefail
+          helm lint examples/maas-umbrella
+      - id: render
+        run: |
+          set -euo pipefail
+          helm template examples/maas-umbrella > /dev/null
