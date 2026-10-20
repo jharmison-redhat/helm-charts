@@ -11,8 +11,8 @@ Composing charts from this repository
 Each chart in this repository is subchart-friendly: values are namespaced under the chart's own key, charts support an
 `enabled` toggle for conditional inclusion, and `global.*` passthrough compatibility is preserved. An umbrella chart
 declares the published OCI charts as dependencies in its `Chart.yaml` and configures them entirely through values, as
-`values.yaml` in this example demonstrates. Placeholder entries for other charts in this repository (keycloak, etc.)
-show how additional dependencies slot in under their own keys.
+`values.yaml` in this example demonstrates. Additional charts published from this repository can be composed as
+dependencies the same way.
 
 Running locally
 ---

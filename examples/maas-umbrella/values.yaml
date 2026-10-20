@@ -4,11 +4,4 @@ install-operators:
     cloudnative-pg:
       channel: stable-v1
       catalog: certified-operators
-# Additional charts from this repository compose under their own keys:
-#
-# keycloak:
-#   enabled: true
-#   <chart values>
-# keycloak-auth:
-#   enabled: true
-#   <chart values>
+# Additional charts published from this repository can be composed as dependencies under their own keys.
