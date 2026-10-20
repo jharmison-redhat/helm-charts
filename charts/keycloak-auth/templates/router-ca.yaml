@@ -1,0 +1,12 @@
+{{- with .Values.ingressCA }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: router-ca
+  namespace: openshift-config
+  labels:
+    {{- include "keycloak-auth.labels" $ | nindent 4 }}
+data:
+  ca.crt: |-
+    {{- . | nindent 4 }}
+{{- end }}

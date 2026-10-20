@@ -1,63 +1,47 @@
-# All keys are optional except where noted — defaults live in the templates.
-# Secrets are never defaulted: the OIDC client secret must be provided
-# explicitly (see the examples below, which include placeholders).
+# Real defaults live here — override as needed by a chart consumer. Secrets
+# are never defaulted: the OIDC client secret must be provided explicitly.
 
-# global:
+global:
 
-# # Wildcard domain under which the Keycloak instance is exposed
+  # Wildcard domain under which the Keycloak instance is exposed
 
-# # (<keycloak.name>.<wildcardDomain>) — must match the keycloak chart's
+  # (<keycloak.name>.<wildcardDomain>) — must match the keycloak chart's
+  # global.wildcardDomain
+  wildcardDomain: apps.cluster.example.com
 
-# # global.wildcardDomain
+  # Image for the kubeadmin-removal Job container (requires the `oc` CLI)
+  toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
 
-# wildcardDomain: apps.cluster.example.com
+# Override the rendered resource names
+nameOverride: ""
+fullnameOverride: ""
 
-# # Image for Helm hook Job containers (requires the `oc` CLI)
+keycloak:
+  # Name of the Keycloak CR deployed by the keycloak chart
+  name: keycloak
+  # Realm the OIDC issuer URL points at
+  realm: sso
 
-# toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
+oauth:
+  # Name of the OpenID identity provider in the cluster OAuth resource
+  idpName: rhbk
 
-# Optional CA bundle; when set, the OAuth identity provider references the
+openidClient:
+  # Client ID configured in the keycloak chart's realm clients
+  id: ocp-idp
+  # REQUIRED: client secret — must match the keycloak chart's
+  # realms.<realm>.clients.<id>.secret. Leave empty to skip rendering the
+  # OAuth resource and the openid-client-secret Secret.
+  secret: ""
 
-# router-ca ConfigMap in openshift-config (rendered by the keycloak chart's
+# Optional CA bundle; when set, this chart also renders the router-ca
+# ConfigMap in openshift-config and the OAuth identity provider references it
+ingressCA: ""
 
-# ingressCA)
+clusterAdmins:
+  # Usernames added to the cluster-admins Group
+  users:
+    - admin
 
-# ingressCA: |
-
-# -----BEGIN CERTIFICATE-----
-
-# ...
-
-# -----END CERTIFICATE-----
-
-# keycloak:
-
-# # Name of the Keycloak CR deployed by the keycloak chart
-
-# name: keycloak
-
-# # Realm the OIDC issuer URL points at
-
-# realm: sso
-
-# openidClient:
-
-# # Client ID configured in the keycloak chart's realm clients
-
-# id: ocp-idp
-
-# # REQUIRED: client secret — must match the keycloak chart's
-
-# # realms.<realm>.clients.<id>.secret
-
-# secret: <client-secret>
-
-# clusterAdmins:
-
-# users:
-
-# - admin
-
-# removeKubeAdmin:
-
-# enabled: true
+removeKubeAdmin:
+  enabled: true

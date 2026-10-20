@@ -1,0 +1,8 @@
+apiVersion: user.openshift.io/v1
+kind: Group
+metadata:
+  name: cluster-admins
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+users:
+  {{- toYaml .Values.clusterAdmins.users | nindent 2 }}
