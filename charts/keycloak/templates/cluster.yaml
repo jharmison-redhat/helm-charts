@@ -1,0 +1,24 @@
+{{- $pg := .Values.postgresCluster | default dict }}
+{{- if eq (include "keycloak.enabled" $pg) "true" }}
+{{- with $pg }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .name | default "keycloak-postgres" }}
+  namespace: {{ $.Values.namespace | default $.Release.Namespace }}
+  labels:
+    {{- include "keycloak.labels" $ | nindent 4 }}
+spec:
+  instances: {{ .instances | default 1 }}
+  storage:
+    {{- toYaml (.storage | default (dict "size" "2Gi")) | nindent 4 }}
+  bootstrap:
+    initdb:
+      database: {{ .name | default "keycloak-postgres" }}
+      owner: {{ .name | default "keycloak-postgres" }}
+  {{- with .resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

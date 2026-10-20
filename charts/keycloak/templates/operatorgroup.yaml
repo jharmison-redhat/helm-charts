@@ -1,0 +1,14 @@
+{{- $operator := .Values.operator | default dict }}
+{{- if eq (include "keycloak.enabled" ($operator.operatorGroup | default dict)) "true" }}
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: rhbk-operator
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  upgradeStrategy: Default
+  targetNamespaces:
+    - {{ .Values.namespace | default .Release.Namespace }}
+{{- end }}

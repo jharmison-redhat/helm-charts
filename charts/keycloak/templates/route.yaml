@@ -1,0 +1,19 @@
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: {{ include "keycloak.name" . }}
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  host: {{ include "keycloak.name" . }}.{{ (.Values.global | default dict).wildcardDomain | default "apps.cluster.example.com" }}
+  to:
+    kind: Service
+    name: {{ include "keycloak.name" . }}-service
+    weight: 100
+  port:
+    targetPort: https
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

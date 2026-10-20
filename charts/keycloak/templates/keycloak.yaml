@@ -1,0 +1,35 @@
+apiVersion: k8s.keycloak.org/v2beta1
+kind: Keycloak
+metadata:
+  name: {{ include "keycloak.name" . }}
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  db:
+    vendor: postgres
+    database: {{ (.Values.db | default dict).database | default (default "keycloak-postgres" (.Values.postgresCluster | default dict).name) }}
+    host: {{ (.Values.db | default dict).host | default (printf "%s-rw" (default "keycloak-postgres" (.Values.postgresCluster | default dict).name)) }}
+    usernameSecret:
+      name: {{ (.Values.db | default dict).credentialsSecret | default (printf "%s-app" (default "keycloak-postgres" (.Values.postgresCluster | default dict).name)) }}
+      key: username
+    passwordSecret:
+      name: {{ (.Values.db | default dict).credentialsSecret | default (printf "%s-app" (default "keycloak-postgres" (.Values.postgresCluster | default dict).name)) }}
+      key: password
+  hostname:
+    hostname: {{ include "keycloak.name" . }}.{{ (.Values.global | default dict).wildcardDomain | default "apps.cluster.example.com" }}
+    strict: false
+    strictBackchannel: false
+  http:
+    httpEnabled: false
+    tlsSecret: {{ include "keycloak.name" . }}-internal-tls
+    annotations:
+      service.beta.openshift.io/serving-cert-secret-name: {{ include "keycloak.name" . }}-internal-tls
+  ingress:
+    enabled: false
+  instances: {{ .Values.replicas | default 1 }}
+  transaction:
+    xaEnabled: true
+  additionalOptions:
+    - name: enable-recovery
+      value: 'true'
