@@ -24,7 +24,7 @@ The chart performs the following:
 - Optionally removes the `kubeadmin` Secret via a Job that runs as a Helm `post-install,post-upgrade` hook (recreated on
   re-runs via `before-hook-creation`); enabled by default, disable it with `removeKubeAdmin.enabled: false`
 - Optionally renders a `router-ca` trust ConfigMap in `openshift-config` as the identity provider's CA (set `ingressCA`
-  to enable it; when used with the `keycloak` chart, set the same CA bundle in both charts)
+  to enable it)
 
 An example `values.yaml` you could use to actuate some of these features would look like this:
 

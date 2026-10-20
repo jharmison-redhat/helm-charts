@@ -38,8 +38,8 @@ install-operators:
       namespace: keycloak
       operatorGroup:
         enabled: true
-      targetNamespaces:
-        - keycloak
+        targetNamespaces:
+          - keycloak
 
 # Inline CloudNativePG Cluster backing the Keycloak instance. With it
 # disabled, the `db` block below overrides the external database connection.
