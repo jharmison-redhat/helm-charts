@@ -1,3 +1,5 @@
 # Helm build artifacts
+charts/**/Chart.lock
+charts/**/charts/
 examples/**/Chart.lock
 examples/**/charts/

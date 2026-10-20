@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
-  host: {{ include "keycloak.name" . }}.{{ (.Values.global | default dict).wildcardDomain | default "apps.cluster.example.com" }}
+  host: {{ include "keycloak.name" . }}.{{ .Values.global.wildcardDomain }}
   to:
     kind: Service
     name: {{ include "keycloak.name" . }}-service

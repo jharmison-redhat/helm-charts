@@ -28,8 +28,9 @@ spec:
     clientScopes:
       {{- toYaml . | nindent 6 }}
     {{- end }}
+    {{- with $realm.clients }}
     clients:
-      {{- range $cid, $client := $realm.clients }}
+      {{- range $cid, $client := . }}
       - clientId: {{ $cid }}
         {{- with $client.name }}
         name: {{ . }}
@@ -70,6 +71,7 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
       {{- end }}
+    {{- end }}
     roles:
       realm:
         - name: admin
@@ -87,12 +89,12 @@ spec:
       - username: {{ $username }}
         enabled: true
         emailVerified: true
-        email: {{ printf "%s@%s" $username ($.Values.emailDomain | default "example.com") }}
+        email: {{ printf "%s@%s" $username $.Values.emailDomain }}
         firstName: {{ title $username }}
         lastName: Demo
         credentials:
           - type: password
-            value: {{ $realm.generated.password | quote }}
+            value: {{ required (printf "realm %s: generated.password is required when generated.count > 0" $name) $generated.password | quote }}
             temporary: false
         realmRoles:
           - user
@@ -101,7 +103,7 @@ spec:
       - username: {{ $username }}
         enabled: {{ $user.enabled | default true }}
         emailVerified: {{ $user.emailVerified | default true }}
-        email: {{ $user.email | default (printf "%s@%s" $username ($.Values.emailDomain | default "example.com")) }}
+        email: {{ $user.email | default (printf "%s@%s" $username $.Values.emailDomain) }}
         firstName: {{ $user.firstName | default (title $username) }}
         lastName: {{ $user.lastName | default "Demo" }}
         {{- if $user.credentials }}
@@ -122,25 +124,28 @@ spec:
           {{- toYaml . | nindent 10 }}
         {{- end }}
       {{- end }}
-      - username: {{ $realm.admin.username }}
+      {{- with $realm.admin }}
+      - username: {{ .username }}
         enabled: true
         emailVerified: true
-        email: {{ $realm.admin.email | default (printf "%s@%s" $realm.admin.username ($.Values.emailDomain | default "example.com")) }}
-        firstName: {{ $realm.admin.firstName | default (title $realm.admin.username) }}
-        lastName: {{ $realm.admin.lastName | default "Demo" }}
+        email: {{ .email | default (printf "%s@%s" .username $.Values.emailDomain) }}
+        firstName: {{ .firstName | default (title .username) }}
+        lastName: {{ .lastName | default "Demo" }}
         credentials:
           - type: password
-            value: {{ required (printf "realm %s admin password is required" $name) $realm.admin.password | quote }}
+            value: {{ required (printf "realm %s admin password is required" $name) .password | quote }}
             temporary: false
         realmRoles:
           - admin
-          {{- with $realm.admin.realmRoles }}
+          {{- with .realmRoles }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
-    groups:
+      {{- end }}
     {{- if $realm.groups }}
+    groups:
       {{- toYaml $realm.groups | nindent 6 }}
     {{- else if $realm.groupsFromRoles }}
+    groups:
       - name: admins
       {{- range $rname, $role := $realm.roles }}
       - name: {{ $rname }}

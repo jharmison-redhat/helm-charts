@@ -1,3 +1,5 @@
+{{- $db := .Values.db | default dict }}
+{{- $pg := .Values.postgresCluster }}
 apiVersion: k8s.keycloak.org/v2beta1
 kind: Keycloak
 metadata:
@@ -8,16 +10,16 @@ metadata:
 spec:
   db:
     vendor: postgres
-    database: {{ (.Values.db | default dict).database | default (default "keycloak-postgres" (.Values.postgresCluster | default dict).name) }}
-    host: {{ (.Values.db | default dict).host | default (printf "%s-rw" (default "keycloak-postgres" (.Values.postgresCluster | default dict).name)) }}
+    database: {{ $db.database | default $pg.name }}
+    host: {{ $db.host | default (printf "%s-rw" $pg.name) }}
     usernameSecret:
-      name: {{ (.Values.db | default dict).credentialsSecret | default (printf "%s-app" (default "keycloak-postgres" (.Values.postgresCluster | default dict).name)) }}
+      name: {{ $db.credentialsSecret | default (printf "%s-app" $pg.name) }}
       key: username
     passwordSecret:
-      name: {{ (.Values.db | default dict).credentialsSecret | default (printf "%s-app" (default "keycloak-postgres" (.Values.postgresCluster | default dict).name)) }}
+      name: {{ $db.credentialsSecret | default (printf "%s-app" $pg.name) }}
       key: password
   hostname:
-    hostname: {{ include "keycloak.name" . }}.{{ (.Values.global | default dict).wildcardDomain | default "apps.cluster.example.com" }}
+    hostname: {{ include "keycloak.name" . }}.{{ .Values.global.wildcardDomain }}
     strict: false
     strictBackchannel: false
   http:
@@ -27,7 +29,7 @@ spec:
       service.beta.openshift.io/serving-cert-secret-name: {{ include "keycloak.name" . }}-internal-tls
   ingress:
     enabled: false
-  instances: {{ .Values.replicas | default 1 }}
+  instances: {{ .Values.replicas }}
   transaction:
     xaEnabled: true
   additionalOptions:
