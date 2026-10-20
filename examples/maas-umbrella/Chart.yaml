@@ -1,0 +1,14 @@
+apiVersion: v2
+name: maas-umbrella
+description: >-
+  Example harness (not published) that composes the published charts of this repository as subcharts the way a future
+  consumer umbrella, such as the maas-code-assistant one, will. It exists to battle-test subchart composition and the
+  lint/render CI matrix.
+type: application
+version: 0.1.0
+dependencies:
+  - name: install-operators
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.2.0 <0.3.0"
+    alias: install-operators
+    condition: install-operators.enabled
