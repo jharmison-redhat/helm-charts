@@ -1,0 +1,40 @@
+{{- $oauth := .Values.oauth | default dict }}
+{{- $secret := (.Values.openidClient | default dict).secret | default "" }}
+{{- /* The OAuth identity provider is useless without its client secret, so
+both the OAuth CR and the openid-client-secret Secret are gated on
+openidClient.secret being provided */ -}}
+{{- if and (eq (include "keycloak-auth.enabled" $oauth) "true") (ne $secret "") }}
+apiVersion: config.openshift.io/v1
+kind: OAuth
+metadata:
+  name: cluster
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+spec:
+  identityProviders:
+    - name: {{ $oauth.idpName | default "rhbk" }}
+      type: OpenID
+      mappingMethod: claim
+      openID:
+        {{- with .Values.ingressCA }}
+        ca:
+          name: router-ca
+        {{- end }}
+        claims:
+          email:
+            - email
+          name:
+            - name
+          preferredUsername:
+            - preferred_username
+            - email
+            - name
+          groups:
+            - groups
+        clientID: {{ (.Values.openidClient | default dict).id | default "ocp-idp" }}
+        clientSecret:
+          name: openid-client-secret
+        extraScopes: []
+        issuer: >-
+          https://{{ (.Values.keycloak | default dict).name | default "keycloak" }}.{{ (.Values.global | default dict).wildcardDomain | default "apps.cluster.example.com" }}/realms/{{ (.Values.keycloak | default dict).realm | default "sso" }}
+{{- end }}

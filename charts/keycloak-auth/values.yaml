@@ -1,0 +1,63 @@
+# All keys are optional except where noted — defaults live in the templates.
+# Secrets are never defaulted: the OIDC client secret must be provided
+# explicitly (see the examples below, which include placeholders).
+
+# global:
+
+# # Wildcard domain under which the Keycloak instance is exposed
+
+# # (<keycloak.name>.<wildcardDomain>) — must match the keycloak chart's
+
+# # global.wildcardDomain
+
+# wildcardDomain: apps.cluster.example.com
+
+# # Image for Helm hook Job containers (requires the `oc` CLI)
+
+# toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
+
+# Optional CA bundle; when set, the OAuth identity provider references the
+
+# router-ca ConfigMap in openshift-config (rendered by the keycloak chart's
+
+# ingressCA)
+
+# ingressCA: |
+
+# -----BEGIN CERTIFICATE-----
+
+# ...
+
+# -----END CERTIFICATE-----
+
+# keycloak:
+
+# # Name of the Keycloak CR deployed by the keycloak chart
+
+# name: keycloak
+
+# # Realm the OIDC issuer URL points at
+
+# realm: sso
+
+# openidClient:
+
+# # Client ID configured in the keycloak chart's realm clients
+
+# id: ocp-idp
+
+# # REQUIRED: client secret — must match the keycloak chart's
+
+# # realms.<realm>.clients.<id>.secret
+
+# secret: <client-secret>
+
+# clusterAdmins:
+
+# users:
+
+# - admin
+
+# removeKubeAdmin:
+
+# enabled: true
