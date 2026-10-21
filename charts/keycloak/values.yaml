@@ -34,14 +34,6 @@ install-operators:
         targetNamespaces:
           - keycloak
 
-    rhbk-operator:
-      enabled: true
-      channel: stable-v26.2
-      namespace: keycloak
-      operatorGroup:
-        enabled: true
-        targetNamespaces:
-          - keycloak
     cloudnative-pg:
       enabled: true
       channel: stable-v1

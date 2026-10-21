@@ -1,9 +1,9 @@
 {{- $db := .Values.db | default dict }}
 {{- $pg := index .Values "postgres-cluster" | default dict }}
-{{- $pgDisabled := and (hasKey $pg "enabled") (not $pg.enabled) }}
-{{- if $pgDisabled }}
+{{- $pgAvailable := and (hasKey .Values "postgres-cluster") $pg.enabled }}
+{{- if not $pgAvailable }}
 {{- if or (not $db.host) (not $db.database) (not $db.credentialsSecret) }}
-{{- fail "postgres-cluster dependency is disabled: db.host, db.database and db.credentialsSecret must all be provided for an external database" }}
+{{- fail "postgres-cluster dependency is disabled or its values block is absent: provide postgres-cluster values so the cluster name is stable, or set db.host, db.database and db.credentialsSecret overrides for an external database" }}
 {{- end }}
 {{- end }}
 {{- $cluster := include "keycloak.pg.fullname" . }}
