@@ -1,0 +1,26 @@
+{{- if eq (include "postgres-cluster.enabled" .Values.certificate) "true" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "postgres-cluster.fullname" . }}
+  {{- with .Values.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "postgres-cluster.labels" . | nindent 4 }}
+    {{- with .Values.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  secretName: {{ include "postgres-cluster.certificate.secret.fullname" . }}
+  usages:
+    - server auth
+  dnsNames:
+    {{- include "postgres-cluster.certificate.dnsNames" . | trimPrefix "\n" | nindent 4 }}
+  issuerRef:
+    {{- toYaml .Values.certificate.issuerRef | nindent 4 }}
+{{- end }}

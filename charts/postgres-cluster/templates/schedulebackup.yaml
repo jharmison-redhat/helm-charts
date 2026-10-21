@@ -1,0 +1,28 @@
+{{- range $name, $backup := .Values.backups }}
+{{- if not $backup.schedule }}
+{{- fail (printf "backups.%s.schedule is required" $name) }}
+{{- end }}
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {{ include "postgres-cluster.fullname" $ }}-{{ $name }}
+  {{- with $.Values.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "postgres-cluster.labels" $ | nindent 4 }}
+    {{- with $.Values.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $.Values.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  schedule: {{ quote $backup.schedule }}
+  backupOwnerReference: {{ $backup.ownerReference | default "self" }}
+  cluster:
+    name: {{ include "postgres-cluster.fullname" $ }}
+  method: {{ $backup.method | default "volumeSnapshot" }}
+{{- end }}
