@@ -34,11 +34,28 @@ install-operators:
         targetNamespaces:
           - keycloak
 
-# Inline CloudNativePG Cluster backing the Keycloak instance. With it
-# disabled, the `db` block below overrides the external database connection.
-postgresCluster:
+    rhbk-operator:
+      enabled: true
+      channel: stable-v26.2
+      namespace: keycloak
+      operatorGroup:
+        enabled: true
+        targetNamespaces:
+          - keycloak
+    cloudnative-pg:
+      enabled: true
+      channel: stable-v1
+      catalog: certified-operators
+
+# PostgreSQL Cluster backing the Keycloak instance, deployed through the
+# postgres-cluster chart dependency. The default cluster follows the CNPG
+# default bootstrap (the `app` database owned by `app`, credentials in a
+# `keycloak-postgres-app` Secret) so the Keycloak CR's db block can consume it
+# by naming convention. With the dependency disabled, the `db` block below
+# overrides the external database connection.
+postgres-cluster:
   enabled: true
-  name: keycloak-postgres
+  fullnameOverride: keycloak-postgres
   instances: 1
   storage:
     size: 2Gi
@@ -50,9 +67,10 @@ postgresCluster:
       cpu: 200m
       memory: 256Mi
 
-# External database overrides, used when the inline postgresCluster is disabled.
+# External database overrides, used when the postgres-cluster dependency is
+# disabled (all three keys are then required).
 db: {}
-#  host: postgres-rw.example-database.svc:5432
+#  host: keycloak-postgres-rw.example-database.svc:5432
 #  database: keycloak
 #  credentialsSecret: keycloak-db-credentials
 

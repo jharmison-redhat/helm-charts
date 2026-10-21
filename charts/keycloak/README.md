@@ -1,15 +1,16 @@
 keycloak
 ========
 
-A chart to deploy a Keycloak instance using the Red Hat Build of Keycloak operator (RHBK), installing the RHBK operator
-via the `install-operators` chart dependency, an inline CloudNativePG `Cluster` behind an `enabled` toggle, and a
-multi-realm map-driven `KeycloakRealmImport`.
+A chart to deploy a Keycloak instance using the Red Hat Build of Keycloak operator (RHBK), installing the RHBK and
+CloudNativePG operators via the `install-operators` chart dependency, deploying a PostgreSQL cluster through the
+`postgres-cluster` chart dependency, and rendering a multi-realm map-driven `KeycloakRealmImport`.
 
-The chart declares an OCI dependency on the published `install-operators` chart of this repository
-(`oci://ghcr.io/jharmison-redhat/helm-charts/install-operators`, pinned `>=0.2.0 <0.3.0`), condition-gated by
-`install-operators.enabled`. Run `helm dependency build` before installing. An umbrella consumer can disable operator
-install by setting `install-operators.enabled: false` and manage the operator with its own `install-operators`
-composition instead.
+The chart declares OCI dependencies on the published charts of this repository
+(`oci://ghcr.io/jharmison-redhat/helm-charts`), both condition-gated: `install-operators` pinned `>=0.2.0 <0.3.0` and
+`postgres-cluster` pinned `>=0.1.0 <0.2.0`. Run `helm dependency build` before installing. An umbrella consumer can
+disable operator install by setting `install-operators.enabled: false` and manage the operators with its own
+`install-operators` composition instead, or disable the database by setting `postgres-cluster.enabled: false` and
+supplying external `db:` overrides.
 
 This chart is designed to be consumed alongside the `keycloak-auth` chart (which configures OpenShift authentication
 against the deployed Keycloak instance): an umbrella consumer composes both and provides matching values.
@@ -20,11 +21,12 @@ Usage
 The chart performs the following:
 
 - Installs the RHBK operator through the `install-operators` chart dependency (gated by `install-operators.enabled`,
-  default `true`) with an `rhbk-operator` entry configured under `install-operators.operators`
+  default `true`) with `rhbk-operator` and `cloudnative-pg` entries configured under `install-operators.operators`
 - Deploys a `Keycloak` custom resource backed by PostgreSQL, using the CloudNativePG naming convention (`<name>-rw` for
   the read-write service and `<name>-app` for the credentials Secret)
-- Creates an inline CloudNativePG `Cluster` behind the `postgresCluster.enabled` toggle; with it disabled, the database
-  connection can be overridden with the `db` values (host, database, credentialsSecret)
+- Deploys a CloudNativePG `Cluster` through the `postgres-cluster` chart dependency (gated by
+  `postgres-cluster.enabled`, default `true`); with it disabled, the database connection must be overridden with the
+  `db` values (host, database, credentialsSecret — all required)
 - Renders a `KeycloakRealmImport` per entry in the `realms` map, with per-realm clients, roles, generated and explicit
   users, groups (explicit list or generated from roles), and `clientScopes` passthrough
 - Exposes Keycloak through a reencrypt `Route` at `<name>.<wildcardDomain>`
@@ -44,9 +46,8 @@ install-operators:
     rhbk-operator:
       channel: stable-v26.2
 
-postgresCluster:
+postgres-cluster:
   enabled: true
-  name: keycloak-postgres
 
 realms:
   sso:
@@ -79,13 +80,16 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `namespace` — namespace for the Keycloak resources (empty by default, meaning the release namespace)
 - `replicas` — number of Keycloak instances (default: `1`)
 - `emailDomain` — domain used for realm-user email defaults (default: `example.com`)
-- `install-operators.enabled` / `install-operators.operators.rhbk-operator` — the RHBK operator install via the
-  `install-operators` dependency (default: enabled, channel `stable-v26.2`, namespace `keycloak` with a matching
-  OperatorGroup)
-- `postgresCluster` — the inline CloudNativePG `Cluster` (enabled by default; name `keycloak-postgres`, 1 instance, 2Gi
-  storage, modest resource requests/limits)
-- `db.host` / `db.database` / `db.credentialsSecret` — external database overrides used when the inline cluster is
-  disabled (defaults follow the CloudNativePG naming convention from `postgresCluster.name`)
+- `install-operators.enabled` / `install-operators.operators` — the operator installs via the `install-operators`
+  dependency (default: enabled, with `rhbk-operator` on channel `stable-v26.2` in the `keycloak` namespace with a
+  matching OperatorGroup, and `cloudnative-pg` on channel `stable-v1` from the `certified-operators` catalog)
+- `postgres-cluster` — the backing PostgreSQL `Cluster` via the postgres-cluster dependency (enabled by default; named
+  `keycloak-postgres` via `fullnameOverride`, 1 instance, 2Gi storage, modest resource requests/limits). The cluster
+  uses the CloudNativePG default bootstrap, creating the `app` database owned by `app` with the credentials in a
+  `keycloak-postgres-app` Secret — matching the `db` block defaults below
+- `db.host` / `db.database` / `db.credentialsSecret` — external database overrides used when the `postgres-cluster`
+  dependency is disabled (all three are then required; by default they derive from the dependency's cluster by the
+  CloudNativePG naming convention)
 - `realms` — map of realm definitions (see the commented example for clients, roles, users, groups, and the full
   `clientScopes` set including the groups claim mapper)
 

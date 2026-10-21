@@ -1,5 +1,12 @@
 {{- $db := .Values.db | default dict }}
-{{- $pg := .Values.postgresCluster }}
+{{- $pg := index .Values "postgres-cluster" | default dict }}
+{{- $pgDisabled := and (hasKey $pg "enabled") (not $pg.enabled) }}
+{{- if $pgDisabled }}
+{{- if or (not $db.host) (not $db.database) (not $db.credentialsSecret) }}
+{{- fail "postgres-cluster dependency is disabled: db.host, db.database and db.credentialsSecret must all be provided for an external database" }}
+{{- end }}
+{{- end }}
+{{- $cluster := include "keycloak.pg.fullname" . }}
 apiVersion: k8s.keycloak.org/v2beta1
 kind: Keycloak
 metadata:
@@ -10,13 +17,16 @@ metadata:
 spec:
   db:
     vendor: postgres
-    database: {{ $db.database | default $pg.name }}
-    host: {{ $db.host | default (printf "%s-rw" $pg.name) }}
+    # Defaults follow the CNPG default bootstrap of the postgres-cluster
+    # dependency: the `app` database, `<cluster>-rw` service, and the
+    # `<cluster>-app` credentials Secret (username/password keys)
+    database: {{ $db.database | default "app" }}
+    host: {{ $db.host | default (printf "%s-rw" $cluster) }}
     usernameSecret:
-      name: {{ $db.credentialsSecret | default (printf "%s-app" $pg.name) }}
+      name: {{ $db.credentialsSecret | default (printf "%s-app" $cluster) }}
       key: username
     passwordSecret:
-      name: {{ $db.credentialsSecret | default (printf "%s-app" $pg.name) }}
+      name: {{ $db.credentialsSecret | default (printf "%s-app" $cluster) }}
       key: password
   hostname:
     hostname: {{ include "keycloak.name" . }}.{{ .Values.global.wildcardDomain }}

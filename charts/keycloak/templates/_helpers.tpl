@@ -58,3 +58,22 @@ output directly would treat "false" as truthy.
 {{- define "keycloak.enabled" -}}
 {{- printf "%v" (or (not (hasKey . "enabled")) .enabled) -}}
 {{- end -}}
+
+{{/*
+Full name of the postgres-cluster dependency's Cluster, replicating the
+postgres-cluster chart's fullname derivation against the dependency's values
+(subchart templates cannot be invoked with a subchart context).
+*/}}
+{{- define "keycloak.pg.fullname" -}}
+{{- $pg := index .Values "postgres-cluster" | default dict -}}
+{{- if $pg.fullnameOverride -}}
+{{- $pg.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default "postgres-cluster" $pg.nameOverride -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
