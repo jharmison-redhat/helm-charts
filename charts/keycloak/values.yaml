@@ -1,12 +1,5 @@
-# Real defaults live here — override as needed by a chart consumer. Values in
-# the `realms` map are an iterated group: the chart renders a
-# KeycloakRealmImport per entry, so defaults for per-realm keys are documented
-# as commented examples only.
-
 global:
-
   # Wildcard domain under which the Keycloak hostname is exposed
-
   # (<name>.<wildcardDomain>)
   wildcardDomain: apps.cluster.example.com
 
@@ -57,10 +50,7 @@ postgresCluster:
       cpu: 200m
       memory: 256Mi
 
-# External database overrides, used when the inline postgresCluster is
-# disabled. host defaults to <postgresCluster.name>-rw, database and
-# credentialsSecret follow the CloudNativePG naming convention
-# (<postgresCluster.name> and <postgresCluster.name>-app).
+# External database overrides, used when the inline postgresCluster is disabled.
 db: {}
 #  host: postgres-rw.example-database.svc:5432
 #  database: keycloak
