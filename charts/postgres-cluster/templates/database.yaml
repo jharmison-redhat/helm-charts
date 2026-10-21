@@ -24,29 +24,4 @@ spec:
   {{- with $db.spec }}
   {{- toYaml . | nindent 2 }}
   {{- end }}
-{{- with $db.password }}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ include "postgres-cluster.fullname" $ }}-{{ $db.user | default $name }}-{{ $name }}
-  {{- with $.Values.namespace }}
-  namespace: {{ . }}
-  {{- end }}
-  labels:
-    {{- include "postgres-cluster.labels" $ | nindent 4 }}
-    {{- with $db.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-    cnpg.io/reload: "true"
-    cnpg.io/userType: app
-  {{- with $db.annotations }}
-  annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-type: kubernetes.io/basic-auth
-data:
-  username: {{ $db.user | default $name | b64enc }}
-  password: {{ . | b64enc }}
-{{- end }}
 {{- end }}
