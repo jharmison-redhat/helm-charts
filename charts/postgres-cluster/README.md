@@ -67,7 +67,9 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `resources` — resource requests/limits for the cluster instances
 - `services` — operator-created default services (default: `rw`, `ro`, `r`)
 - `certificate` — the server `Certificate` (enabled by default; `issuerRef` defaults to a `ca-issuer` ClusterIssuer from
-  cert-manager.io, and `clusterDomain` adds a suffix below the `.svc` DNS level)
+  cert-manager.io, and `clusterDomain` adds a suffix below the `.svc` DNS level). The `issuerRef` must resolve to a
+  CA-capable issuer (CA, SelfSigned, or Vault): the referenced Secret doubles as `serverCASecret` and needs a `ca.crt`,
+  which cert-manager only populates for CA-capable issuers — with an ACME issuer the Cluster breaks.
 - `backups` — map of backup schedules (commented example; one `ScheduledBackup` per entry, `schedule` required per
   entry, only the `volumeSnapshot` method is implemented)
 - `databases` — map of application databases (commented example; one `Database` CR per entry plus a basic-auth Secret

@@ -1,5 +1,12 @@
 {{- $dbNames := keys .Values.databases | sortAlpha }}
 {{- $backupNames := keys .Values.backups | sortAlpha }}
+{{- if and $dbNames .Values.managed.roles }}
+{{- fail "managed.roles collides with the roles generated from `databases`: either drop `databases` or set `managed` without `roles`" }}
+{{- end }}
+{{- $disabled := include "postgres-cluster.disabledServices" . }}
+{{- if and (not (eq $disabled "[]")) .Values.managed.services }}
+{{- fail "managed.services collides with the generated `services.disabledDefaultServices` (from `services`): either keep the default services enabled or set `managed` without `services`" }}
+{{- end }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -42,12 +49,24 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
   {{- with .Values.storage }}
+  {{- $storage := dict }}
+  {{- range $k, $v := . }}
+  {{- if ne ($v | toString) "" }}
+  {{- $_ := set $storage $k $v }}
+  {{- end }}
+  {{- end }}
   storage:
-    {{- toYaml . | nindent 4 }}
+    {{- toYaml $storage | nindent 4 }}
   {{- end }}
   {{- with .Values.walStorage }}
+  {{- $wal := dict }}
+  {{- range $k, $v := . }}
+  {{- if ne ($v | toString) "" }}
+  {{- $_ := set $wal $k $v }}
+  {{- end }}
+  {{- end }}
   walStorage:
-    {{- toYaml . | nindent 4 }}
+    {{- toYaml $wal | nindent 4 }}
   {{- end }}
   {{- if eq (include "postgres-cluster.enabled" .Values.certificate) "true" }}
   certificates:

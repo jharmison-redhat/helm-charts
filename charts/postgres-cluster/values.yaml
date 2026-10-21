@@ -16,7 +16,7 @@ instances: 2
 
 storage:
   size: 10Gi
-  # Empty uses the cluster default StorageClass
+  # Empty omits `storageClass` from the Cluster CR, using the cluster default StorageClass
   storageClass: ""
 
 resources:
@@ -34,8 +34,8 @@ walStorage: {}
 managed: {}
 
 # Operator-created default services. Remove entries to disable the
-# corresponding default service — if you change these, make sure you don't
-# also specify `services` in the `managed` block.
+# corresponding default service — specifying `services` in the `managed` block
+# while a default service is disabled makes the chart fail at render time.
 services:
   - rw
   - ro
@@ -45,6 +45,9 @@ certificate:
   enabled: true
   # Extra DNS suffix below the `svc` domain (e.g. cluster.local)
   clusterDomain: cluster.local
+  # Must resolve to a CA-capable issuer (CA, SelfSigned, or Vault): the
+  # referenced Secret doubles as `serverCASecret` and needs a `ca.crt`, which
+  # cert-manager only populates for CA-capable issuers — not ACME.
   issuerRef:
     name: ca-issuer
     kind: ClusterIssuer
@@ -61,8 +64,9 @@ backups: {}
 #      className: csi-aws-vsc
 
 # Map of application databases — one Database CR is rendered per entry, plus a
-# basic-auth Secret when the entry provides a `password`. If you specify more
-# than one, make sure you don't also specify `roles` in the `managed` block.
+# basic-auth Secret when the entry provides a `password`. Specifying `roles` in
+# the `managed` block while `databases` is non-empty makes the chart fail at
+# render time.
 # With the map empty, the default CloudNativePG bootstrap creates the `app`
 # database owned by `app`, with the credentials in a `<cluster>-app` Secret.
 databases: {}
