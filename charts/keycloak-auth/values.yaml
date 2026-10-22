@@ -40,5 +40,5 @@ clusterAdmins:
   users:
     - admin
 
-removeKubeAdmin:
-  enabled: true
+# Set false to keep the kubeadmin Secret in place
+removeKubeAdmin: true

@@ -68,7 +68,7 @@ spec:
   walStorage:
     {{- toYaml $wal | nindent 4 }}
   {{- end }}
-  {{- if eq (include "postgres-cluster.enabled" .Values.certificate) "true" }}
+  {{- if .Values.certificate.enabled }}
   certificates:
     serverTLSSecret: {{ include "postgres-cluster.certificate.secret.fullname" . }}
     serverCASecret: {{ include "postgres-cluster.certificate.secret.fullname" . }}

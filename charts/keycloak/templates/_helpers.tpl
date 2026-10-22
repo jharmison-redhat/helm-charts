@@ -51,15 +51,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Component enabled gate: renders "true" unless `enabled` is explicitly false.
-Callers must compare with `eq (include ...) "true"` — an `if` on the string
-output directly would treat "false" as truthy.
-*/}}
-{{- define "keycloak.enabled" -}}
-{{- printf "%v" (or (not (hasKey . "enabled")) .enabled) -}}
-{{- end -}}
-
-{{/*
 Full name of the postgres-cluster dependency's Cluster, replicating the
 postgres-cluster chart's fullname derivation against the dependency's values
 (subchart templates cannot be invoked with a subchart context). This is the

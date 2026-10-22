@@ -22,7 +22,7 @@ The chart performs the following:
   required — no default is provided)
 - Creates a `cluster-admins` Group bound to the `cluster-admin` ClusterRole
 - Optionally removes the `kubeadmin` Secret via a Job that runs as a Helm `post-install,post-upgrade` hook (recreated on
-  re-runs via `before-hook-creation`); enabled by default, disable it with `removeKubeAdmin.enabled: false`
+  re-runs via `before-hook-creation`); enabled by default, disable it with `removeKubeAdmin: false`
 - Optionally renders a `router-ca` trust ConfigMap in `openshift-config` as the identity provider's CA (set `ingressCA`
   to enable it)
 
@@ -45,8 +45,7 @@ clusterAdmins:
   users:
     - admin
 
-removeKubeAdmin:
-  enabled: true
+removeKubeAdmin: true
 ```
 
 Values
@@ -64,6 +63,6 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   and the Secret.
 - `ingressCA` — optional CA bundle; when set, the `router-ca` ConfigMap is rendered and the identity provider uses it
 - `clusterAdmins.users` — usernames added to the `cluster-admins` Group (default: `[admin]`)
-- `removeKubeAdmin.enabled` — gate for the kubeadmin removal Job (default: `true`)
+- `removeKubeAdmin` — set to `false` to keep the kubeadmin Secret (default: `true`)
 
 Secrets are never defaulted: the OIDC client secret must be provided through values.

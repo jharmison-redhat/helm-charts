@@ -40,6 +40,8 @@ services:
   - ro
   - r
 
+# REQUIRED: the block must not be deleted or set to null — templates read
+# certificate.enabled directly and a nil block fails rendering
 certificate:
   enabled: true
   # Extra DNS suffix below the `svc` domain (e.g. cluster.local)
