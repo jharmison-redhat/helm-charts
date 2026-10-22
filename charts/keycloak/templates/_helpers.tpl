@@ -62,7 +62,11 @@ output directly would treat "false" as truthy.
 {{/*
 Full name of the postgres-cluster dependency's Cluster, replicating the
 postgres-cluster chart's fullname derivation against the dependency's values
-(subchart templates cannot be invoked with a subchart context).
+(subchart templates cannot be invoked with a subchart context). This is the
+authoritative statement of the cross-chart naming contract: the default
+bootstrap creates the `app` database owned by `app` with credentials in a
+`<fullname>-app` Secret, and the Keycloak CR consumes the read-write service
+at `<fullname>-rw`.
 */}}
 {{- define "keycloak.pg.fullname" -}}
 {{- $pg := index .Values "postgres-cluster" | default dict -}}

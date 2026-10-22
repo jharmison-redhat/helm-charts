@@ -22,8 +22,8 @@ The chart performs the following:
 
 - Installs the RHBK operator through the `install-operators` chart dependency (gated by `install-operators.enabled`,
   default `true`) with `rhbk-operator` and `cloudnative-pg` entries configured under `install-operators.operators`
-- Deploys a `Keycloak` custom resource backed by PostgreSQL, using the CloudNativePG naming convention (`<name>-rw` for
-  the read-write service and `<name>-app` for the credentials Secret)
+- Deploys a `Keycloak` custom resource backed by PostgreSQL, wired by convention to the dependency's Cluster (see the
+  `keycloak.pg.fullname` helper in `templates/_helpers.tpl`)
 - Deploys a CloudNativePG `Cluster` through the `postgres-cluster` chart dependency (gated by
   `postgres-cluster.enabled`, default `true`); with it disabled, the database connection must be overridden with the
   `db` values (host, database, credentialsSecret — all required)
@@ -36,7 +36,6 @@ An example `values.yaml` you could use to actuate some of these features would l
 ```yaml
 global:
   wildcardDomain: apps.cluster.example.com
-  toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
 
 replicas: 1
 
@@ -63,8 +62,8 @@ realms:
       ocp-idp:
         secret: <client-secret>
     clientScopes:
-      # See values.yaml for the full example set, including the groups claim
-      # mapper (oidc-usermodel-realm-role-mapper)
+      # See values.yaml for a representative example, including the groups
+      # claim mapper (oidc-usermodel-realm-role-mapper)
       - name: groups
         protocol: openid-connect
 ```
@@ -76,7 +75,6 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 
 - `global.wildcardDomain` — wildcard domain under which Keycloak is exposed (`<name>.<wildcardDomain>`; default:
   `apps.cluster.example.com`)
-- `global.toolsImage` — image for Helm hook Job containers (default: the in-cluster OpenShift tools image)
 - `namespace` — namespace for the Keycloak resources (empty by default, meaning the release namespace)
 - `replicas` — number of Keycloak instances (default: `1`)
 - `emailDomain` — domain used for realm-user email defaults (default: `example.com`)
@@ -85,13 +83,12 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   matching OperatorGroup, and `cloudnative-pg` on channel `stable-v1` from the `certified-operators` catalog)
 - `postgres-cluster` — the backing PostgreSQL `Cluster` via the postgres-cluster dependency (enabled by default; named
   `keycloak-postgres` via `fullnameOverride`, 1 instance, 2Gi storage, modest resource requests/limits). The cluster
-  uses the CloudNativePG default bootstrap, creating the `app` database owned by `app` with the credentials in a
-  `keycloak-postgres-app` Secret — matching the `db` block defaults below
+  uses the CloudNativePG default bootstrap — see the `keycloak.pg.fullname` helper in `templates/_helpers.tpl` for the
+  naming convention the `db` block defaults rely on
 - `db.host` / `db.database` / `db.credentialsSecret` — external database overrides used when the `postgres-cluster`
-  dependency is disabled (all three are then required; by default they derive from the dependency's cluster by the
-  CloudNativePG naming convention)
-- `realms` — map of realm definitions (see the commented example for clients, roles, users, groups, and the full
-  `clientScopes` set including the groups claim mapper)
+  dependency is disabled (all three are then required; by default they derive from the dependency's cluster)
+- `realms` — map of realm definitions (see the commented example for clients, roles, users, groups, and representative
+  `clientScopes` including the groups claim mapper)
 
 Secrets are never defaulted: realm admin/user passwords and realm client secrets must be provided through values. The
 realm admin password is required at render time, as is the generated-users password when `generated.count > 0`. A realm

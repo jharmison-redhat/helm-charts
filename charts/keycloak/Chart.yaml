@@ -9,10 +9,8 @@ dependencies:
   - name: install-operators
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
     version: ">=0.2.0 <0.3.0"
-    alias: install-operators
     condition: install-operators.enabled
   - name: postgres-cluster
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
     version: ">=0.1.0 <0.2.0"
-    alias: postgres-cluster
     condition: postgres-cluster.enabled

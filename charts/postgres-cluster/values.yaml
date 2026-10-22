@@ -1,4 +1,3 @@
-# Override the rendered resource names
 nameOverride: ""
 fullnameOverride: ""
 

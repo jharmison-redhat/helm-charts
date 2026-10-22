@@ -17,9 +17,6 @@ metadata:
 spec:
   db:
     vendor: postgres
-    # Defaults follow the CNPG default bootstrap of the postgres-cluster
-    # dependency: the `app` database, `<cluster>-rw` service, and the
-    # `<cluster>-app` credentials Secret (username/password keys)
     database: {{ $db.database | default "app" }}
     host: {{ $db.host | default (printf "%s-rw" $cluster) }}
     usernameSecret:

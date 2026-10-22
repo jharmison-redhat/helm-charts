@@ -24,9 +24,8 @@ The chart performs the following:
 - Renders a cert-manager `Certificate` (and the TLS Secret placeholder) covering `<name>-<service>` DNS names for every
   service in `services`, when `certificate.enabled` is true
 
-The rendered service names follow the CloudNativePG convention: `<name>-rw` for the read-write service and `<name>-app`
-for the default-bootstrap credentials Secret, with `nameOverride`/`fullnameOverride` available to stabilize the names
-for consumers.
+The rendered service names follow the CloudNativePG convention (`<name>-rw`, `<name>-app`); see the
+`keycloak.pg.fullname` helper in the keycloak chart for the cross-chart naming contract built on these names.
 
 An example `values.yaml` you could use to actuate some of these features would look like this:
 

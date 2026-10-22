@@ -4,7 +4,6 @@
 global:
 
   # Wildcard domain under which the Keycloak instance is exposed
-
   # (<keycloak.name>.<wildcardDomain>) — must match the keycloak chart's
   # global.wildcardDomain
   wildcardDomain: apps.cluster.example.com
@@ -12,7 +11,6 @@ global:
   # Image for the kubeadmin-removal Job container (requires the `oc` CLI)
   toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
 
-# Override the rendered resource names
 nameOverride: ""
 fullnameOverride: ""
 
@@ -39,7 +37,6 @@ openidClient:
 ingressCA: ""
 
 clusterAdmins:
-  # Usernames added to the cluster-admins Group
   users:
     - admin
 
