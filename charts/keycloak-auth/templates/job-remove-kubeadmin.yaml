@@ -13,7 +13,6 @@ spec:
   backoffLimit: 4
   template:
     spec:
-      serviceAccount: remove-kubeadmin
       serviceAccountName: remove-kubeadmin
       restartPolicy: Never
       containers:
