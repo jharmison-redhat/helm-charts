@@ -97,8 +97,8 @@ realms: {}
 #          - roles
 #          - service_account
 #          - web-origins
-#    # Explicit clientScopes — this set includes the groups claim mapper and
-#    # matches what the default client scopes above expect
+#    # Explicit clientScopes — a representative subset of the default client
+#    # scopes above, including the groups claim mapper
 #    clientScopes:
 #      - name: basic
 #        description: OpenID Connect scope for add all basic claims to the token
