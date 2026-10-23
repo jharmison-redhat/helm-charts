@@ -1,20 +1,16 @@
 name: Lint & Render Helm Charts
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "charts/**"
-      - "examples/**"
-      - .github/workflows/lint-chart.yml
   pull_request:
     paths:
       - "charts/**"
       - "examples/**"
+      - .github/workflows/chart_ci.sh
       - .github/workflows/lint-chart.yml
+  workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   charts:
@@ -42,21 +38,10 @@ jobs:
         uses: actions/checkout@v7
       - id: setup-helm
         uses: azure/setup-helm@v4
-      - id: deps
-        run: |
-          set -euo pipefail
-          if grep -q '^dependencies:' "charts/${{ matrix.chart }}/Chart.yaml"; then
-            echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-            helm dependency build "charts/${{ matrix.chart }}"
-          fi
+        with:
+          version: v4.2.2
       - id: lint
-        run: |
-          set -euo pipefail
-          helm lint "charts/${{ matrix.chart }}"
-      - id: render
-        run: |
-          set -euo pipefail
-          helm template "charts/${{ matrix.chart }}" > /dev/null
+        run: .github/workflows/chart_ci.sh lint-local "charts/${{ matrix.chart }}"
 
   umbrella:
     runs-on: ubuntu-latest
@@ -65,18 +50,7 @@ jobs:
         uses: actions/checkout@v7
       - id: setup-helm
         uses: azure/setup-helm@v4
-      - id: log-in
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-      - id: deps
-        run: |
-          set -euo pipefail
-          helm dependency build examples/maas-umbrella
+        with:
+          version: v4.2.2
       - id: lint
-        run: |
-          set -euo pipefail
-          helm lint examples/maas-umbrella
-      - id: render
-        run: |
-          set -euo pipefail
-          helm template examples/maas-umbrella > /dev/null
+        run: .github/workflows/chart_ci.sh lint-local examples/maas-umbrella
