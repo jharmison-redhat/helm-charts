@@ -29,8 +29,8 @@ A chart depending on another chart in this repo requires the dependency chart to
 runs jobs in parallel, so same-run publishes are a race — mitigated by `fail-fast: false`, a bounded retry on
 `helm dependency build` inside publish-chart.yml, and manual dispatch as a fallback. PR lint resolves intra-repo
 dependencies locally (`file://` rewrite of the prepared copies), so a PR that bumps a dependency chart (or its pin)
-lints without waiting for a publish; publish resolves the real OCI pins from the registry, and the tag gate rejects pins
-that exclude the working-tree version against the local chart versions. When adding an intra-repo OCI dependency:
+lints without waiting for a publish and enforces the pin against the working-tree chart versions; publish resolves the
+real OCI pins from the registry, and the tag gate checks tag existence only. When adding an intra-repo OCI dependency:
 confirm the dependency chart is already published (or lands in the same push first), and bump BOTH the dependency's
 version pin and the dependent's version in the same push.
 
