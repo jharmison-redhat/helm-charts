@@ -198,8 +198,8 @@ maasDb:
   # Cluster (rendered in postgres.namespace) plus the bootstrap job; false
   # relies on maasDb.secretName for the out-of-band mode
   create: false
-  # Must match postgres.namespace — the Cluster renders there and the job
-  # looks the secret up there
+  # In managed mode, must match postgres.namespace — the Cluster renders
+  # there and the job looks the secret up there
   namespace: redhat-ai-gateway-infra
   # Out-of-band override: name of the secret holding the postgres connection
   # URI. Empty in managed mode — the job then derives `<fullname>-app` from

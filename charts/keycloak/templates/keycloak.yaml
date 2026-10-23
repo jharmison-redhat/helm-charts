@@ -3,7 +3,7 @@
 {{- $pgAvailable := and (hasKey .Values "postgres") $pg.enabled }}
 {{- if not $pgAvailable }}
 {{- if or (not $db.host) (not $db.database) (not $db.credentialsSecret) }}
-{{- fail "postgres-cluster dependency is disabled or its values block is absent: provide postgres-cluster values so the cluster name is stable, or set db.host, db.database and db.credentialsSecret overrides for an external database" }}
+{{- fail "postgres-cluster dependency is disabled or its values block is absent: provide postgres values so the cluster name is stable, or set db.host, db.database and db.credentialsSecret overrides for an external database" }}
 {{- end }}
 {{- end }}
 {{- $cluster := include "keycloak.pg.fullname" . }}
