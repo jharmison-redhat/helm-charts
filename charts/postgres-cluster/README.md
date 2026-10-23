@@ -8,6 +8,10 @@ initdb/recovery bootstrap, optional per-database `Database` custom resources and
 The chart is self-contained (no chart dependencies) and renders standalone, with values namespaced under the
 `postgres-cluster` key when consumed as a subchart.
 
+The CloudNativePG operator is NOT installed by this chart. It must already be installed before this chart is deployed —
+it renders the `Cluster` custom resource directly, and a plain `helm install` fails on the missing CRD otherwise. Use
+the `install-operators` chart for the operator install.
+
 Usage
 -----
 
