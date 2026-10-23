@@ -11,26 +11,32 @@ global:
   # Image for the kubeadmin-removal Job container (requires the `oc` CLI)
   toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
 
+  # Single-source OIDC settings shared with the keycloak chart through
+  # global propagation. realm must match a keycloak chart `realms` map key
+  # and clientId must match a client name within it — both are structural
+  # in the keycloak chart and cannot reference these values. Setting realm
+  # to a name with no matching realm in the keycloak chart makes the issuer
+  # point at a realm that was never imported (no fail-fast). Leave secret
+  # empty to skip rendering the OAuth resource and the
+  # openid-client-secret Secret.
+  oidc:
+    realm: sso
+    clientId: ocp-idp
+    secret: ""
+
 nameOverride: ""
 fullnameOverride: ""
 
 keycloak:
-  # Name of the Keycloak CR deployed by the keycloak chart
+  # Name of the Keycloak CR deployed by the keycloak chart — matches its
+  # chart-name-based CR name by default. If an umbrella renames the
+  # keycloak subchart, this must be updated to match or the issuer hostname
+  # silently points at the wrong CR name.
   name: keycloak
-  # Realm the OIDC issuer URL points at
-  realm: sso
 
 oauth:
   # Name of the OpenID identity provider in the cluster OAuth resource
   idpName: rhbk
-
-openidClient:
-  # Client ID configured in the keycloak chart's realm clients
-  id: ocp-idp
-  # REQUIRED: client secret — must match the keycloak chart's
-  # realms.<realm>.clients.<id>.secret. Leave empty to skip rendering the
-  # OAuth resource and the openid-client-secret Secret.
-  secret: ""
 
 # Optional CA bundle; when set, this chart also renders the router-ca
 # ConfigMap in openshift-config and the OAuth identity provider references it

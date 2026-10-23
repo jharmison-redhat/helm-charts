@@ -1,7 +1,8 @@
-{{- $secret := .Values.openidClient.secret | default "" }}
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
 {{- /* The OAuth identity provider is useless without its client secret, so
 both the OAuth CR and the openid-client-secret Secret are gated on
-openidClient.secret being provided */ -}}
+global.oidc.secret being provided */ -}}
 {{- if ne $secret "" }}
 apiVersion: config.openshift.io/v1
 kind: OAuth
@@ -30,10 +31,10 @@ spec:
             - name
           groups:
             - groups
-        clientID: {{ .Values.openidClient.id }}
+        clientID: {{ .Values.global.oidc.clientId }}
         clientSecret:
           name: openid-client-secret
         extraScopes: []
         issuer: >-
-          https://{{ .Values.keycloak.name }}.{{ .Values.global.wildcardDomain }}/realms/{{ .Values.keycloak.realm }}
+          https://{{ .Values.keycloak.name }}.{{ .Values.global.wildcardDomain }}/realms/{{ .Values.global.oidc.realm }}
 {{- end }}
