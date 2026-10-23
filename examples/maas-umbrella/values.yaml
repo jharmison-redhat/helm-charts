@@ -1,7 +1,61 @@
-install-operators:
-  enabled: true
-  operators:
-    cloudnative-pg:
-      channel: stable-v1
-      catalog: certified-operators
-# Additional charts published from this repository can be composed as dependencies under their own keys.
+# Values for the operand umbrella (install 2 of the two-install flow). The
+# operator install (install 1) pairs with the install-operators chart — see
+# operator-values.yaml.
+#
+# The OIDC values are set once here under global.oidc and propagate to both
+# subcharts: keycloak-auth reads global.oidc.{realm,clientId,secret}
+# directly, and keycloak's realm client entry references
+# global.oidc.secret via a template string.
+global:
+  wildcardDomain: apps.cluster.example.com
+  oidc:
+    realm: sso
+    clientId: ocp-idp
+    # Client secret shared by the keycloak realm client and keycloak-auth's
+    # Secret; changing it here moves both at once
+    secret: <client-secret>
+
+keycloak:
+  postgres-cluster:
+    fullnameOverride: keycloak-postgres
+    instances: 1
+    storage:
+      size: 2Gi
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 200m
+        memory: 256Mi
+
+  realms:
+    sso:
+      admin:
+        username: admin
+        password: <admin-password>
+      generated:
+        prefix: user
+        count: 5
+        password: <user-password>
+      groupsFromRoles: true
+      clients:
+        ocp-idp:
+          secret: "{{ .Values.global.oidc.secret }}"
+          redirectUris:
+            - "*"
+          defaultClientScopes:
+            - acr
+            - basic
+            - email
+            - groups
+            - profile
+            - roles
+            - service_account
+            - web-origins
+
+keycloak-auth:
+  clusterAdmins:
+    users:
+      - admin
+  removeKubeAdmin: true

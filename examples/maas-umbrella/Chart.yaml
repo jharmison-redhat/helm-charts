@@ -1,13 +1,15 @@
 apiVersion: v2
 name: maas-umbrella
 description: >-
-  Example umbrella chart (not published) that demonstrates how to compose the published charts of this repository as
-  subchart dependencies with values overlays.
+  Example operand umbrella chart (not published) that demonstrates how to compose the published charts of this
+  repository as subchart dependencies with values overlays. Pairs with a separate install-operators release — see
+  operator-values.yaml and the README.
 type: application
-version: 0.1.0
+version: 0.2.0
 dependencies:
-  - name: install-operators
+  - name: keycloak
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.3.0 <0.4.0"
+  - name: keycloak-auth
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
     version: ">=0.2.0 <0.3.0"
-    alias: install-operators
-    condition: install-operators.enabled

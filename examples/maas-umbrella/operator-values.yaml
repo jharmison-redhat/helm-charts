@@ -1,0 +1,22 @@
+# Pairs with the install-operators chart for install 1 of the two-install
+# flow, before the operand umbrella (values.yaml) is installed — OLM makes
+# the custom resources required by keycloak/postgres-cluster available only
+# after the operators are installed:
+#
+#   helm upgrade --install install-operators charts/install-operators \
+#       --values examples/maas-umbrella/operator-values.yaml
+#   # wait for the operator deployments to be ready, then:
+#   helm dependency build examples/maas-umbrella
+#   helm upgrade --install maas-umbrella examples/maas-umbrella
+operators:
+  rhbk-operator:
+    channel: stable-v26.2
+    namespace: keycloak
+    operatorGroup:
+      enabled: true
+      targetNamespaces:
+        - keycloak
+
+  cloudnative-pg:
+    channel: stable-v1
+    catalog: certified-operators
