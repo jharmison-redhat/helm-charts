@@ -32,9 +32,10 @@ emailDomain: example.com
 # fails on the missing CRDs otherwise.
 
 # PostgreSQL Cluster backing the Keycloak instance, deployed through the
-# postgres-cluster chart dependency. With the dependency disabled, the `db`
-# block below overrides the external database connection.
-postgres-cluster:
+# postgres-cluster chart dependency (aliased to `postgres`, which moves the
+# values key). With the dependency disabled, the `db` block below overrides
+# the external database connection.
+postgres:
   enabled: true
   fullnameOverride: keycloak-postgres
   instances: 1
@@ -48,7 +49,7 @@ postgres-cluster:
       cpu: 200m
       memory: 256Mi
 
-# External database overrides, used when the postgres-cluster dependency is
+# External database overrides, used when the postgres dependency is
 # disabled (all three keys are then required).
 db: {}
 #  host: keycloak-postgres-rw.example-database.svc:5432

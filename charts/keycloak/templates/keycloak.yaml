@@ -1,6 +1,6 @@
 {{- $db := .Values.db | default dict }}
-{{- $pg := index .Values "postgres-cluster" | default dict }}
-{{- $pgAvailable := and (hasKey .Values "postgres-cluster") $pg.enabled }}
+{{- $pg := index .Values "postgres" | default dict }}
+{{- $pgAvailable := and (hasKey .Values "postgres") $pg.enabled }}
 {{- if not $pgAvailable }}
 {{- if or (not $db.host) (not $db.database) (not $db.credentialsSecret) }}
 {{- fail "postgres-cluster dependency is disabled or its values block is absent: provide postgres-cluster values so the cluster name is stable, or set db.host, db.database and db.credentialsSecret overrides for an external database" }}

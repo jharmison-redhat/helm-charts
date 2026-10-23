@@ -71,7 +71,7 @@ bootstrap creates the `app` database owned by `app` with credentials in a
 at `<fullname>-rw`.
 */}}
 {{- define "keycloak.pg.fullname" -}}
-{{- $pg := index .Values "postgres-cluster" | default dict -}}
+{{- $pg := index .Values "postgres" | default dict -}}
 {{- if $pg.fullnameOverride -}}
 {{- $pg.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}

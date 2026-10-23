@@ -3,10 +3,11 @@ name: keycloak
 description: >
   A helm chart to deploy a Keycloak instance using the Red Hat Build of Keycloak operator
 type: application
-version: 0.3.0
-appVersion: 0.3.0
+version: 0.4.0
+appVersion: 0.4.0
 dependencies:
   - name: postgres-cluster
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
     version: ">=0.1.0 <0.2.0"
-    condition: postgres-cluster.enabled
+    alias: postgres
+    condition: postgres.enabled
