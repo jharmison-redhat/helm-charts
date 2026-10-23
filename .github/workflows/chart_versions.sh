@@ -118,14 +118,17 @@ while read -rd $'\0' path; do
   token=""; attempts=0
   while [ $attempts -lt 3 ]; do
     token_rc=0
-    if token="$(fetch_token "$repo")"; then break; fi
-    token_rc=$?
-    if [ "$token_rc" -eq 1 ]; then exit 1; fi
+    token="$(fetch_token "$repo")" || token_rc=$?
+    case "$token_rc" in
+      0) break ;;
+      2) ;;
+      *) exit 1 ;;
+    esac
     attempts=$((attempts + 1))
     sleep 5
   done
 
-  if [ -z "$token" ]; then
+  if [ "$token_rc" -eq 2 ]; then
     # Canary proved credentials work, so a persistent per-repo denial is
     # treated as an absent (new) chart; the push is the backstop.
     echo "::warning::token request for ${repo} failed repeatedly after the canary passed; treating chart as new" >&2
