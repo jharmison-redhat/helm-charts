@@ -6,8 +6,10 @@ on:
       - main
     paths:
       - "charts/**"
-      - .github/workflows/chart_ci.sh
-      - .github/workflows/chart_versions.sh
+      - .github/workflows/chart_ci.py
+      - .github/workflows/chart_versions.py
+      - .github/workflows/chart_metadata.py
+      - .github/workflows/requirements.txt
       - .github/workflows/publish-chart.yml
   workflow_dispatch:
 
@@ -24,8 +26,16 @@ jobs:
     steps:
       - id: checkout
         uses: actions/checkout@v7
+      - id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: .github/workflows/requirements.txt
+      - id: install-dependencies
+        run: python -m pip install -r .github/workflows/requirements.txt
       - id: versions
-        run: .github/workflows/chart_versions.sh
+        run: python .github/workflows/chart_versions.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
@@ -46,6 +56,14 @@ jobs:
     steps:
       - id: checkout
         uses: actions/checkout@v7
+      - id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: .github/workflows/requirements.txt
+      - id: install-dependencies
+        run: python -m pip install -r .github/workflows/requirements.txt
       - id: setup-helm
         uses: azure/setup-helm@v5
         with:
@@ -62,8 +80,8 @@ jobs:
 
           cp -a '${{ matrix.path }}' "${newpath}"
 
-          .github/workflows/chart_ci.sh build-registry "${newpath}"
-          .github/workflows/chart_ci.sh lint "${newpath}"
+          python .github/workflows/chart_ci.py build-registry "${newpath}"
+          python .github/workflows/chart_ci.py lint "${newpath}"
 
           helm package "${newpath}"
           helm push "${{ matrix.name }}-${{ matrix.version }}.tgz" 'oci://ghcr.io/${{ github.repository_owner }}/helm-charts'
