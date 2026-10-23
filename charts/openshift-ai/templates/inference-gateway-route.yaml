@@ -1,0 +1,23 @@
+{{- with .Values.gateways.openshiftAiInference }}
+{{- if and .create .useRoute }}
+{{- $host := .hostname | default (printf "inference.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+spec:
+  host: {{ $host }}
+  port:
+    targetPort: 80
+  tls:
+    insecureEdgeTerminationPolicy: Allow
+    termination: edge
+  to:
+    kind: Service
+    name: openshift-ai-inference-data-science-gateway-class
+    weight: 100
+  wildcardPolicy: None
+{{- end }}
+{{- end }}

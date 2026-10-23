@@ -1,51 +1,6 @@
 {{- with .Values.gateways.openshiftAiInference }}
 {{- if .create }}
 {{- $host := .hostname | default (printf "inference.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
-{{- if .useRoute }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: openshift-ai-inference-config
-  namespace: openshift-ingress
-data:
-  service: |
-    spec:
-      type: ClusterIP
----
-apiVersion: route.openshift.io/v1
-kind: Route
-metadata:
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  host: {{ $host }}
-  port:
-    targetPort: 80
-  tls:
-    insecureEdgeTerminationPolicy: Allow
-    termination: edge
-  to:
-    kind: Service
-    name: openshift-ai-inference-data-science-gateway-class
-    weight: 100
-  wildcardPolicy: None
-{{- else if .certificate.create }}
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: openshift-ai-inference-certificate
-  namespace: openshift-ingress
-spec:
-  dnsNames:
-    - {{ $host }}
-  issuerRef:
-    group: cert-manager.io
-    kind: ClusterIssuer
-    name: {{ .certificate.clusterIssuer }}
-  secretName: openshift-ai-inference-cert
-{{- end }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway

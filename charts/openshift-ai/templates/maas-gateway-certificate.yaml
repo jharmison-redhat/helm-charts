@@ -1,0 +1,21 @@
+{{- if eq (include "openshift-ai.maasManaged" .) "true" }}
+{{- with .Values.gateways.maasDefaultGateway }}
+{{- $host := .hostname | default (printf "maas.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+{{- if and (not .useRoute) .certificate.create }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: maas-default-gateway-certificate
+  namespace: openshift-ingress
+spec:
+  dnsNames:
+    - {{ $host }}
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: {{ .certificate.clusterIssuer }}
+  secretName: maas-default-gateway-cert
+{{- end }}
+{{- end }}
+{{- end }}

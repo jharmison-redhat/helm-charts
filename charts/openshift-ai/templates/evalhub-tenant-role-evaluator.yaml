@@ -1,0 +1,20 @@
+{{- with .Values.evalhub }}
+{{- if .create }}
+{{- with .tenant }}
+{{- if .create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-evaluator
+  namespace: {{ .namespace }}
+rules:
+  - apiGroups: [trustyai.opendatahub.io]
+    resources: [evaluations, collections, providers]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [mlflow.kubeflow.org]
+    resources: [experiments]
+    verbs: [create, get]
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

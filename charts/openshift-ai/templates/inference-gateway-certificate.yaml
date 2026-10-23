@@ -1,0 +1,19 @@
+{{- with .Values.gateways.openshiftAiInference }}
+{{- if and .create (not .useRoute) .certificate.create }}
+{{- $host := .hostname | default (printf "inference.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openshift-ai-inference-certificate
+  namespace: openshift-ingress
+spec:
+  dnsNames:
+    - {{ $host }}
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: {{ .certificate.clusterIssuer }}
+  secretName: openshift-ai-inference-cert
+{{- end }}
+{{- end }}

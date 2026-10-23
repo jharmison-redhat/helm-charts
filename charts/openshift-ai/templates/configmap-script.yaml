@@ -1,0 +1,9 @@
+{{- if and .Values.maasDb.create (eq (include "openshift-ai.maasManaged" .) "true") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: create-maas-db-config-script
+  namespace: {{ .Values.maasDb.namespace }}
+data:
+{{ tpl ($.Files.Glob "files/*").AsConfig $ | indent 2 }}
+{{- end }}

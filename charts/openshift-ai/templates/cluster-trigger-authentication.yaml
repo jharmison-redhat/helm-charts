@@ -1,0 +1,16 @@
+{{- with .Values.kedaMetricsReader }}
+{{- if .create }}
+apiVersion: keda.sh/v1alpha1
+kind: ClusterTriggerAuthentication
+metadata:
+  name: ai-inference-keda-thanos
+spec:
+  secretTargetRef:
+    - parameter: bearerToken
+      name: keda-metrics-reader-token
+      key: token
+    - parameter: ca
+      name: keda-metrics-reader-token
+      key: ca.crt
+{{- end }}
+{{- end }}

@@ -1,0 +1,17 @@
+{{- with .Values.evalhub }}
+{{- if .create }}
+{{- with .tenant }}
+{{- if .create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-jobs-dspa-api
+  namespace: {{ .namespace }}
+rules:
+- apiGroups: ["datasciencepipelinesapplications.opendatahub.io"]
+  resources: ["datasciencepipelinesapplications/api"]
+  verbs: ["get", "create"]
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -140,33 +140,42 @@ userGroups:
   - system:authenticated
 
 dashboardConfig: {}
-# disableBYONImageStream: false
-# disableClusterManager: false
-# disableCustomServingRuntimes: false
-# disableDistributedWorkloads: false
-# disableHome: false
-# disableISVBadges: false
-# disableInfo: false
-# disableKServe: false
-# disableKServeAuth: false
-# disableKServeMetrics: false
-# disableModelRegistry: false
-# disableModelServing: false
-# disablePerformanceMetrics: false
-# disablePipelines: false
-# disableProjectSharing: false
-# disableProjects: false
-# disableSupport: false
-# disableTracking: true
-# enablement: true
-# 3.5 flags
-# modelAsService: false
-# gpuaas: false
-# genAiStudio: false
-# llmGatewayField: false
-# externalModels: false
-# observabilityDashboard: false
-# disableLMEval: true
+# dashboardConfig:
+#   disableBYONImageStream: false
+#   disablePipelines: false
+#   disableTracking: true
+#   genAiStudio: false
+
+# Model server sizes offered in the dashboard's model serving UI.
+# modelServerSizes:
+#   - name: Small
+#     resources:
+#       requests:
+#         cpu: "1"
+#         memory: 2Gi
+#       limits:
+#         cpu: "2"
+#         memory: 8Gi
+
+# Notebook sizes offered in the workbench spawner UI.
+# notebookSizes:
+#   - name: Small
+#     resources:
+#       requests:
+#         cpu: "1"
+#         memory: 8Gi
+#       limits:
+#         cpu: "2"
+#         memory: 16Gi
+
+# Dashboard templates hidden from the workbench spawner.
+# templateDisablement:
+#   - trustyai-cpu-small
+
+# Ordering of templates in the workbench spawner.
+# templateOrder:
+#   - jupyter-minimal-notebook
+#   - jupyter-datascience-notebook
 
 defaultWorkbenchPvcSize: 20Gi
 showJupyterInEnabledApplications: true
