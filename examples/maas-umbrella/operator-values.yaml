@@ -64,3 +64,9 @@ operators:
       enabled: true
       targetNamespaces:
         - nvidia-gpu-operator
+
+  rhods-operator:
+    channel: stable-3.5
+    namespace: redhat-ods-operator
+    operatorGroup:
+      enabled: true
