@@ -51,6 +51,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Render a realm client entry string value through tpl against the chart
+context, so client-spec strings can reference global.oidc.* (e.g.
+`'{{ .Values.global.oidc.secret }}'`). Plain strings pass through
+unchanged. Realm map keys and client names are not templated — they stay
+literal.
+*/}}
+{{- define "keycloak.oidc.tplValue" -}}
+{{- tpl (toString .value) .root -}}
+{{- end }}
+
+{{/*
 Full name of the postgres-cluster dependency's Cluster, replicating the
 postgres-cluster chart's fullname derivation against the dependency's values
 (subchart templates cannot be invoked with a subchart context). This is the

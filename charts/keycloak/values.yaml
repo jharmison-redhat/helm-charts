@@ -3,6 +3,18 @@ global:
   # (<name>.<wildcardDomain>)
   wildcardDomain: apps.cluster.example.com
 
+  # Single-source OIDC settings shared with the keycloak-auth chart through
+  # global propagation. realm must match a `realms` map key below and
+  # clientId must match a client name within it — the realm map key and
+  # client name are structural and cannot reference these values. Setting
+  # realm to a name with no matching `realms` entry makes the issuer point
+  # at a realm that was never imported (no fail-fast). The secret is picked
+  # up by realm client entries that reference global.oidc.secret via tpl.
+  oidc:
+    realm: sso
+    clientId: ocp-idp
+    secret: ""
+
 nameOverride: ""
 fullnameOverride: ""
 
@@ -14,25 +26,10 @@ replicas: 1
 # Domain used for realm-user email defaults (userN@<emailDomain>)
 emailDomain: example.com
 
-# RHBK operator install via the install-operators dependency. Disable the
-# whole block (install-operators.enabled: false) to manage the operator
-# yourself — e.g. from an umbrella chart composing install-operators directly.
-install-operators:
-  enabled: true
-  operators:
-    rhbk-operator:
-      enabled: true
-      channel: stable-v26.2
-      namespace: keycloak
-      operatorGroup:
-        enabled: true
-        targetNamespaces:
-          - keycloak
-
-    cloudnative-pg:
-      enabled: true
-      channel: stable-v1
-      catalog: certified-operators
+# NOTE: the RHBK and CloudNativePG operators must already be installed
+# before this chart is installed — it renders the Keycloak and
+# KeycloakRealmImport custom resources directly, and a plain helm install
+# fails on the missing CRDs otherwise.
 
 # PostgreSQL Cluster backing the Keycloak instance, deployed through the
 # postgres-cluster chart dependency. With the dependency disabled, the `db`
@@ -85,7 +82,11 @@ realms: {}
 #    groupsFromRoles: true
 #    clients:
 #      ocp-idp:
-#        secret: <client-secret> # must match keycloak-auth's openidClient.secret
+#        # Client entry string values may reference global.oidc.* via a
+#        # template string — tpl-rendered by the chart (map keys and the
+#        # client name stay literal)
+#        secret: '{{ .Values.global.oidc.secret }}' # must match
+#          keycloak-auth's global.oidc.secret
 #        redirectUris:
 #          - "*"
 #        defaultClientScopes:

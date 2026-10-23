@@ -33,17 +33,17 @@ spec:
       {{- range $cid, $client := . }}
       - clientId: {{ $cid }}
         {{- with $client.name }}
-        name: {{ . }}
+        name: {{ include "keycloak.oidc.tplValue" (dict "root" $ "value" .) }}
         {{- end }}
         {{- with $client.description }}
-        description: {{ . }}
+        description: {{ include "keycloak.oidc.tplValue" (dict "root" $ "value" .) }}
         {{- end }}
         enabled: {{ $client.enabled | default true }}
         {{- if not ($client.publicClient | default false) }}
         clientAuthenticatorType: {{ $client.clientAuthenticatorType | default "client-secret" }}
         {{- end }}
         {{- with $client.secret }}
-        secret: {{ . }}
+        secret: {{ include "keycloak.oidc.tplValue" (dict "root" $ "value" .) }}
         {{- end }}
         publicClient: {{ $client.publicClient | default false }}
         redirectUris:
@@ -54,7 +54,7 @@ spec:
         directAccessGrantsEnabled: {{ $client.directAccessGrantsEnabled | default true }}
         serviceAccountsEnabled: {{ $client.serviceAccountsEnabled | default true }}
         frontchannelLogout: {{ $client.frontchannelLogout | default false }}
-        protocol: {{ $client.protocol | default "openid-connect" }}
+        protocol: {{ include "keycloak.oidc.tplValue" (dict "root" $ "value" ($client.protocol | default "openid-connect")) }}
         {{- with $client.attributes }}
         attributes:
           {{- toYaml . | nindent 10 }}
