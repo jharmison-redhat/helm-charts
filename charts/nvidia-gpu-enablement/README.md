@@ -55,9 +55,9 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `nfd.operand` — NFD operand passthrough (service port, image, pull policy)
 - `nfd.prunerOnDelete` / `nfd.topologyUpdater` — `NodeFeatureDiscovery` feature flags
 - `nfd.configData` — NFD worker config, including the PCI device whitelist that surfaces GPUs in NFD labels
-- `timeSlices` — number of GPU time slices (default: `1`, no time slicing). A value greater than 1 renders the
-  device-plugin ConfigMap in the `nvidia-gpu-operator` namespace and makes the ClusterPolicy's
+- `gpuOperator.timeSlices` — number of GPU time slices (default: `1`, no time slicing). A value greater than 1 renders
+  the device-plugin ConfigMap in the `nvidia-gpu-operator` namespace and makes the ClusterPolicy's
   `devicePlugin.config.name` point at it
 - `gpuOperator.policy` — free-form `ClusterPolicy` spec passthrough; string values are template-rendered, so nested keys
-  can reference chart values (for example `devicePlugin.config.name` referencing `timeSlices`). Includes the
+  can reference chart values (for example `devicePlugin.config.name` referencing `gpuOperator.timeSlices`). Includes the
   `nvidia.com/gpu` NoSchedule toleration for the operator's daemonsets by default

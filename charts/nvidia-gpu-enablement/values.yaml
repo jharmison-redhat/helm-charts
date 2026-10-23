@@ -21,15 +21,14 @@ nfd:
         deviceLabelFields:
           - "vendor"
 
-# Number of GPU time slices. A value greater than 1 also renders the
-# device-plugin ConfigMap in the gpu-operator namespace and makes the
-# ClusterPolicy's devicePlugin.config.name point at it.
-timeSlices: 1
-
 # The ClusterPolicy spec is a free-form passthrough; string values are
 # template-rendered, so nested keys can reference chart values (for example
 # devicePlugin.config.name referencing timeSlices).
 gpuOperator:
+  # Number of GPU time slices. A value greater than 1 also renders the
+  # device-plugin ConfigMap in the gpu-operator namespace and makes the
+  # ClusterPolicy's devicePlugin.config.name point at it.
+  timeSlices: 1
   policy:
     vgpuDeviceManager:
       config:
@@ -88,7 +87,7 @@ gpuOperator:
       useNvidiaDriverCRD: false
     devicePlugin:
       config:
-        name: "{{ if gt (int .Values.timeSlices) 1 }}device-plugin-config{{ end }}"
+        name: "{{ if gt (int .Values.gpuOperator.timeSlices) 1 }}device-plugin-config{{ end }}"
         default: ""
       mps:
         root: /run/nvidia/mps

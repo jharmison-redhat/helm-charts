@@ -1,4 +1,4 @@
-{{- if gt (int .Values.timeSlices) 1 }}
+{{- if gt (int .Values.gpuOperator.timeSlices) 1 }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,5 +11,5 @@ data:
       timeSlicing:
         resources:
           - name: nvidia.com/gpu
-            replicas: {{ .Values.timeSlices }}
+            replicas: {{ .Values.gpuOperator.timeSlices }}
 {{- end }}
