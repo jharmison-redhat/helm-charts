@@ -1,0 +1,14 @@
+{{- if .Values.notebookIdleCulling.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notebook-controller-culler-config
+  namespace: redhat-ods-applications
+  labels:
+    opendatahub.io/dashboard: "true"
+data:
+  CULL_IDLE_TIME: "{{ .Values.notebookIdleCulling.timeoutInMinutes }}"
+  ENABLE_CULLING: "true"
+  IDLENESS_CHECK_PERIOD: "1"
+{{- end }}

@@ -1,0 +1,10 @@
+{{- with .Values.operatorReplicas }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rhods-operator
+  namespace: redhat-ods-operator
+spec:
+  replicas: {{ . }}
+{{- end }}

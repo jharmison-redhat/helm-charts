@@ -1,0 +1,14 @@
+{{- if .Values.dataScienceCluster.create }}
+---
+apiVersion: datasciencecluster.opendatahub.io/{{ .Values.dataScienceCluster.version }}
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+{{- if .Values.dataScienceCluster.components }}
+spec:
+  components:
+    {{- toYaml .Values.dataScienceCluster.components | nindent 4 }}
+{{- else }}
+spec: {}
+{{- end }}
+{{- end }}

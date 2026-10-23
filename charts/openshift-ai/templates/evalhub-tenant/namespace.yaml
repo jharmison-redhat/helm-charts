@@ -1,0 +1,15 @@
+{{- with .Values.evalhub }}
+{{- if .create }}
+{{- with .tenant }}
+{{- if .create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .namespace }}
+  labels:
+    evalhub.trustyai.opendatahub.io/tenant: "true"
+    opendatahub.io/dashboard: "true"
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

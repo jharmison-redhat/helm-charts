@@ -1,0 +1,13 @@
+{{- with .Values.evalhub }}
+{{- if .create }}
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: EvalHub
+metadata:
+  name: evalhub
+  namespace: redhat-ods-applications
+{{- with .spec }}
+spec:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,9 @@
+{{- with .Values.dashboardReplicas }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rhods-dashboard
+  namespace: redhat-ods-applications
+spec:
+  replicas: {{ . }}
+{{- end }}

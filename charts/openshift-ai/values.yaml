@@ -1,0 +1,221 @@
+---
+global:
+  toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
+  cluster:
+    name: cluster
+    baseDomain: example.com
+
+rbac:
+  create: true
+  group: system:authenticated:oauth
+
+mcpServers: {}
+
+gateways:
+  maasDefaultGateway:
+    # only created if enabled in DSC
+    useRoute: false
+    certificate:
+      create: true
+      clusterIssuer: letsencrypt
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    disableIpp: false
+  openshiftAiInference:
+    create: true
+    useRoute: false
+    certificate:
+      create: true
+      clusterIssuer: letsencrypt
+
+enableUserTelemetry: false
+
+# KEDA metrics reader for WVA autoscaling on LLMInferenceService
+# Opt-in: only create when WVA/KEDA is actually deployed
+kedaMetricsReader:
+  create: false
+
+# Set-on-upgrade knobs: override the replica counts of the rhods-dashboard /
+# rhods-operator Deployments. Must NOT be set on first install — the
+# Deployments do not exist until the rhods-operator creates them, and a
+# partial manifest would render an invalid Deployment. Leave unset (null)
+# until after the operator has deployed the operands.
+dashboardReplicas: null
+operatorReplicas: null
+
+dataScienceCluster:
+  create: true
+  version: v2
+  components:
+    aipipelines:
+      managementState: Managed
+    dashboard:
+      managementState: Managed
+    feastoperator:
+      managementState: Managed
+    aigateway:
+      managementState: Managed
+      modelsAsAService:
+        managementState: Managed
+    kserve:
+      managementState: Managed
+      nim:
+        managementState: Managed
+      rawDeploymentServiceConfig: Headed
+    kueue:
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+      managementState: Removed
+    ogx:
+      managementState: Managed
+    mlflowoperator:
+      managementState: Managed
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+    ray:
+      managementState: Managed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Managed
+    trustyai:
+      eval:
+        lmeval:
+          permitCodeExecution: deny
+          permitOnline: deny
+      managementState: Managed
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+
+dataScienceClusterInitialization:
+  monitoring:
+    managementState: Managed
+    namespace: redhat-ods-monitoring
+    metrics:
+      storage:
+        size: 5Gi
+        retention: 1d
+
+# applicationsNamespace: redhat-ods-applications
+# monitoring:
+#   managementState: Managed
+#   namespace: redhat-ods-monitoring
+#   metrics: {}
+# trustedCABundle:
+#   customCABundle: ""
+#   managementState: Managed
+
+hardwareProfiles: {}
+
+# hardwareProfiles:
+#   l40s:
+#     node:
+#       tolerations:
+#         - key: nvidia.com/gpu
+#           effect: NoSchedule
+#           operator: Exists
+#     displayName: NVIDIA L40s
+#     cpu:
+#       min: 2
+#       max: 30
+#       default: 2
+#     memory:
+#       min: 2Gi
+#       max: 60Gi
+#       default: 16Gi
+#     gpu:
+#       nvidia.com/gpu:
+#         max: 4
+#         displayName: NVIDIA L40s
+
+admins: []
+userGroups:
+  - system:authenticated
+
+dashboardConfig: {}
+# disableBYONImageStream: false
+# disableClusterManager: false
+# disableCustomServingRuntimes: false
+# disableDistributedWorkloads: false
+# disableHome: false
+# disableISVBadges: false
+# disableInfo: false
+# disableKServe: false
+# disableKServeAuth: false
+# disableKServeMetrics: false
+# disableModelRegistry: false
+# disableModelServing: false
+# disablePerformanceMetrics: false
+# disablePipelines: false
+# disableProjectSharing: false
+# disableProjects: false
+# disableSupport: false
+# disableTracking: true
+# enablement: true
+# 3.5 flags
+# modelAsService: false
+# gpuaas: false
+# genAiStudio: false
+# llmGatewayField: false
+# externalModels: false
+# observabilityDashboard: false
+# disableLMEval: true
+
+defaultWorkbenchPvcSize: 20Gi
+showJupyterInEnabledApplications: true
+notebookIdleCulling:
+  enabled: true
+  timeoutInMinutes: 240
+
+# maas-db bootstrap job plumbing. The job reads the `<name>-app` secret
+# created by the postgres-cluster release and mirrors its connection URI into
+# a maas-db-config secret in the maas-api namespace. The target namespace must
+# already exist (created by whatever deploys the postgres Cluster).
+maasDb:
+  create: false
+  namespace: redhat-ai-gateway-infra
+  # REQUIRED: name of the secret holding the postgres connection URI (the
+  # Cluster's `<fullname>-app` secret). The job cannot function without it.
+  secretName: ""
+
+maasPayloadProcessingNetworkPolicy:
+  create: false
+
+mlflow:
+  create: true
+  spec:
+    storage:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+    backendStoreUri: "sqlite:////mlflow/mlflow.db"
+    artifactsDestination: "file:///mlflow/artifacts"
+    serveArtifacts: true
+    image:
+      imagePullPolicy: IfNotPresent
+
+evalhub:
+  create: false
+  spec:
+    replicas: 1
+    database:
+      type: sqlite
+    env:
+      - name: MLFLOW_TRACKING_URI
+        value: https://mlflow.redhat-ods-applications.svc.cluster.local:8443
+  tenant:
+    create: true
+    namespace: evalhub-tenant
+    subjects:
+      - apiGroup: rbac.authorization.k8s.io
+        kind: User
+        name: developer

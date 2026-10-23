@@ -1,0 +1,12 @@
+{{- if .Values.wvaOverrides }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-variant-autoscaler-saturation-scaling-config
+  namespace: redhat-ods-applications
+data:
+{{- range $name, $override := .Values.wvaOverrides }}
+  {{ $name }}: |
+    {{- toYaml $override | nindent 4 }}
+{{- end }}
+{{- end }}

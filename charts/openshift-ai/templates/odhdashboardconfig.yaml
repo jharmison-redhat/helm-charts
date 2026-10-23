@@ -1,0 +1,45 @@
+---
+apiVersion: opendatahub.io/v1alpha
+kind: OdhDashboardConfig
+metadata:
+  name: odh-dashboard-config
+  namespace: redhat-ods-applications
+  labels:
+    app.kubernetes.io/part-of: rhods-dashboard
+    app.opendatahub.io/rhods-dashboard: "true"
+spec:
+  {{- with .Values.dashboardConfig }}
+  dashboardConfig:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.modelServerSizes }}
+  modelServerSizes:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.notebookSizes }}
+  notebookSizes:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  notebookController:
+    enabled: {{ .Values.showJupyterInEnabledApplications }}
+    notebookNamespace: rhods-notebooks
+    pvcSize: {{ .Values.defaultWorkbenchPvcSize }}
+  {{- with .Values.templateDisablement }}
+  templateDisablement:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.templateOrder }}
+  templateOrder:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: services.platform.opendatahub.io/v1alpha1
+kind: Auth
+metadata:
+  name: auth
+  namespace: redhat-ods-applications
+spec:
+  adminGroups:
+    - rhods-admins
+  allowedGroups:
+    {{- toYaml .Values.userGroups | nindent 4 }}
