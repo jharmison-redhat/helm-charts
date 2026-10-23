@@ -1,0 +1,9 @@
+{{- if and .Values.kuadrant.create .Values.authorino.overwrite }}
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
+metadata:
+  name: authorino
+  namespace: {{ .Values.kuadrant.namespace }}
+spec:
+  {{- toYaml .Values.authorino.spec | nindent 2 }}
+{{- end }}

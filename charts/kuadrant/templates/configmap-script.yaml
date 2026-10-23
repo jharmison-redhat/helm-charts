@@ -1,0 +1,11 @@
+{{- if .Values.kuadrant.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: restart-kuadrant-operator-script
+  namespace: {{ .Values.kuadrant.namespace }}
+  labels:
+    {{- include "kuadrant.labels" . | nindent 4 }}
+data:
+{{ tpl (.Files.Glob "files/*").AsConfig $ | indent 2 }}
+{{- end }}

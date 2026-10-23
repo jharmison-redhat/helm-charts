@@ -1,0 +1,9 @@
+{{- if and .Values.kuadrant.create (and .Values.authorino.overwrite .Values.authorino.serviceTls) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: authorino-authorino-authorization
+  namespace: {{ .Values.kuadrant.namespace }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ .Values.authorino.spec.listener.tls.certSecretRef.name }}
+{{- end }}

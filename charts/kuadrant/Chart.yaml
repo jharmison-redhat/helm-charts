@@ -1,0 +1,8 @@
+apiVersion: v2
+name: kuadrant
+description: >
+  A helm chart to install and configure a basic Red Hat Connectivity Link
+  deployment
+type: application
+version: 0.1.0
+appVersion: 0.1.0
