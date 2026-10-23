@@ -1,20 +1,20 @@
 name: Lint & Render Helm Charts
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "charts/**"
-      - "examples/**"
-      - .github/workflows/lint-chart.yml
   pull_request:
     paths:
       - "charts/**"
       - "examples/**"
+      - .github/workflows/chart_ci.py
+      - .github/workflows/chart_versions.py
+      - .github/workflows/chart_metadata.py
+      - .github/workflows/requirements.txt
+      - .github/workflows/test_chart_helpers.py
       - .github/workflows/lint-chart.yml
+  workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   charts:
@@ -40,43 +40,53 @@ jobs:
     steps:
       - id: checkout
         uses: actions/checkout@v7
+      - id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: .github/workflows/requirements.txt
+      - id: install-dependencies
+        run: python -m pip install -r .github/workflows/requirements.txt
       - id: setup-helm
-        uses: azure/setup-helm@v4
-      - id: deps
-        run: |
-          set -euo pipefail
-          if grep -q '^dependencies:' "charts/${{ matrix.chart }}/Chart.yaml"; then
-            echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-            helm dependency build "charts/${{ matrix.chart }}"
-          fi
+        uses: azure/setup-helm@v5
+        with:
+          version: v4.2.2
       - id: lint
-        run: |
-          set -euo pipefail
-          helm lint "charts/${{ matrix.chart }}"
-      - id: render
-        run: |
-          set -euo pipefail
-          helm template "charts/${{ matrix.chart }}" > /dev/null
+        run: python .github/workflows/chart_ci.py lint-local "charts/${{ matrix.chart }}"
 
   umbrella:
     runs-on: ubuntu-latest
     steps:
       - id: checkout
         uses: actions/checkout@v7
+      - id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: .github/workflows/requirements.txt
+      - id: install-dependencies
+        run: python -m pip install -r .github/workflows/requirements.txt
       - id: setup-helm
-        uses: azure/setup-helm@v4
-      - id: log-in
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-      - id: deps
-        run: |
-          set -euo pipefail
-          helm dependency build examples/maas-umbrella
+        uses: azure/setup-helm@v5
+        with:
+          version: v4.2.2
       - id: lint
-        run: |
-          set -euo pipefail
-          helm lint examples/maas-umbrella
-      - id: render
-        run: |
-          set -euo pipefail
-          helm template examples/maas-umbrella > /dev/null
+        run: python .github/workflows/chart_ci.py lint-local examples/maas-umbrella
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - id: checkout
+        uses: actions/checkout@v7
+      - id: setup-python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: .github/workflows/requirements.txt
+      - id: install-dependencies
+        run: python -m pip install -r .github/workflows/requirements.txt
+      - id: test
+        run: python -m unittest discover -s .github/workflows -p 'test_*.py'
