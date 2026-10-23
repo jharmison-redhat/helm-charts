@@ -5,11 +5,14 @@ description: >-
   repository as subchart dependencies with values overlays. Pairs with a separate install-operators release — see
   operator-values.yaml and the README.
 type: application
-version: 0.2.0
+version: 0.3.0
 dependencies:
   - name: keycloak
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
-    version: ">=0.3.0 <0.4.0"
+    version: ">=0.4.0 <0.5.0"
   - name: keycloak-auth
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
     version: ">=0.2.0 <0.3.0"
+  - name: openshift-ai
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.1.0 <0.2.0"

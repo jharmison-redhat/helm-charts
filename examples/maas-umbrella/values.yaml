@@ -16,7 +16,7 @@ global:
     secret: <client-secret>
 
 keycloak:
-  postgres-cluster:
+  postgres:
     fullnameOverride: keycloak-postgres
     instances: 1
     storage:
@@ -28,6 +28,16 @@ keycloak:
       requests:
         cpu: 200m
         memory: 256Mi
+
+openshift-ai:
+  # Both transitive postgres Cluster instances would derive the same fullname
+  # from the shared release name, so the two instances get DISTINCT
+  # fullnameOverrides (keycloak.postgres.fullnameOverride: keycloak-postgres
+  # above vs maas-postgres here)
+  postgres:
+    fullnameOverride: maas-postgres
+  maasDb:
+    create: true
 
   realms:
     sso:

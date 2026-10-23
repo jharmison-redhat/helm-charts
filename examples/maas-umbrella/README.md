@@ -32,6 +32,16 @@ its operand CR in one release. Deployment therefore uses two installs:
 
 Wait for the operator deployments to be ready before the second install.
 
+Two PostgreSQL Clusters
+---
+
+Both the keycloak and openshift-ai charts declare the `postgres-cluster` chart as an OCI dependency (aliased to
+`postgres`). As subcharts, both transitive instances share the umbrella release name and would derive the same Cluster
+fullname, so their Clusters/services/secrets would collide. `values.yaml` gives each instance a DISTINCT
+`fullnameOverride` — `keycloak.postgres.fullnameOverride: keycloak-postgres` and
+`openshift-ai.postgres.fullnameOverride: maas-postgres` — so one Cluster per parent backs the Keycloak CR and the
+maas-db respectively. One Cluster per parent is the exact pattern CloudNativePG is intended to support.
+
 Composing charts from this repository
 ---
 
