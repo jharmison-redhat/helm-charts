@@ -1,4 +1,4 @@
-{{- if and .Values.maasDb.create (eq (include "openshift-ai.maasManaged" .) "true") }}
+{{- if and (eq (include "openshift-ai.maasManaged" .) "true") (or .Values.maasDb.create .Values.maasDb.secretName) }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

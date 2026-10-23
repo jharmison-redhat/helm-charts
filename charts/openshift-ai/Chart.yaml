@@ -5,3 +5,10 @@ description: >
 type: application
 version: 0.1.0
 appVersion: 0.1.0
+
+dependencies:
+  - name: postgres-cluster
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.1.0 <0.2.0"
+    alias: postgres
+    condition: maasDb.create

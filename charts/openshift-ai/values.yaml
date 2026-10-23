@@ -187,12 +187,40 @@ notebookIdleCulling:
 # created by the postgres-cluster release and mirrors its connection URI into
 # a maas-db-config secret in the maas-api namespace. The target namespace must
 # already exist (created by whatever deploys the postgres Cluster).
+#
+# EITHER/OR: managed mode (maasDb.create: true) deploys the Cluster through
+# the aliased postgres-cluster dependency and derives the secret name from the
+# fullname convention; out-of-band mode (maasDb.secretName set, create false)
+# renders the job against an external Cluster whose `<fullname>-app` secret
+# already exists. With both unset, nothing renders.
 maasDb:
+  # Feature toggle and postgres-cluster dependency condition: true brings the
+  # Cluster (rendered in postgres.namespace) plus the bootstrap job; false
+  # relies on maasDb.secretName for the out-of-band mode
   create: false
+  # Must match postgres.namespace — the Cluster renders there and the job
+  # looks the secret up there
   namespace: redhat-ai-gateway-infra
-  # REQUIRED: name of the secret holding the postgres connection URI (the
-  # Cluster's `<fullname>-app` secret). The job cannot function without it.
+  # Out-of-band override: name of the secret holding the postgres connection
+  # URI. Empty in managed mode — the job then derives `<fullname>-app` from
+  # the Cluster created by the dependency.
   secretName: ""
+
+# PostgreSQL Cluster backing the maas-db (managed mode), deployed through the
+# postgres-cluster chart dependency (aliased to `postgres`, gated by
+# maasDb.create). Rendered only when maasDb.create is true.
+postgres:
+  namespace: redhat-ai-gateway-infra
+  instances: 2
+  storage:
+    size: 2Gi
+  resources:
+    limits:
+      cpu: "1"
+      memory: 2Gi
+    requests:
+      cpu: 200m
+      memory: 256Mi
 
 maasPayloadProcessingNetworkPolicy:
   create: false

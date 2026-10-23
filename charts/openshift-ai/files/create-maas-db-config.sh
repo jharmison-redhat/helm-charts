@@ -1,6 +1,6 @@
 #!/bin/bash
 {{- $maasDb := .Values.maasDb }}
-{{- $secret := required "maasDb.secretName is required: name of the secret holding the postgres connection URI (the Cluster's <fullname>-app secret)" $maasDb.secretName }}
+{{- $secret := $maasDb.secretName | default (printf "%s-app" (include "openshift-ai.pg.fullname" .)) }}
 
 uri=$(oc get secret {{ $secret }} -ojsonpath='{.data.uri}' | base64 -d)
 # maas-api (RHOAI 3.5.0+) reads maas-db-config from its own namespace, which is

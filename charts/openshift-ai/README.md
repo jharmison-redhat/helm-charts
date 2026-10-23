@@ -46,10 +46,16 @@ The chart performs the following:
 - Renders MLflow (gated by `mlflow.create`) and EvalHub (gated by `evalhub.create`) with `spec` passthrough, plus the
   evalhub-tenant subtree (gated by `evalhub.create` AND `evalhub.tenant.create`)
 - Renders the maas-db bootstrap plumbing: ServiceAccount, RoleBinding, script ConfigMap, and the bootstrap Job in
-  `maasDb.namespace` (gated by `maasDb.create` and the `modelsAsAService == Managed` gate)
+  `maasDb.namespace` (gated by the `modelsAsAService == Managed` gate AND `maasDb.create` or `maasDb.secretName`)
 
 The maas-db bootstrap Job runs as a `post-install,post-upgrade` Helm hook (recreated on re-runs via
 `before-hook-creation`), so it re-runs on upgrades the way the source GitOps PostSync hook did.
+
+The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
+(`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres`, and condition-gated by
+`maasDb.create`. With `maasDb.create: true`, the dependency deploys the Cluster and the bootstrap job derives its secret
+name from the `openshift-ai.pg.fullname` convention (see `templates/_helpers.tpl`); with `maasDb.secretName` set
+instead, the job runs out-of-band against an external Cluster.
 
 Values
 ------
@@ -60,11 +66,16 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   `spec: {}`
 - `gateways.maasDefaultGateway` / `gateways.openshiftAiInference` — Gateway plumbing with `hostname` override support
   and certificate/Route selection (`useRoute` vs `certificate.create`)
-- `maasDb.create` — render the maas-db bootstrap plumbing (default: `false`)
-- `maasDb.namespace` — namespace the bootstrap Job renders into (default: `redhat-ai-gateway-infra`); must already exist
-  (the postgres Cluster's namespace is created by whatever deploys it)
-- `maasDb.secretName` — REQUIRED: name of the secret holding the postgres connection URI (the Cluster's `<fullname>-app`
-  secret); the bootstrap Job reads it to create the `maas-db-config` secret
+- `maasDb.create` — render the maas-db bootstrap plumbing AND deploy the postgres Cluster through the dependency
+  (default: `false`; the dependency condition shares this toggle)
+- `maasDb.namespace` — namespace the bootstrap Job renders into (default: `redhat-ai-gateway-infra`); must already
+  exist, and must match `postgres.namespace` — the Cluster renders there and the job looks the secret up there
+- `maasDb.secretName` — out-of-band override: name of the secret holding the postgres connection URI. Empty by default —
+  managed mode (with `maasDb.create: true`) derives the Cluster's `<fullname>-app` secret name via the
+  `openshift-ai.pg.fullname` helper; setting it instead runs the job against an external Cluster. Either `maasDb.create`
+  or `maasDb.secretName` (with `maasManaged`) is required for any maas-db plumbing to render
+- `postgres` — the postgres-cluster dependency's Cluster values (rendered only when `maasDb.create` is true; default: 2
+  instances, 2Gi storage, modest resource requests/limits, namespace `redhat-ai-gateway-infra`)
 - `kedaMetricsReader.create` — opt-in KEDA metrics-reader plumbing (default: `false`); only enable when WVA/KEDA is
   actually deployed
 - `mlflow.create` / `evalhub.create` — opt-in operands with free-form `spec` passthrough
