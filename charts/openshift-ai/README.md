@@ -92,7 +92,10 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `kedaMetricsReader.create` — opt-in KEDA metrics-reader plumbing (default: `false`); only enable when WVA/KEDA is
   actually deployed
 - `mlflow.create` / `evalhub.create` — opt-in operands with free-form `spec` passthrough
-- `hardwareProfiles` — one `HardwareProfile` per entry (CPU/Memory/GPU identifiers, Node or Queue scheduling)
+- `hardwareProfiles` — one `HardwareProfile` per entry (CPU/Memory/GPU identifiers, Node or Queue scheduling). A
+  Queue-type profile (`type: Queue`) must set `kueue.localQueueName` naming an existing LocalQueue in the profile's
+  namespace (default: `redhat-ods-applications`); rendering fails otherwise, since a missing LocalQueue reference
+  produces a non-functional profile that stalls workloads inadmissible
 - `dashboardReplicas` / `operatorReplicas` — set-on-upgrade knobs: override the replica counts of the
   `rhods-dashboard`/`rhods-operator` Deployments. Must NOT be set on first install — the Deployments do not exist until
   the rhods-operator creates the operands, and a partial manifest would render an invalid Deployment. Leave unset (null)

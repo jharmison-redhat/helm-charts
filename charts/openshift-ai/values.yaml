@@ -138,7 +138,24 @@ hardwareProfiles: {}
 #     gpu:
 #       nvidia.com/gpu:
 #         max: 4
-#         displayName: NVIDIA L40s
+#         displayName: NVIDIA L40S
+#   a100-queue:
+#     scheduling:
+#       type: Queue
+#     kueue:
+#       localQueueName: gpu-queue
+#     displayName: NVIDIA A100 (Kueue queue)
+#     cpu:
+#       min: 4
+#       max: 32
+#       default: 8
+#     memory:
+#       min: 8Gi
+#       max: 128Gi
+#       default: 32Gi
+#     gpu:
+#       nvidia.com/gpu:
+#         max: 2
 
 admins: []
 userGroups:
