@@ -2,8 +2,10 @@ openshift-ai
 ============
 
 A chart to deploy OpenShift AI and manage `DataScienceCluster`/`DSCInitialization` configuration: the 14-component DSC
-matrix, the dashboard and telemetry configuration, Gateway API plumbing for MaaS and inference traffic, KEDA
-metrics-reader plumbing, MLflow/EvalHub operands, hardware profiles, and a maas-db bootstrap Job.
+matrix (every component key the chart manages exists in the live `DataScienceCluster` v2 API; `aigateway` is the
+RHOAI-downstream component that the upstream docs example omits), the dashboard and telemetry configuration, Gateway API
+plumbing for MaaS and inference traffic, KEDA metrics-reader plumbing, MLflow/EvalHub operands, hardware profiles, and a
+maas-db bootstrap Job.
 
 The `rhods-operator` is NOT installed by this chart. It must already be installed before this chart is deployed — the
 chart renders custom resources directly (`DataScienceCluster`, `OdhDashboardConfig`, `Telemetry`, and so on), and a
@@ -32,7 +34,8 @@ The chart performs the following:
 - Renders a `DataScienceCluster` (gated by `dataScienceCluster.create`) with `spec.components` passthrough over the full
   14-component matrix, and a `DSCInitialization` (gated by a non-empty `dataScienceClusterInitialization` block) with
   whole-block `spec` passthrough
-- Renders `OdhDashboardConfig` + `Auth` (dashboard config incl. the 3.5 feature flags), the segment-key and
+- Renders `OdhDashboardConfig` + `Auth` (dashboard config incl. the 3.5 feature flags — `genAiStudio`, `modelAsService`,
+  `disableLLMd`, `gpuaas`, and the rest; the passthrough accepts every dashboard flag), the segment-key and
   notebook-culler ConfigMaps, and the `hardwareprofile-view` RoleBinding
 - Renders `HardwareProfile` resources (one per `hardwareProfiles` entry)
 - Renders a `GatewayClass` named `data-science-gateway-class` whenever either Gateway renders
@@ -63,7 +66,17 @@ Values
 Real defaults live in `values.yaml` and are overridable by the consumer. Notable keys:
 
 - `dataScienceCluster.components` — the full 14-component management-state matrix; pass an empty map to render a bare
-  `spec: {}`
+  `spec: {}`. Kueue queue-name fields (`defaultClusterQueueName`/`defaultLocalQueueName`) are only effective when
+  `kueue.managementState` is `Unmanaged`, so the default `Removed` entry carries no queue names
+- `dashboardConfig` — free-form `OdhDashboardConfig` spec passthrough; representative commented examples in
+  `values.yaml` cover `modelAsService`, `disableLLMd`, and `gpuaas` alongside the established flags
+- `genAiStudioConfig.aiAssetCustomEndpoints` — custom-endpoint config for the Gen AI Studio asset surface
+  (`externalProviders`/`clusterDomains`); commented example in `values.yaml`
+- `globalMLflowNamespaces` — DSC spec-level list of namespaces where MLflow deployments are allowed (Tech Preview);
+  pairs with the `mlflowoperator` component. Commented example in `values.yaml`
+- `dataScienceClusterInitialization.monitoring` — the commented example in `values.yaml` shows the optional
+  `monitoring.traces` block (`exporters`, `sampleRatio`, `storage` — `storage.size` is required for traces) and
+  `monitoring.alerting` alongside the metrics storage defaults
 - `gateways.maasDefaultGateway` / `gateways.openshiftAiInference` — Gateway plumbing with `hostname` override support
   and certificate/Route selection (`useRoute` vs `certificate.create`)
 - `maasDb.create` — render the maas-db bootstrap plumbing AND deploy the postgres Cluster through the dependency

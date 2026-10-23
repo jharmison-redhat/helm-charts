@@ -12,14 +12,6 @@ spec:
   dashboardConfig:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with .Values.modelServerSizes }}
-  modelServerSizes:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- with .Values.notebookSizes }}
-  notebookSizes:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
   notebookController:
     enabled: {{ .Values.showJupyterInEnabledApplications }}
     notebookNamespace: rhods-notebooks

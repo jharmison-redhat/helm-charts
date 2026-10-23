@@ -1,6 +1,6 @@
 {{- if .Values.dataScienceCluster.create }}
 ---
-apiVersion: datasciencecluster.opendatahub.io/{{ .Values.dataScienceCluster.version }}
+apiVersion: datasciencecluster.opendatahub.io/v2
 kind: DataScienceCluster
 metadata:
   name: default-dsc
