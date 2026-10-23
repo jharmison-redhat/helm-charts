@@ -1,0 +1,9 @@
+apiVersion: v2
+name: nvidia-gpu-enablement
+description: >
+  A helm chart to deploy the NFD and Nvidia GPU Operator custom resources,
+  configuring the ClusterPolicy and enabling the DCGM Exporter Dashboard in
+  OpenShift
+type: application
+version: 0.1.0
+appVersion: 0.1.0
