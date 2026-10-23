@@ -5,8 +5,9 @@
 Helm charts collection published as OCI charts from `charts/` (one chart per directory, depth-1) to
 `oci://ghcr.io/jharmison-redhat/helm-charts`. `examples/` holds umbrella examples; `examples/maas-umbrella` is the
 operand umbrella. CI lives in `.github/workflows/` and is split across two workflows with
-`.github/workflows/chart_ci.sh` as the shared helper: `lint-chart.yml` runs on pull requests (paths touching
-`charts/**`, `examples/**`, or the workflow files) plus manual dispatch, and lints every chart and the umbrella against
+`.github/workflows/chart_ci.sh` as the shared helper: `lint-chart.yml` runs on pull requests touching the charts and
+examples it validates (`charts/**`, `examples/**`) plus the helper/scripts it runs (`chart_ci.sh`, itself), plus manual
+dispatch, and lints every chart and the umbrella against
 locally resolved sub-charts; `publish-chart.yml` remains push-to-main and publishes only charts whose `version:` has no
 registry tag yet.
 
@@ -45,10 +46,10 @@ chart and the umbrella before committing:
 ```sh
 .github/workflows/chart_ci.sh lint-local charts/<name>
 .github/workflows/chart_ci.sh lint-local examples/maas-umbrella
+echo "$TOKEN" | helm registry login ghcr.io -u <user> --password-stdin
+helm dependency build charts/<name>   # login required for OCI deps
 helm lint charts/<name>
 helm template charts/<name>
-helm dependency build charts/<name>   # login required for OCI deps
-echo "$TOKEN" | helm registry login ghcr.io -u <user> --password-stdin
 # Clean-checkout package simulation:
 git archive HEAD charts/<name> | tar -x -C /tmp/opencode/pkg-check && helm package /tmp/opencode/pkg-check/charts/<name>
 ```
