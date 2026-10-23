@@ -17,3 +17,8 @@ helm upgrade --install \
         }
     }'
 ```
+
+Charts that deploy operands of OLM-managed operators (for example `keycloak` and `postgres-cluster`) require those
+operators to be installed first — OLM makes the custom resources available only after the operator install, so a
+helm-native install cannot order the two in one release. Deploy the `install-operators` chart first, then the operand
+chart; `examples/maas-umbrella` documents the full two-install flow.
