@@ -13,7 +13,8 @@ OLM makes the custom resources required by the operand charts (`Keycloak`, `Keyc
 its operand CR in one release. Deployment therefore uses two installs:
 
 1. **Operator install** — the `install-operators` chart, one release covering all OLM operators via its `operators` map.
-   `operator-values.yaml` in this example pairs with it for the RHBK and CloudNativePG operators:
+   `operator-values.yaml` in this example pairs with it for the operators required by the operand charts of this
+   repository (RHBK, CloudNativePG, Red Hat Connectivity Link, LeaderWorkerSet, NFD, and NVIDIA GPU Operator):
 
    ```
    helm upgrade --install install-operators charts/install-operators \

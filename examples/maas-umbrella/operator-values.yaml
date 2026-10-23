@@ -20,3 +20,47 @@ operators:
   cloudnative-pg:
     channel: stable-v1
     catalog: certified-operators
+
+  rhcl-operator:
+    channel: stable
+    namespace: kuadrant-system
+    ownSubscription: false
+    installPlanApproval: Manual
+    startingCSV: rhcl-operator.v1.4.3
+    operatorGroup:
+      enabled: true
+    env:
+      AUTH_SERVICE_TIMEOUT: 2s
+
+  leader-worker-set:
+    channel: stable-v1.0
+    namespace: openshift-lws-operator
+    operatorGroup:
+      enabled: true
+      targetNamespaces:
+        - openshift-lws-operator
+
+  nfd:
+    channel: stable
+    namespace: openshift-nfd
+    namespaceLabels:
+      openshift.io/cluster-monitoring: "true"
+      pod-security.kubernetes.io/audit: privileged
+      pod-security.kubernetes.io/warn: privileged
+    operatorGroup:
+      enabled: true
+      targetNamespaces:
+        - openshift-nfd
+
+  gpu-operator-certified:
+    channel: v26.3
+    namespace: nvidia-gpu-operator
+    catalog: certified-operators
+    namespaceLabels:
+      openshift.io/cluster-monitoring: "true"
+      pod-security.kubernetes.io/audit: privileged
+      pod-security.kubernetes.io/warn: privileged
+    operatorGroup:
+      enabled: true
+      targetNamespaces:
+        - nvidia-gpu-operator
