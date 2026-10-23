@@ -7,6 +7,7 @@ on:
     paths:
       - "charts/**"
       - .github/workflows/publish-chart.yml
+  workflow_dispatch:
 
 permissions: {}
 
@@ -32,6 +33,7 @@ jobs:
     needs: versions
     if: ${{ needs.versions.outputs.publish == 'true' }}
     strategy:
+      fail-fast: false
       matrix: ${{ fromJSON(needs.versions.outputs.matrix) }}
     permissions:
       contents: read
@@ -52,6 +54,22 @@ jobs:
           newpath="${workdir}/${{ matrix.name }}"
 
           cp -a '${{ matrix.path }}' "${newpath}"
+
+          # A dependency chart may publish in a parallel matrix job in the
+          # same run, so the build can transiently 404 — retry to let the
+          # sibling publish land.
+          if grep -q '^dependencies:' "${newpath}/Chart.yaml"; then
+            attempts=0
+            until helm dependency build "${newpath}"; do
+              attempts=$((attempts + 1))
+              if [ "$attempts" -ge 3 ]; then
+                echo "::error::helm dependency build for ${{ matrix.name }} failed after 3 attempts"
+                exit 1
+              fi
+              echo "::warning::helm dependency build failed (attempt ${attempts}); retrying in 30s"
+              sleep 30
+            done
+          fi
 
           helm package "${newpath}"
           helm push "${{ matrix.name }}-${{ matrix.version }}.tgz" 'oci://ghcr.io/${{ github.repository_owner }}/helm-charts'

@@ -10,10 +10,10 @@ while read -rd $'\0' chart; do
   name="$(basename "$chart")"
 
   version="$(awk '/^version:/{print $2}' "$chart/Chart.yaml")"
-  if git show "$BEFORE_SHA:$chart/Chart.yaml" >/dev/null 2>&1; then
+  old_version=""
+  # workflow_dispatch events have no `before` SHA; treat the chart as new.
+  if [ -n "${BEFORE_SHA:-}" ] && git show "$BEFORE_SHA:$chart/Chart.yaml" >/dev/null 2>&1; then
     old_version="$(git show "$BEFORE_SHA:$chart/Chart.yaml" | awk '/^version:/{print $2}')"
-  else
-    old_version=""
   fi
   echo "$name: $version (old: $old_version)"
 
