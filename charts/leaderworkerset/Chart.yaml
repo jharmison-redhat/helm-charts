@@ -1,0 +1,7 @@
+apiVersion: v2
+name: leaderworkerset
+description: >
+  A helm chart to deploy the LeaderWorkerSetOperator cluster custom resource
+type: application
+version: 0.1.0
+appVersion: 0.1.0

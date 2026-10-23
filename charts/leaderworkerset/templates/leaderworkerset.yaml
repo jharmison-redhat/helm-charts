@@ -1,0 +1,8 @@
+apiVersion: operator.openshift.io/v1
+kind: LeaderWorkerSetOperator
+metadata:
+  name: cluster
+{{- with .Values.spec }}
+spec:
+  {{- toYaml . | nindent 2 }}
+{{- end }}

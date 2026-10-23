@@ -1,0 +1,4 @@
+spec:
+  managementState: Managed
+  logLevel: Normal
+  operatorLogLevel: Normal
