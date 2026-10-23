@@ -38,9 +38,9 @@ fail() {
 }
 
 # Print "name repository" lines for each item in the dependencies: block.
-# stdlib line parser scoped to the block; tolerates quoted values; expects
-# block-style items with name: before repository: (true for every chart here;
-# a missing pair surfaces via the post-rewrite assertion or the hard error).
+# Block scanner: comments/blanks are skipped; indented fields and items
+# (including unindented `- name:` sequences) are consumed; the block ends
+# only on a genuine column-0 key. `dependencies: []` yields no deps.
 list_deps() {
   python3 - "$1" <<'PY'
 import re, sys
@@ -48,8 +48,15 @@ path = sys.argv[1]
 in_deps = False
 name = None
 for line in open(path):
-    if re.match(r'^\S', line):
-        in_deps = line.rstrip().split(':', 1)[0] == 'dependencies'
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        continue
+    if not line[0].isspace() and not line.startswith('-'):
+        # genuine column-0 top-level key ends the block
+        key = line.rstrip().split(':', 1)[0]
+        in_deps = key == 'dependencies'
+        # `dependencies: []` or any inline value: no block items follow
+        name = None
         continue
     if not in_deps:
         continue
@@ -57,9 +64,11 @@ for line in open(path):
     if m:
         name = m.group(1).strip().strip('"').strip("'")
         continue
-    m = re.match(r'^\s*repository:\s*(.+)$', line)
-    if m and name:
-        print(name, m.group(1).strip().strip('"').strip("'"))
+    m = re.match(r'^\s*(-\s*)?repository:\s*(.+)$', line)
+    if m and not name:
+        print('MALFORMED', m.group(2).strip().strip('"').strip("'"))
+    elif m and name:
+        print(name, m.group(2).strip().strip('"').strip("'"))
         name = None
 PY
 }
@@ -80,15 +89,19 @@ in_deps = False
 cur = None
 out = []
 for line in open(path):
-    if re.match(r'^\S', line):
-        in_deps = line.rstrip().split(':', 1)[0] == 'dependencies'
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        pass
+    elif not line[0].isspace() and not line.startswith('-'):
+        key = line.rstrip().split(':', 1)[0]
+        in_deps = key == 'dependencies'
         cur = None
     elif in_deps:
         m = re.match(r'^(\s*-\s*name:\s*)(.+)$', line)
         if m:
             cur = m.group(2).strip().strip('"').strip("'")
         elif cur in mapping:
-            m = re.match(r'^(\s*repository:\s*)(.+)$', line)
+            m = re.match(r'^(\s*(-\s*)?repository:\s*)(.+)$', line)
             if m:
                 line = m.group(1) + mapping[cur] + '\n'
     out.append(line)
@@ -103,8 +116,12 @@ import re, sys
 in_deps = False
 bad = []
 for line in open(sys.argv[1]):
-    if re.match(r'^\S', line):
-        in_deps = line.rstrip().split(':', 1)[0] == 'dependencies'
+    stripped = line.strip()
+    if not stripped or stripped.startswith('#'):
+        continue
+    if not line[0].isspace() and not line.startswith('-'):
+        key = line.rstrip().split(':', 1)[0]
+        in_deps = key == 'dependencies'
         continue
     if in_deps and re.search(r'repository:\s*["\']?oci://', line):
         bad.append(line.strip())
@@ -125,13 +142,16 @@ prepare_local() {
   name="$(python3 -c "import re,sys; print([l.split(':',1)[1].strip() for l in open(sys.argv[1]) if l.startswith('name:')][0])" "$src/Chart.yaml")"
 
   if [ "${PREPARED_CACHE[$name]+set}" ]; then
-    echo "${PREPARED_CACHE[$name]}"
+    PREPARED_RESULT="${PREPARED_CACHE[$name]}"
     return 0
   fi
   for s in "${PREP_STACK[@]}"; do
-    [ "$s" = "$name" ] && fail "dependency cycle detected at '$name': ${PREP_STACK[*]} -> $name"
+    if [ "$s" = "$name" ]; then
+      fail "dependency cycle detected at '$name': ${PREP_STACK[*]} -> $name"
+    fi
   done
 
+  local idx=${#PREP_STACK[@]}
   PREP_STACK+=("$name")
   local dest
   dest="$(mktemp -d "$WORK_ROOT/chart-ci.XXXXXX")"
@@ -141,12 +161,21 @@ prepare_local() {
   rm -rf "$dest/charts" "$dest/Chart.lock"
 
   local dep_args=()
+  # local so nested prepare_local calls restore the caller's dep values
+  local dep dep_repo
   while read -r dep dep_repo; do
     [ -n "$dep" ] || continue
+    if [ "$dep" = MALFORMED ]; then
+      fail "dependencies block malformed in $src/Chart.yaml: repository: appears before name: ('$dep_repo')"
+    fi
     if [[ "$dep_repo" == oci://ghcr.io/*/helm-charts ]]; then
       local dep_src="$REPO_ROOT/charts/$dep"
+      if [ ! -f "$dep_src/Chart.yaml" ] && [[ "$dep" == "$name" ]]; then
+        fail "dependency cycle detected at '$name': ${PREP_STACK[*]} -> $name"
+      fi
       [ -f "$dep_src/Chart.yaml" ] || fail "intra-repo dependency '$dep' has no chart under charts/ in $REPO_ROOT"
-      dep_args+=("$dep=file://$(prepare_local "$dep_src")")
+      prepare_local "$dep_src"
+      dep_args+=("$dep=file://$PREPARED_RESULT")
     else
       fail "external dependency repository '$dep_repo' (chart '$dep') is unsupported in local lint; the lint workflow carries no registry auth"
     fi
@@ -155,18 +184,15 @@ prepare_local() {
   if [ ${#dep_args[@]} -gt 0 ]; then
     rewrite_repos "$dest/Chart.yaml" "${dep_args[@]}"
     assert_all_local "$dest/Chart.yaml"
-  fi
-
-  : > "$WORK_ROOT/chart-ci-empty-repos.txt"
-  local repo_cfg="$WORK_ROOT/chart-ci-empty-repos.txt"
-  if [ ${#dep_args[@]} -gt 0 ]; then
+    : > "$WORK_ROOT/chart-ci-empty-repos.txt"
+    local repo_cfg="$WORK_ROOT/chart-ci-empty-repos.txt"
     HELM_REPOSITORY_CONFIG="$repo_cfg" HELM_REPOSITORY_CACHE="$(mktemp -d "$WORK_ROOT/chart-ci-cache.XXXXXX")" \
       helm_quiet dependency build "$dest"
   fi
 
-  PREP_STACK=("${PREP_STACK[@]/$name/}")
+  unset 'PREP_STACK[idx]'
   PREPARED_CACHE[$name]="$dest"
-  echo "$dest"
+  PREPARED_RESULT="$dest"
 }
 
 has_deps() {
@@ -176,9 +202,11 @@ has_deps() {
 case "$MODE" in
   prepare-local)
     prepare_local "$CHART_DIR"
+    echo "$PREPARED_RESULT"
     ;;
   lint-local)
-    PREPARED="$(prepare_local "$CHART_DIR")"
+    prepare_local "$CHART_DIR"
+    PREPARED="$PREPARED_RESULT"
     echo "chart_ci: linting prepared copy: $PREPARED" >&2
     helm lint "$PREPARED"
     helm template "$PREPARED" > /dev/null
