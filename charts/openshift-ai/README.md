@@ -8,8 +8,8 @@ plumbing for MaaS and inference traffic, KEDA metrics-reader plumbing, MLflow/Ev
 maas-db bootstrap Job.
 
 The `rhods-operator` is NOT installed by this chart. It must already be installed before this chart is deployed — the
-chart renders custom resources directly (`DataScienceCluster`, `OdhDashboardConfig`, `Telemetry`, and so on), and a
-plain `helm install` fails on the missing CRDs otherwise. The source GitOps composition relied on ArgoCD
+chart renders custom resources directly (`DataScienceCluster`, `OdhDashboardConfig`, and so on), and a plain
+`helm install` fails on the missing CRDs otherwise. The source GitOps composition relied on ArgoCD
 `SkipDryRunOnMissingResource` annotations to bridge this ordering; under a helm-native two-install flow the operator
 install comes first instead. Use the `install-operators` chart for the operator install (see the
 `examples/maas-umbrella` README for the full two-install flow):
@@ -26,6 +26,10 @@ operators:
 
 Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of this chart.
 
+Deploy one release of this chart per cluster: the `DataScienceCluster` and KEDA `ClusterTriggerAuthentication` are
+cluster-scoped fixed names, and the Gateways and their ConfigMaps use fixed names that collide when two releases share a
+namespace.
+
 Usage
 -----
 
@@ -38,10 +42,8 @@ The chart performs the following:
   `disableLLMd`, `gpuaas`, and the rest; the passthrough accepts every dashboard flag), the segment-key and
   notebook-culler ConfigMaps, and the `hardwareprofile-view` RoleBinding
 - Renders `HardwareProfile` resources (one per `hardwareProfiles` entry)
-- Renders a `GatewayClass` named `data-science-gateway-class` whenever either Gateway renders
-- Renders the `maas-default-gateway` plumbing (ConfigMap, Certificate/Route, optional EnvoyFilter, Gateway) plus
-  `Telemetry`/`TelemetryPolicy` — gated on the DSC's `aigateway.modelsAsAService` being `Managed` (evaluates false when
-  the components tree is unset)
+- Renders the `maas-default-gateway` plumbing (ConfigMap, Certificate/Route, optional EnvoyFilter, Gateway) — gated on
+  the DSC's `aigateway.modelsAsAService` being `Managed` (evaluates false when the components tree is unset)
 - Renders the `openshift-ai-inference` Gateway plumbing (gated by `gateways.openshiftAiInference.create`)
 - Renders the payload-processing `NetworkPolicy` (gated by `maasPayloadProcessingNetworkPolicy.create`)
 - Renders the KEDA metrics-reader plumbing: ServiceAccount, ClusterRoleBinding, token Secret, and
@@ -53,6 +55,37 @@ The chart performs the following:
 
 The maas-db bootstrap Job runs as a `post-install,post-upgrade` Helm hook (recreated on re-runs via
 `before-hook-creation`), so it re-runs on upgrades the way the source GitOps PostSync hook did.
+
+Gateway classes
+---------------
+
+The chart does not render a `GatewayClass`. Both Gateways reference `data-science-gateway-class` by default — enabling
+the OpenShift AI `aigateway` component installs that class (via its own `GatewayConfig` controller), so a fresh Helm
+install of this chart simply references it. The class name stays configurable per gateway via
+`gateways.<gateway>.gatewayClassName` for independent consumers; each Gateway's OpenShift Route backend Service is
+derived as `<gateway-name>-<gatewayClassName>` to match the generated gateway Service, including class overrides.
+
+Namespace attachment
+--------------------
+
+Each Gateway authorizes Route attachment with a `routeNamespaceSelector` LabelSelector (defaults in `values.yaml`:
+`matchLabels: {maas-gateway-access: "true"}` for `maasDefaultGateway`, `{openshift-ai-inference-access: "true"}` for
+`openshiftAiInference`). Administrators label the explicitly authorized routing namespaces — Helm does not render or
+patch Namespaces, and a selector that resolves empty fails at render time because it would select all namespaces. Helm
+coalescing makes the chart-defined default sticky: a user-supplied empty map (`{}`) coalesces back to the `values.yaml`
+default rather than clearing it, and nulling the default `matchLabels` leaf deletes it, leaving a selector that fails at
+render time. The selector is namespace-wide authorization: it does not isolate traffic from other route authors inside
+an allowed namespace.
+
+Gateway deployment settings
+---------------------------
+
+Each gateway accepts a `replicas` override (default `null`, which omits the field and keeps the operator default). The
+override is applied through the release-verified ConfigMap deployment overlay (`spec.replicas` strategic-merge patch on
+the generated gateway Deployment) — it is not written into the Gateway spec, and the chart does not manage the generated
+Deployments. Actual runtime replica persistence is not validated by this chart's tests. The inference Gateway's
+ConfigMap and its `infrastructure.parametersRef` render independently of `useRoute` (which controls Service/Route
+behavior only).
 
 The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
 (`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres`, and condition-gated by
@@ -77,8 +110,9 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `dataScienceClusterInitialization.monitoring` — the commented example in `values.yaml` shows the optional
   `monitoring.traces` block (`exporters`, `sampleRatio`, `storage` — `storage.size` is required for traces) and
   `monitoring.alerting` alongside the metrics storage defaults
-- `gateways.maasDefaultGateway` / `gateways.openshiftAiInference` — Gateway plumbing with `hostname` override support
-  and certificate/Route selection (`useRoute` vs `certificate.create`)
+- `gateways.maasDefaultGateway` / `gateways.openshiftAiInference` — Gateway plumbing with `hostname` override support,
+  certificate/Route selection (`useRoute` vs `certificate.create`), the referenced `gatewayClassName`, the
+  `routeNamespaceSelector` namespace authorization, and the `replicas` deployment overlay (null omits the patch field)
 - `maasDb.create` — render the maas-db bootstrap plumbing AND deploy the postgres Cluster through the dependency
   (default: `false`; the dependency condition shares this toggle)
 - `maasDb.namespace` — namespace the bootstrap Job renders into (default: `redhat-ai-gateway-infra`); must already

@@ -1,5 +1,6 @@
 {{- with .Values.gateways.openshiftAiInference }}
 {{- if and .create .useRoute }}
+{{- $class := include "openshift-ai.gateway.className" (dict "gateway" .) }}
 {{- $host := .hostname | default (printf "inference.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
 ---
 apiVersion: route.openshift.io/v1
@@ -16,7 +17,7 @@ spec:
     termination: edge
   to:
     kind: Service
-    name: openshift-ai-inference-data-science-gateway-class
+    name: {{ printf "openshift-ai-inference-%s" $class }}
     weight: 100
   wildcardPolicy: None
 {{- end }}

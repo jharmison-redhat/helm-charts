@@ -1,6 +1,7 @@
 {{- if eq (include "openshift-ai.maasManaged" .) "true" }}
 {{- with .Values.gateways.maasDefaultGateway }}
 {{- $host := .hostname | default (printf "maas.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+{{- $class := include "openshift-ai.gateway.className" (dict "gateway" .) }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -13,13 +14,14 @@ metadata:
     opendatahub.io/managed: "false"
     security.opendatahub.io/authorino-tls-bootstrap: "true"
 spec:
-  gatewayClassName: data-science-gateway-class
+  gatewayClassName: {{ $class }}
   infrastructure:
     parametersRef:
       group: ""
       kind: ConfigMap
       name: maas-default-gateway-config
   listeners:
+    {{- $sel := (include "openshift-ai.routeNamespaceSelector" (dict "gateway" .) | fromYaml) }}
     {{- if .useRoute }}
     - name: http
       port: 80
@@ -27,7 +29,9 @@ spec:
       hostname: {{ $host }}
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            {{- toYaml $sel | nindent 12 }}
     {{- else }}
     - name: https
       port: 443
@@ -41,7 +45,9 @@ spec:
         mode: Terminate
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            {{- toYaml $sel | nindent 12 }}
     {{- end }}
 {{- end }}
 {{- end }}

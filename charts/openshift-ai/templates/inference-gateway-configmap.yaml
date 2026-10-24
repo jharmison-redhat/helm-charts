@@ -1,5 +1,6 @@
 {{- with .Values.gateways.openshiftAiInference }}
-{{- if and .create .useRoute }}
+{{- if .create }}
+{{- $replicas := include "openshift-ai.replicas.validated" (dict "value" .replicas) }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -7,8 +8,15 @@ metadata:
   name: openshift-ai-inference-config
   namespace: openshift-ingress
 data:
+  {{- if ne $replicas "" }}
+  deployment: |
+    spec:
+      replicas: {{ $replicas }}
+  {{- end }}
+  {{- if .useRoute }}
   service: |
     spec:
       type: ClusterIP
+  {{- end }}
 {{- end }}
 {{- end }}

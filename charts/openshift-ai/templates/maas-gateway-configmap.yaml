@@ -1,5 +1,6 @@
 {{- if eq (include "openshift-ai.maasManaged" .) "true" }}
 {{- with .Values.gateways.maasDefaultGateway }}
+{{- $replicas := include "openshift-ai.replicas.validated" (dict "value" .replicas) }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -7,20 +8,25 @@ metadata:
   name: maas-default-gateway-config
   namespace: openshift-ingress
 data:
-  {{- with .resources }}
+  {{- if or .resources (ne $replicas "") }}
   deployment: |
     spec:
+      {{- if ne $replicas "" }}
+      replicas: {{ $replicas }}
+      {{- end }}
+      {{- with .resources }}
       template:
         spec:
           containers:
           - name: istio-proxy
             resources:
               {{- toYaml . | nindent 16 }}
+      {{- end }}
   {{- end }}
-{{- if .useRoute }}
+  {{- if .useRoute }}
   service: |
     spec:
       type: ClusterIP
-{{- end }}
+  {{- end }}
 {{- end }}
 {{- end }}

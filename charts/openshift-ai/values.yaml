@@ -15,6 +15,20 @@ gateways:
   maasDefaultGateway:
     # only created if enabled in DSC
     useRoute: false
+    # GatewayClass referenced by this Gateway. Enabling the OpenShift AI
+    # gateway installs the data-science-gateway-class; the class itself is not
+    # rendered by this chart
+    gatewayClassName: data-science-gateway-class
+    # LabelSelector authorizing which namespaces may attach Routes to this
+    # Gateway. Label the authorized namespaces explicitly — an empty selector
+    # is rejected at render time because it would allow all namespaces
+    routeNamespaceSelector:
+      matchLabels:
+        maas-gateway-access: "true"
+    # Replica count of the generated gateway Deployment, applied through the
+    # ConfigMap deployment overlay. Null omits the field (operator default);
+    # explicit values (including zero) render exactly
+    replicas: null
     certificate:
       create: true
       clusterIssuer: letsencrypt
@@ -29,6 +43,11 @@ gateways:
   openshiftAiInference:
     create: true
     useRoute: false
+    gatewayClassName: data-science-gateway-class
+    routeNamespaceSelector:
+      matchLabels:
+        openshift-ai-inference-access: "true"
+    replicas: null
     certificate:
       create: true
       clusterIssuer: letsencrypt

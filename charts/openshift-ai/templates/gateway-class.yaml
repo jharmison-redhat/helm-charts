@@ -1,9 +1,0 @@
-{{- if or (eq (include "openshift-ai.maasManaged" .) "true") .Values.gateways.openshiftAiInference.create }}
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: data-science-gateway-class
-spec:
-  controllerName: "openshift.io/gateway-controller/v1"
-{{- end }}
