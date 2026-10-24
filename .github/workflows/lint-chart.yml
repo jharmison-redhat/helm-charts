@@ -10,6 +10,7 @@ on:
       - .github/workflows/chart_metadata.py
       - .github/workflows/requirements.txt
       - .github/workflows/test_chart_helpers.py
+      - .github/workflows/test_openshift_ai.py
       - .github/workflows/lint-chart.yml
   workflow_dispatch:
 
@@ -88,5 +89,9 @@ jobs:
           cache-dependency-path: .github/workflows/requirements.txt
       - id: install-dependencies
         run: python -m pip install -r .github/workflows/requirements.txt
+      - id: setup-helm
+        uses: azure/setup-helm@v5
+        with:
+          version: v4.2.2
       - id: test
         run: python -m unittest discover -s .github/workflows -p 'test_*.py'
