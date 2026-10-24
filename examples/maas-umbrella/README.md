@@ -30,6 +30,12 @@ its operand CR in one release. Deployment therefore uses two installs:
    helm upgrade --install maas-umbrella examples/maas-umbrella
    ```
 
+   Create `redhat-ai-gateway-infra` before this install: the maas-db Cluster and bootstrap Job render there, and neither
+   this chart nor the `postgres-cluster` dependency renders a Namespace. The `maasTenantConfig` hook Job runs in the
+   release namespace and waits for the product-created `models-as-a-service` namespace and
+   `MaasTenantConfig/default-tenant` singleton; a missing namespace or singleton is expected startup absence, so no
+   tenant-namespace precreation is required.
+
 Wait for the operator deployments to be ready before the second install.
 
 Two PostgreSQL Clusters
@@ -57,6 +63,11 @@ Shared OIDC values are set once in this chart under `global.oidc`: `keycloak-aut
 openid-client-secret Secret. The realm name and client ID are structural in the keycloak chart (a map key and a client
 name), so `global.oidc.realm`/`global.oidc.clientId` must match them — a mismatch silently points the issuer at a realm
 that was never imported.
+
+Gateway hostnames are derived from two independent `global` conventions: the keycloak chart consumes
+`global.wildcardDomain`, while `openshift-ai` derives its Gateway hostnames from `global.cluster.{name,baseDomain}`.
+`values.yaml` sets both, and they must be kept consistent — a custom `wildcardDomain`-only override leaves
+`openshift-ai` on its `global.cluster` defaults, pointing the Gateways at different hosts.
 
 Running locally
 ---

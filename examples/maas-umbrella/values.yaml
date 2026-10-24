@@ -8,6 +8,12 @@
 # global.oidc.secret via a template string.
 global:
   wildcardDomain: apps.cluster.example.com
+  # openshift-ai derives its Gateway hostnames from global.cluster. These
+  # independent consumer inputs must be kept consistent with wildcardDomain
+  # above (the values below agree with it by default)
+  cluster:
+    name: cluster
+    baseDomain: example.com
   oidc:
     realm: sso
     clientId: ocp-idp
@@ -38,6 +44,22 @@ openshift-ai:
     fullnameOverride: maas-postgres
   maasDb:
     create: true
+
+  # Enabled tenant-config hook: a post-install,post-upgrade Job in the release
+  # namespace waits for the product-created MaasTenantConfig/default-tenant
+  # singleton, then merge-patches only the spec block below (privacy-conscious
+  # captureUser false). Requires the rhods-operator MaaS components to reach
+  # Managed; a fresh install may want a longer helm --timeout (10m) while the
+  # operator reconciles. Prerequisite: label the routing namespaces explicitly
+  # (kubectl label ns <ns> maas-gateway-access=true
+  # openshift-ai-inference-access=true) — the Gateway selectors authorize
+  # routing to labeled namespaces only
+  maasTenantConfig:
+    enabled: true
+    spec:
+      telemetry:
+        metrics:
+          captureUser: false
 
   realms:
     sso:
