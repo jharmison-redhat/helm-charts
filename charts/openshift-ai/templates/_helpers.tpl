@@ -31,6 +31,16 @@ Secret, which the maas-db bootstrap job reads in managed mode.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Chart labels for the MaasTenantConfig hook resources.
+*/}}
+{{- define "openshift-ai.tenantConfig.labels" -}}
+app.kubernetes.io/name: openshift-ai
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
 {{/*
 Resolves a gateway's referenced GatewayClass name. The default lives solely
 in values.yaml; an unset or empty class fails with a required message instead
@@ -79,6 +89,47 @@ namespace. Supported matchExpressions are preserved as-is.
 {{- fail "routeNamespaceSelector must set matchLabels or matchExpressions (an empty selector allows routes from all namespaces)" -}}
 {{- end -}}
 {{- toYaml $sel -}}
+{{- end -}}
+
+{{/*
+Release-qualified name of the MaasTenantConfig hook's ClusterRole /
+ClusterRoleBinding / Job. Collision-resistant across release namespaces: the
+name carries a stable hash of the release namespace and name, so the same
+release name in two namespaces yields distinct cluster-scoped resources.
+Kubernetes-valid at 63 characters: for long release names the tail is
+truncated and the hash preserves the identity.
+*/}}
+{{- define "openshift-ai.tenantConfig.fullname" -}}
+{{- $base := printf "%s-maas-tenant-config" .Release.Name -}}
+{{- $hash := sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 8 -}}
+{{- printf "%s-%s" (trimSuffix "-" ($base | trunc 54)) $hash -}}
+{{- end -}}
+
+{{/*
+Validates the maasTenantConfig block for hook rendering: spec must be a
+non-empty map (explicit user-supplied merge-patch content — nil, scalars and
+lists are rejected rather than silently no-op'ed or wiping the spec), and the
+timing values must be positive integers.
+*/}}
+{{- define "openshift-ai.tenantConfig.validated" -}}
+{{- $cfg := .Values.maasTenantConfig -}}
+{{- $spec := dig "spec" nil $cfg -}}
+{{- if not (kindIs "map" $spec) -}}
+{{- fail (printf "maasTenantConfig.spec must be a map (got %s) — an empty or non-map spec cannot configure the default-tenant object" (kindOf $spec)) -}}
+{{- end -}}
+{{- if eq (len $spec) 0 -}}
+{{- fail "maasTenantConfig.spec must be a non-empty map when enabled — enabling without values cannot configure the default-tenant object" -}}
+{{- end -}}
+{{- range $k := list "waitTimeoutSeconds" "pollIntervalSeconds" -}}
+{{- $v := dig $k nil $cfg -}}
+{{- $n := int $v -}}
+{{- if not (or (kindIs "int" $v) (and (kindIs "float64" $v) (eq $v (mulf (floor $v) 1.0)))) -}}
+{{- fail (printf "maasTenantConfig.%s must be an integer (got %s)" $k (kindOf $v)) -}}
+{{- end -}}
+{{- if le $n 0 -}}
+{{- fail (printf "maasTenantConfig.%s must be positive (got %v)" $k $v) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

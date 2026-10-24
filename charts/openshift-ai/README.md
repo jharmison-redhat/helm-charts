@@ -45,6 +45,10 @@ The chart performs the following:
 - Renders the `maas-default-gateway` plumbing (ConfigMap, Certificate/Route, optional EnvoyFilter, Gateway) — gated on
   the DSC's `aigateway.modelsAsAService` being `Managed` (evaluates false when the components tree is unset)
 - Renders the `openshift-ai-inference` Gateway plumbing (gated by `gateways.openshiftAiInference.create`)
+- Renders a MaasTenantConfig configuration hook (ServiceAccount, ClusterRole, ClusterRoleBinding, script ConfigMap in
+  the release namespace and a `post-install,post-upgrade` hook Job) that waits for the product-created
+  `MaasTenantConfig/default-tenant` singleton, then merge-patches only the `maasTenantConfig.spec` block — gated on
+  `maasTenantConfig.enabled` AND the `modelsAsAService == Managed` gate
 - Renders the payload-processing `NetworkPolicy` (gated by `maasPayloadProcessingNetworkPolicy.create`)
 - Renders the KEDA metrics-reader plumbing: ServiceAccount, ClusterRoleBinding, token Secret, and
   `ClusterTriggerAuthentication` in `openshift-keda` (gated by `kedaMetricsReader.create`)
@@ -87,6 +91,33 @@ Deployments. Actual runtime replica persistence is not validated by this chart's
 ConfigMap and its `infrastructure.parametersRef` render independently of `useRoute` (which controls Service/Route
 behavior only).
 
+MaasTenantConfig hook
+---------------------
+
+With `maasTenantConfig.enabled: true` (and the `modelsAsAService == Managed` gate), the chart renders a bounded
+configuration hook for the product-managed `MaasTenantConfig/default-tenant` singleton, which the maas-controller
+creates automatically on first install. The hook's Job, ServiceAccount, ConfigMap, and RBAC identity are placed in the
+Helm release namespace — a namespace that exists at installation time — not in the asynchronously created product
+namespace; the Job (the only Helm hook resource) waits for the singleton to appear and merge-patches only
+`{spec: maasTenantConfig.spec}`. It neither creates the singleton nor changes ownerRefs or Helm ownership metadata.
+
+A dedicated ClusterRole grants ONLY `get`/`patch` on `maastenantconfigs.maas.opendatahub.io` with
+`resourceNames: [default-tenant]`, bound to the release-namespace ServiceAccount. The cluster scope of the permission
+covers same-named singleton instances in any namespace, while the script targets only the configured namespace — this
+boundary is needed for first-install independence (a Role in the not-yet-existing product namespace cannot be used).
+Installing this chart requires an identity permitted to create ClusterRole/ClusterRoleBinding objects.
+
+Polling uses the product-version REST resource path
+`/apis/maas.opendatahub.io/v1alpha1/namespaces/<namespace>/maastenantconfigs/default-tenant` with bounded wall-clock
+wait and per-request timeouts; only 404 (resource/API/namespace/singleton absent) is treated as expected startup absence
+— Forbidden, unauthorized, transport, and patch errors fail immediately with actionable messages. The Job has
+`backoffLimit: 0` and `activeDeadlineSeconds: waitTimeoutSeconds + 30`. Defaults stay below Helm's five-minute default,
+but a fresh operator reconciliation may be slower — pass `--timeout 10m` to `helm install/upgrade` when enabling the
+hook on a fresh cluster. The patch is serialized to JSON in the ConfigMap; that surface contains runtime settings, not
+credentials. A successful patch does not wait for all MaaS workloads to become Ready, and settings persist after hook
+disablement, value removal, or uninstall: an explicit `null` inside `spec` removes a field, omission does not reset it.
+Helm rollback does not revert this side effect.
+
 The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
 (`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres`, and condition-gated by
 `maasDb.create`. With `maasDb.create: true`, the dependency deploys the Cluster and the bootstrap job derives its secret
@@ -113,10 +144,18 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `gateways.maasDefaultGateway` / `gateways.openshiftAiInference` — Gateway plumbing with `hostname` override support,
   certificate/Route selection (`useRoute` vs `certificate.create`), the referenced `gatewayClassName`, the
   `routeNamespaceSelector` namespace authorization, and the `replicas` deployment overlay (null omits the patch field)
+- `maasTenantConfig` — bounded configuration hook for the product-created `MaasTenantConfig/default-tenant` singleton:
+  `enabled` (default `false`), `namespace` (default `models-as-a-service`, the product default), `waitTimeoutSeconds`
+  (default 240), `pollIntervalSeconds` (default 5), and the explicit `spec` merge-patch map (default `{}`; enabling with
+  an empty spec fails at render time). The singleton name is fixed as `default-tenant` (product CEL singleton).
+  Representative telemetry settings with privacy-conscious `telemetry.metrics.captureUser: false` are in the commented
+  example in `values.yaml`
 - `maasDb.create` — render the maas-db bootstrap plumbing AND deploy the postgres Cluster through the dependency
   (default: `false`; the dependency condition shares this toggle)
-- `maasDb.namespace` — namespace the bootstrap Job renders into (default: `redhat-ai-gateway-infra`); must already
-  exist, and must match `postgres.namespace` — the Cluster renders there and the job looks the secret up there
+- `maasDb.namespace` — namespace the bootstrap Job renders into (default: `redhat-ai-gateway-infra`); must already exist
+  before this chart installs, and must match `postgres.namespace` — the Cluster renders there and the job looks the
+  secret up there. Neither this chart nor the postgres-cluster dependency renders a Namespace; ensure the configured
+  namespace exists in both managed and out-of-band modes before namespace-targeted chart resources install
 - `maasDb.secretName` — out-of-band override: name of the secret holding the postgres connection URI. Empty by default —
   managed mode (with `maasDb.create: true`) derives the Cluster's `<fullname>-app` secret name via the
   `openshift-ai.pg.fullname` helper; setting it instead runs the job against an external Cluster. Either `maasDb.create`

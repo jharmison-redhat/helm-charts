@@ -1,0 +1,50 @@
+{{- if and (eq (include "openshift-ai.maasManaged" .) "true") .Values.maasTenantConfig.enabled }}
+{{- include "openshift-ai.tenantConfig.validated" . -}}
+{{- $fullname := include "openshift-ai.tenantConfig.fullname" . }}
+{{- $deadline := add .Values.maasTenantConfig.waitTimeoutSeconds 30 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.tenantConfig.labels" . | nindent 4 }}
+  annotations:
+    # The only hook resource: supporting resources are ordinary release
+    # manifests created before the post hook.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $deadline }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.tenantConfig.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: configure-maas-tenant
+          image: {{ $.Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/configure-maas-tenant.sh"]
+          env:
+            - name: MAAS_TENANT_NAMESPACE
+              value: {{ .Values.maasTenantConfig.namespace }}
+            - name: MAAS_TENANT_WAIT_TIMEOUT
+              value: {{ .Values.maasTenantConfig.waitTimeoutSeconds | quote }}
+            - name: MAAS_TENANT_POLL_INTERVAL
+              value: {{ .Values.maasTenantConfig.pollIntervalSeconds | quote }}
+            - name: MAAS_TENANT_PATCH_FILE
+              value: /config/patch.json
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493
+{{- end }}

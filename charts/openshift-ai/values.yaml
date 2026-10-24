@@ -214,7 +214,8 @@ notebookIdleCulling:
 # maas-db bootstrap job plumbing. The job reads the `<name>-app` secret
 # created by the postgres-cluster release and mirrors its connection URI into
 # a maas-db-config secret in the maas-api namespace. The target namespace must
-# already exist (created by whatever deploys the postgres Cluster).
+# already exist before this chart installs — neither this chart nor the
+# postgres-cluster dependency renders a Namespace.
 #
 # EITHER/OR: managed mode (maasDb.create: true) deploys the Cluster through
 # the aliased postgres-cluster dependency and derives the secret name from the
@@ -227,7 +228,9 @@ maasDb:
   # relies on maasDb.secretName for the out-of-band mode
   create: false
   # In managed mode, must match postgres.namespace — the Cluster renders
-  # there and the job looks the secret up there
+  # there and the job looks the secret up there. Must already exist before
+  # this chart installs: neither this chart nor the postgres-cluster
+  # dependency renders a Namespace
   namespace: redhat-ai-gateway-infra
   # Out-of-band override: name of the secret holding the postgres connection
   # URI. Empty in managed mode — the job then derives `<fullname>-app` from
@@ -252,6 +255,35 @@ postgres:
 
 maasPayloadProcessingNetworkPolicy:
   create: false
+
+# Bounded configuration of the product-managed MaasTenantConfig/default-tenant
+# singleton (created automatically by the maas-controller). Renders a
+# post-install,post-upgrade hook Job in the release namespace that waits for
+# the singleton to appear, then merge-patches ONLY the spec block below.
+# Enabled requires the DSC aigateway.modelsAsAService component to be Managed.
+#
+# Settings persist after uninstall, value removal or hook disablement: an
+# explicit null inside spec removes a field, omission does not reset it. Helm
+# rollback does not revert this side effect.
+maasTenantConfig:
+  # Feature toggle: render the hook. Enabling with an empty spec fails at
+  # render time — the spec map must carry explicit user settings
+  enabled: false
+  # Product default namespace, NOT a discovered cluster name. The singleton
+  # name is fixed as default-tenant (product CEL singleton) and is not
+  # configurable
+  namespace: models-as-a-service
+  # Bounded wait for the asynchronous singleton creation on first install;
+  # the hook fails explicitly on timeout
+  waitTimeoutSeconds: 240
+  pollIntervalSeconds: 5
+  # Explicit user-supplied spec merge-patch — no chart-side defaults are
+  # merged. Representative telemetry settings:
+  # spec:
+  #   telemetry:
+  #     metrics:
+  #       captureUser: false
+  spec: {}
 
 # DSC spec-level list of namespaces where MLflow deployments are allowed
 # (Tech Preview) — pairs with the mlflowoperator component above.

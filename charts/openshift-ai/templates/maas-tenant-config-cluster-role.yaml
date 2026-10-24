@@ -1,0 +1,24 @@
+{{- if and (eq (include "openshift-ai.maasManaged" .) "true") .Values.maasTenantConfig.enabled }}
+# get/patch only, resource-name-scoped to the product's fixed singleton name.
+# The cluster scope of the permission covers same-named singletons in any
+# namespace (the script targets only the configured namespace); a Role in the
+# product namespace cannot be used because that namespace does not yet exist
+# on a fresh first install.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "openshift-ai.tenantConfig.fullname" . }}
+  labels:
+    {{- include "openshift-ai.tenantConfig.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - maas.opendatahub.io
+    resources:
+      - maastenantconfigs
+    resourceNames:
+      - default-tenant
+    verbs:
+      - get
+      - patch
+{{- end }}
