@@ -10,7 +10,7 @@ on:
       - .github/workflows/chart_metadata.py
       - .github/workflows/requirements.txt
       - .github/workflows/test_chart_helpers.py
-      - .github/workflows/test_openshift_ai.py
+      - tests/charts/**
       - .github/workflows/lint-chart.yml
   workflow_dispatch:
 
@@ -93,5 +93,7 @@ jobs:
         uses: azure/setup-helm@v5
         with:
           version: v4.2.2
-      - id: test
+      - id: test-helpers
         run: python -m unittest discover -s .github/workflows -p 'test_*.py'
+      - id: test-charts
+        run: python -m unittest discover -s tests/charts -p 'test_*.py'

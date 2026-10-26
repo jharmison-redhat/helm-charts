@@ -7,9 +7,10 @@ Helm charts collection published as OCI charts from `charts/` (one chart per dir
 operand umbrella. CI lives in `.github/workflows/` and is split across two workflows with native-Python helpers:
 `.github/workflows/chart_ci.py` (dependency resolution + lint/render, shared by both workflows),
 `.github/workflows/chart_versions.py` (registry-tag publish gate), and `.github/workflows/chart_metadata.py` (shared
-safe-YAML metadata validation); `.github/workflows/requirements.txt` pins PyYAML and
-`.github/workflows/test_chart_helpers.py` is the unit-test suite. `lint-chart.yml` runs on pull requests touching the
-charts and examples it validates (`charts/**`, `examples/**`) plus the helpers, test file, and requirements it runs,
+safe-YAML metadata validation); `.github/workflows/requirements.txt` pins PyYAML and the unit-test suites are
+`.github/workflows/test_chart_helpers.py` (workflow helpers) and `tests/charts/test_openshift_ai.py` (openshift-ai chart
+render tests, discovered from `tests/charts`). `lint-chart.yml` runs on pull requests touching the charts and examples
+it validates (`charts/**`, `examples/**`) plus the helpers, test suites (`tests/charts/**`), and requirements it runs,
 plus manual dispatch, and lints every chart and the umbrella against locally resolved sub-charts; `publish-chart.yml`
 remains push-to-main and publishes only charts whose `version:` has no registry tag yet.
 
@@ -55,6 +56,8 @@ uv run --no-project --python 3.13 --with-requirements .github/workflows/requirem
   python .github/workflows/chart_ci.py lint-local examples/maas-umbrella
 uv run --no-project --python 3.13 --with-requirements .github/workflows/requirements.txt \
   python -m unittest discover -s .github/workflows -p 'test_*.py'
+uv run --no-project --python 3.13 --with-requirements .github/workflows/requirements.txt \
+  python -m unittest discover -s tests/charts -p 'test_*.py'
 echo "$TOKEN" | helm registry login ghcr.io -u <user> --password-stdin
 helm dependency build charts/<name>   # login required for OCI deps
 helm lint charts/<name>
