@@ -1,6 +1,6 @@
 {{- with .Values.gateways.openshiftAiInference }}
 {{- if .create }}
-{{- $host := .hostname | default (printf "inference.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+{{- $host := include "openshift-ai.gateway.hostname" (dict "root" $ "gateway" . "subdomain" "inference") }}
 {{- $class := include "openshift-ai.gateway.className" (dict "gateway" .) }}
 ---
 apiVersion: gateway.networking.k8s.io/v1

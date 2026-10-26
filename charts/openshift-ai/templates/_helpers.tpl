@@ -61,6 +61,17 @@ of being silently defaulted or rendering an empty reference.
 {{- end -}}
 
 {{/*
+Resolves a gateway listener hostname from a dict context with root (top-level
+chart context), gateway (the gateway values map) and subdomain ("maas" or
+"inference"). A nonempty gateway hostname override is returned verbatim
+(untrimmed, unvalidated); nil, empty, false or zero fall back to
+<subdomain>.apps.<global.cluster.name>.<global.cluster.baseDomain>.
+*/}}
+{{- define "openshift-ai.gateway.hostname" -}}
+{{- .gateway.hostname | default (printf "%s.apps.%s.%s" .subdomain .root.Values.global.cluster.name .root.Values.global.cluster.baseDomain) -}}
+{{- end -}}
+
+{{/*
 Resolves a gateway's routeNamespaceSelector and fails rendering when it is
 absent or empty — an empty LabelSelector would allow routes from every
 namespace. Supported matchExpressions are preserved as-is.

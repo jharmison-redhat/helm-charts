@@ -237,6 +237,98 @@ class RenderMatrixTests(ChartFixture):
             expect_failure=True)
         self.assertIn("gatewayClassName is required", result.stderr)
 
+    def _gateway_values(self, **maas_overrides):
+        values = self.managed_maas()
+        values["gateways"] = {
+            "maasDefaultGateway": {"useRoute": True},
+            "openshiftAiInference": {"create": True, "useRoute": True},
+        }
+        for gateway, overrides in maas_overrides.items():
+            values["gateways"][gateway].update(overrides)
+        return values
+
+    def test_host_agreement_explicit_override(self):
+        # A nonempty per-gateway hostname override wins and must agree across
+        # Gateway listeners, Route hosts (useRoute) and Certificate DNS names
+        # (no useRoute) for both gateways.
+        values = self._gateway_values(
+            maasDefaultGateway={"hostname": "maas.custom.example.org",
+                                "useRoute": False},
+            openshiftAiInference={"hostname": "infer.custom.example.org",
+                                  "useRoute": False},
+        )
+        by_kind = self.by_kind(self.render(values))
+        for gateway, hostname in (
+                ("maas-default-gateway", "maas.custom.example.org"),
+                ("openshift-ai-inference", "infer.custom.example.org")):
+            listeners = self.pick(by_kind, "Gateway", gateway)["spec"]["listeners"]
+            self.assertTrue(all(l["hostname"] == listeners[0]["hostname"]
+                                for l in listeners))
+            self.assertEqual(listeners[0]["hostname"], hostname)
+            self.assertEqual(
+                self.pick(by_kind, "Certificate",
+                          f"{gateway}-certificate")["spec"]["dnsNames"],
+                [listeners[0]["hostname"]])
+            self.assertNotIn("Route", by_kind)
+
+        values = self._gateway_values(
+            maasDefaultGateway={"hostname": "maas.custom.example.org"},
+            openshiftAiInference={"hostname": "infer.custom.example.org"},
+        )
+        by_kind = self.by_kind(self.render(values))
+        self.assertEqual(self.pick(by_kind, "Route", "maas-default-gateway")
+                         ["spec"]["host"], "maas.custom.example.org")
+        self.assertEqual(self.pick(by_kind, "Route", "openshift-ai-inference")
+                         ["spec"]["host"], "infer.custom.example.org")
+
+    def test_host_agreement_global_fallback(self):
+        # Unset and falsey hostname overrides fall back to the global cluster
+        # convention across Gateway listeners, Route hosts and Certificate DNS
+        # names; disabling certificates removes them.
+        for hostname in (None, "", False, 0):
+            values = self._gateway_values(
+                maasDefaultGateway={"hostname": hostname},
+                openshiftAiInference={"hostname": hostname},
+            )
+            by_kind = self.by_kind(self.render(values))
+            self.assertEqual(
+                self.pick(by_kind, "Gateway", "maas-default-gateway")
+                ["spec"]["listeners"][0]["hostname"],
+                "maas.apps.cluster.example.com")
+            self.assertEqual(
+                self.pick(by_kind, "Route", "maas-default-gateway")["spec"]["host"],
+                "maas.apps.cluster.example.com")
+            self.assertEqual(
+                self.pick(by_kind, "Gateway", "openshift-ai-inference")
+                ["spec"]["listeners"][0]["hostname"],
+                "inference.apps.cluster.example.com")
+            self.assertEqual(
+                self.pick(by_kind, "Route", "openshift-ai-inference")["spec"]["host"],
+                "inference.apps.cluster.example.com")
+
+        values = self._gateway_values(
+            maasDefaultGateway={"useRoute": False},
+            openshiftAiInference={"useRoute": False},
+        ) | {"global": {"cluster": {"name": "mycluster",
+                                    "baseDomain": "prod.example.io"}}}
+        by_kind = self.by_kind(self.render(values))
+        self.assertEqual(
+            self.pick(by_kind, "Certificate", "maas-default-gateway-certificate")
+            ["spec"]["dnsNames"], ["maas.apps.mycluster.prod.example.io"])
+        self.assertEqual(
+            self.pick(by_kind, "Certificate", "openshift-ai-inference-certificate")
+            ["spec"]["dnsNames"], ["inference.apps.mycluster.prod.example.io"])
+        self.assertEqual(
+            self.pick(by_kind, "Gateway", "maas-default-gateway")
+            ["spec"]["listeners"][0]["hostname"],
+            "maas.apps.mycluster.prod.example.io")
+
+        values["gateways"]["maasDefaultGateway"]["certificate"] = {"create": False}
+        by_kind = self.by_kind(self.render(values))
+        self.assertEqual(
+            [c["metadata"]["name"] for c in by_kind.get("Certificate", [])],
+            ["openshift-ai-inference-certificate"])
+
     def test_wrong_shape_selector_fields_fail(self):
         for sel in ({"matchLabels": ["list"]},
                     {"matchExpressions": {"map": True}}):

@@ -1,7 +1,7 @@
 {{- with .Values.gateways.openshiftAiInference }}
 {{- if and .create .useRoute }}
 {{- $class := include "openshift-ai.gateway.className" (dict "gateway" .) }}
-{{- $host := .hostname | default (printf "inference.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+{{- $host := include "openshift-ai.gateway.hostname" (dict "root" $ "gateway" . "subdomain" "inference") }}
 ---
 apiVersion: route.openshift.io/v1
 kind: Route

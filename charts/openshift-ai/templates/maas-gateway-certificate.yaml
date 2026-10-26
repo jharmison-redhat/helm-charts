@@ -1,6 +1,6 @@
 {{- if eq (include "openshift-ai.maasManaged" .) "true" }}
 {{- with .Values.gateways.maasDefaultGateway }}
-{{- $host := .hostname | default (printf "maas.apps.%s.%s" $.Values.global.cluster.name $.Values.global.cluster.baseDomain) }}
+{{- $host := include "openshift-ai.gateway.hostname" (dict "root" $ "gateway" . "subdomain" "maas") }}
 {{- if and (not .useRoute) .certificate.create }}
 ---
 apiVersion: cert-manager.io/v1
