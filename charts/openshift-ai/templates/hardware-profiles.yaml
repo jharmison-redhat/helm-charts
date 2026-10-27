@@ -38,10 +38,11 @@ spec:
     {{- end }}
   scheduling:
     type: {{ $profile.type | default "Node" }}
-    {{- if eq $profile.type "Queue" }}
+    {{- if eq $profile.type "Queue" -}}
+    {{- $kueue := $profile.kueue | default dict -}}
+    {{- $localQueueName := required (printf "hardwareProfiles.%s: a Queue-type profile must set kueue.localQueueName (the referenced LocalQueue must exist in the profile's namespace)" $name) $kueue.localQueueName }}
     kueue:
-      {{- $kueue := $profile.kueue | default dict -}}
-      {{- required (printf "hardwareProfiles.%s: a Queue-type profile must set kueue.localQueueName (the referenced LocalQueue must exist in the profile's namespace)" $name) $kueue.localQueueName | nindent 6 }}
+      {{- toYaml $kueue | nindent 6 }}
     {{- else }}
     {{- if $profile.node }}
     node:

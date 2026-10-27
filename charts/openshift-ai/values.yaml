@@ -159,8 +159,7 @@ hardwareProfiles: {}
 #         max: 4
 #         displayName: NVIDIA L40S
 #   a100-queue:
-#     scheduling:
-#       type: Queue
+#     type: Queue
 #     kueue:
 #       localQueueName: gpu-queue
 #     displayName: NVIDIA A100 (Kueue queue)
