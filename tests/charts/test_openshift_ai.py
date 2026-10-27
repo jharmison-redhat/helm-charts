@@ -137,6 +137,13 @@ class ChartFixture(unittest.TestCase):
             "aigateway": {"managementState": "Managed",
                           "modelsAsAService": {"managementState": mgmt}}}}}
 
+    def evalhub_values(self, evalhub_create=True, tenant_create=True,
+                       **tenant_overrides):
+        tenant = {"create": tenant_create, "namespace": "evalhub-tenant",
+                  "waitTimeoutSeconds": 240}
+        tenant.update(tenant_overrides)
+        return {"evalhub": {"create": evalhub_create, "tenant": tenant}}
+
 
 class RenderMatrixTests(ChartFixture):
     def test_no_gatewayclass_telemetry_telemetrypolicy(self):
@@ -490,7 +497,12 @@ class HookGateTests(ChartFixture):
 
 
 class FakeOcScriptTests(ChartFixture):
-    """Executes the rendered hook script against a fake oc binary."""
+    """Executes the rendered hook script against a fake oc binary.
+
+    Intentionally separate from the shared HookScriptTests harness: this
+    script uses a different oc surface (oc get --raw and oc patch on the
+    MaasTenantConfig singleton) than the secret-reading bootstrap/credential
+    scripts (secret get / set data --from-file)."""
 
     def setUp(self):
         super().setUp()
@@ -719,8 +731,9 @@ echo "$@" >> "$OC_LOG"
 if [[ "$1" == "get" && "$2" == "secret" ]]; then
   if [[ "$*" == *metadata.name* ]]; then
     case "$SCENARIO" in
-      absent|timeout)
-        # ignore-not-found contract: rc 0, empty stdout
+      absent|timeout|missing_ns)
+        # ignore-not-found contract: rc 0, empty stdout — a missing secret
+        # or namespace is NotFound, retried to timeout
         exit 0 ;;
       absent_then_present)
         n=$(cat "$OC_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$OC_STATE"
@@ -743,7 +756,9 @@ if [[ "$1" == "get" && "$2" == "secret" ]]; then
     if [ -n "$key" ]; then
       payload_file="$OC_READ/$key"
       if [ ! -f "$payload_file" ]; then
+        # Hostile simulated client error carrying the decoded credentials
         echo 'Error from server: error executing jsonpath' >&2
+        for f in $OC_CREDS; do cat "$f" >&2; done
         exit 1
       fi
       payload="$(cat "$payload_file")"
@@ -758,7 +773,7 @@ if [[ "$1" == "get" && "$2" == "secret" ]]; then
   exit 0
 fi
 if [[ "$1" == "set" && "$2" == "data" ]]; then
-  if [ "$OC_MUTATE" = "fail" ]; then
+  if [ "$OC_MUTATE_SETDATA" = "fail" ]; then
     echo 'Error: set data rejected' >&2
     for f in $OC_CREDS; do cat "$f" >&2; done
     exit 1
@@ -775,7 +790,7 @@ if [[ "$1" == "set" && "$2" == "data" ]]; then
   exit 0
 fi
 if [[ "$1" == "create" ]]; then
-  if [ "$OC_MUTATE" = "fail" ]; then
+  if [ "$OC_MUTATE_CREATE" = "fail" ]; then
     echo 'Error: create rejected' >&2
     for f in $OC_CREDS; do cat "$f" >&2; done
     exit 1
@@ -793,7 +808,7 @@ if [[ "$1" == "create" ]]; then
   exit 0
 fi
 if [[ "$1" == "apply" ]]; then
-  if [ "$OC_MUTATE" = "fail" ]; then
+  if [ "$OC_MUTATE_APPLY" = "fail" ]; then
     echo 'Error: apply rejected' >&2
     for f in $OC_CREDS; do cat "$f" >&2; done
     exit 1
@@ -806,11 +821,12 @@ exit 0
 
 
 class HookScriptTests(ChartFixture):
-    """Shared fake-oc harness for the hook scripts: temp workdir, a
-    data-driven fake oc (per-key payloads via OC_READ files, readiness
-    scenarios, mutation behavior, hostile error bodies via OC_CREDS), argv
-    log with readiness capture, mutation/leak assertions, and a private
-    TMPDIR whose cleanup the script's EXIT trap is expected to perform."""
+    """Shared fake-oc harness for the secret-reading bootstrap/credential
+    scripts (maas-db, EvalHub credential): temp workdir, a data-driven fake
+    oc (per-key payloads via OC_READ files, readiness scenarios, mutation
+    behavior, hostile error bodies via OC_CREDS), argv log with readiness
+    capture, mutation/leak assertions, and a private TMPDIR whose cleanup
+    the script's EXIT trap is expected to perform."""
 
     secret_name = ""        # source secret name the fake oc reports
     secret_keys = ()        # jsonpath keys the scripts read from the secret
@@ -859,7 +875,9 @@ class HookScriptTests(ChartFixture):
             OC_STATE=self.state,
             OC_READ=self.read,
             OC_TARGET=self.target,
-            OC_MUTATE=mutate,
+            OC_MUTATE_SETDATA="fail" if mutate == "setdata" else "ok",
+            OC_MUTATE_CREATE="fail" if mutate == "create" else "ok",
+            OC_MUTATE_APPLY="fail" if mutate == "apply" else "ok",
             OC_CREDS=creds,
             PATH=f"{self.work}:{os.environ['PATH']}",
             TMPDIR=self.tmpdir,
@@ -961,9 +979,11 @@ class MaasDbScriptTests(HookScriptTests):
         self.assert_absent(result, "postgresql://")
 
     def test_missing_namespace_times_out(self):
-        # A missing namespace is NotFound: rc 0, no marker, retried to timeout
-        result = self.run_script("timeout", wait_timeout=5)
+        # A missing namespace is NotFound: rc 0, no marker, retried to the
+        # same timeout diagnostic as a missing secret
+        result = self.run_script("missing_ns", wait_timeout=5)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timed out", result.stderr)
         self.assertIn("maas-ns", result.stderr)
         self.assertIn("src-secret", result.stderr)
         self.assert_no_mutation()
@@ -984,8 +1004,11 @@ class MaasDbScriptTests(HookScriptTests):
         self.assert_no_mutation()
 
     def test_read_failure_without_mutation(self):
+        # The fake oc is hostile on read failure too: its error body carries
+        # the decoded URI, but the script suppresses error bodies
+        creds = self.creds_file(DB_URI)
         self.clear_payload("uri")
-        result = self.run_script("success")
+        result = self.run_script("success", creds=creds)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to read the uri key", result.stderr)
         self.assert_no_mutation()
@@ -1013,14 +1036,32 @@ class MaasDbScriptTests(HookScriptTests):
         self.assert_no_mutation()
         self.assert_absent(result, "postgresql://")
 
-    def test_pipeline_failure_propagates_without_leaking_uri(self):
-        # The fake oc is hostile: its error body carries the decoded URI,
-        # but the script suppresses error bodies so they must not appear in
-        # the script's stdout/stderr (or argv)
+    def assert_apply_target_credential_free(self):
+        # On a create-side failure the apply side still runs with empty
+        # stdin (real oc apply -f- would reject it); it must never carry
+        # the credential
+        path = os.path.join(self.target, "apply.yaml")
+        if os.path.exists(path):
+            with open(path) as f:
+                self.assertNotIn("postgresql://", f.read())
+
+    def test_create_failure_propagates_without_leaking_uri(self):
+        # Hostile fake oc: create fails with a body carrying the decoded
+        # URI; pipefail must make the pipeline fail
         creds = self.creds_file(DB_URI)
-        result = self.run_script("success", mutate="fail", creds=creds)
+        result = self.run_script("success", mutate="create", creds=creds)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to apply", result.stderr)
+        self.assert_apply_target_credential_free()
+        self.assertNotIn("postgresql://", result.stdout + result.stderr)
+        self.assert_absent(result, "postgresql://")
+
+    def test_apply_failure_propagates_without_leaking_uri(self):
+        creds = self.creds_file(DB_URI)
+        result = self.run_script("success", mutate="apply", creds=creds)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to apply", result.stderr)
+        self.assert_apply_target_credential_free()
         self.assertNotIn("postgresql://", result.stdout + result.stderr)
         self.assert_absent(result, "postgresql://")
 
@@ -1133,13 +1174,6 @@ EH_SECRET = "s3cr3t-key\nwith trailing newline"
 class EvalHubJobRenderTests(ChartFixture):
     """Render tests for the update-secret-minio hook Job."""
 
-    def evalhub_values(self, evalhub_create=True, tenant_create=True,
-                       **tenant_overrides):
-        tenant = {"create": tenant_create, "namespace": "evalhub-tenant",
-                  "waitTimeoutSeconds": 240}
-        tenant.update(tenant_overrides)
-        return {"evalhub": {"create": evalhub_create, "tenant": tenant}}
-
     def job(self, values):
         return self.pick(self.by_kind(self.render(values)), "Job",
                          "update-secret-minio")
@@ -1220,10 +1254,14 @@ class EvalHubJobRenderTests(ChartFixture):
 
     def test_gates(self):
         self.assertNotIn("Job", self.by_kind(self.render({})))
-        self.assertNotIn("Job", self.by_kind(
-            self.render(self.evalhub_values(evalhub_create=False))))
-        self.assertNotIn("Job", self.by_kind(
-            self.render(self.evalhub_values(tenant_create=False))))
+        for values in (self.evalhub_values(evalhub_create=False),
+                       self.evalhub_values(tenant_create=False)):
+            by_kind = self.by_kind(self.render(values))
+            # The Job and its script ConfigMap share the gates
+            self.assertNotIn("Job", by_kind)
+            configmaps = [d["metadata"]["name"]
+                          for d in by_kind.get("ConfigMap", [])]
+            self.assertNotIn("update-secret-minio-script", configmaps)
 
     def test_custom_wait_deadline(self):
         job = self.job(self.evalhub_values(waitTimeoutSeconds=300))
@@ -1236,7 +1274,7 @@ class EvalHubJobRenderTests(ChartFixture):
                         expect_failure=True)
 
 
-class EvalHubScriptTests(HookScriptTests, EvalHubJobRenderTests):
+class EvalHubScriptTests(HookScriptTests):
     """Executes the rendered update-secret-minio script (as mounted from its
     ConfigMap) against a fake oc binary."""
 
@@ -1335,8 +1373,11 @@ class EvalHubScriptTests(HookScriptTests, EvalHubJobRenderTests):
         self.assert_no_mutation()
 
     def test_read_failure_without_mutation(self):
+        # The fake oc is hostile on read failure too: its error body carries
+        # the decoded credentials, but the script suppresses error bodies
+        creds = self.creds_file(EH_ACCESS, EH_SECRET)
         self.clear_payload("accesskey")
-        result = self.run_script("success")
+        result = self.run_script("success", creds=creds)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to read the accesskey key", result.stderr)
         self.assert_no_mutation()
@@ -1386,7 +1427,7 @@ class EvalHubScriptTests(HookScriptTests, EvalHubJobRenderTests):
         # credentials, but the script suppresses error bodies so they must
         # not appear in the script's stdout/stderr (or argv)
         creds = self.creds_file(EH_ACCESS, EH_SECRET)
-        result = self.run_script("success", mutate="fail", creds=creds)
+        result = self.run_script("success", mutate="setdata", creds=creds)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to update the data", result.stderr)
         self.assertNotIn('AKIA"quoted', result.stdout + result.stderr)

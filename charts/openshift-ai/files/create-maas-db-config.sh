@@ -14,7 +14,7 @@ deadline=$(( $(date +%s) + DB_WAIT_TIMEOUT ))
 
 while true; do
   marker="$(oc get secret "$DB_SOURCE_SECRET" -n "$DB_NAMESPACE" \
-    -ojsonpath='{.metadata.name}' --ignore-not-found --request-timeout=10s)" || {
+    -ojsonpath='{.metadata.name}' --ignore-not-found --request-timeout=10s 2>"$workdir/readiness.err")" || {
     echo "Error: unexpected failure checking secret ${DB_SOURCE_SECRET} in namespace ${DB_NAMESPACE}" >&2
     exit 1
   }
@@ -27,7 +27,7 @@ while true; do
 done
 
 uri="$(oc get secret "$DB_SOURCE_SECRET" -n "$DB_NAMESPACE" \
-  -ojsonpath='{.data.uri}' --request-timeout=10s)" || {
+  -ojsonpath='{.data.uri}' --request-timeout=10s 2>"$workdir/read.err")" || {
   echo "Error: failed to read the uri key from secret ${DB_SOURCE_SECRET} in namespace ${DB_NAMESPACE} — the error body was suppressed deliberately to avoid forwarding credential-bearing output" >&2
   exit 1
 }

@@ -143,17 +143,18 @@ EvalHub tenant credential job
 
 With `evalhub.create: true` AND `evalhub.tenant.create: true`, the chart renders the `update-secret-minio` Job in the
 tenant namespace as a `post-install,post-upgrade` Helm hook (recreated on re-runs via `before-hook-creation`); its
-ServiceAccount, RoleBinding, Namespace, and DSPA stay ordinary release resources. A failed hook affects release status.
-The Job waits up to `evalhub.tenant.waitTimeoutSeconds` of wall-clock time for the product-created `ds-pipeline-s3-dspa`
-Secret to appear, then fails without mutating anything. Only a missing named secret is retried — Forbidden,
-unauthorized, and transport errors fail immediately — and timeout diagnostics name both the namespace and the secret.
-The Job reads the secret's `accesskey`/`secretkey` keys, rejects a missing key, invalid base64, or empty/whitespace-only
-content before writing anything, and decodes them into private pod files (preserving literal quotes, backslashes, and
-newlines) feeding the five `AWS_*` keys into `oc set data secret/ds-pipeline-s3-dspa --from-file=<key>=<file>`. The CLI
-encodes the changed data map and patches only those keys — unrelated Secret keys, labels/annotations, and ownership are
-preserved — and credentials never appear in command arguments or diagnostics. This validates the payload only; it does
-not verify credential validity. The Job has `backoffLimit: 3` and `activeDeadlineSeconds: waitTimeoutSeconds + 30`;
-longer configured waits need a matching Helm `--timeout`.
+ServiceAccount, RoleBinding, script ConfigMap, Namespace, and DSPA stay ordinary release resources. A failed hook
+affects release status. The Job waits up to `evalhub.tenant.waitTimeoutSeconds` of wall-clock time for the
+product-created `ds-pipeline-s3-dspa` Secret to appear, then fails without mutating anything. Only a missing named
+secret is retried — Forbidden, unauthorized, and transport errors fail immediately — and timeout diagnostics name both
+the namespace and the secret. The Job reads the secret's `accesskey`/`secretkey` keys, rejects a missing key, invalid
+base64, or empty/whitespace-only content before writing anything, and decodes them into private pod files (preserving
+literal quotes, backslashes, and newlines) feeding the five `AWS_*` keys into
+`oc set data secret/ds-pipeline-s3-dspa --from-file=<key>=<file>`. The CLI encodes the changed data map and patches only
+those keys — unrelated Secret keys, labels/annotations, and ownership are preserved — and credentials never appear in
+command arguments or diagnostics. This validates the payload only; it does not verify credential validity. The Job has
+`backoffLimit: 3` and `activeDeadlineSeconds: waitTimeoutSeconds + 30`; longer configured waits need a matching Helm
+`--timeout`.
 
 Helm 4 note: a plain `helm upgrade` defaults to `hookOnly` waiting, whose deletion waiter is a no-op, so
 `before-hook-creation` alone does not guarantee race-free Job name reuse while an old hook Job is still terminating.

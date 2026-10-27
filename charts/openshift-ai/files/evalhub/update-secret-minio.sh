@@ -14,7 +14,7 @@ deadline=$(( $(date +%s) + TENANT_WAIT_TIMEOUT ))
 
 while true; do
   marker="$(oc get secret "$SECRET_NAME" -n "$TENANT_NAMESPACE" \
-    -ojsonpath='{.metadata.name}' --ignore-not-found --request-timeout=10s)" || {
+    -ojsonpath='{.metadata.name}' --ignore-not-found --request-timeout=10s 2>"$workdir/readiness.err")" || {
     echo "Error: unexpected failure checking secret ${SECRET_NAME} in namespace ${TENANT_NAMESPACE}" >&2
     exit 1
   }
@@ -28,7 +28,7 @@ done
 
 for key in accesskey secretkey; do
   value="$(oc get secret "$SECRET_NAME" -n "$TENANT_NAMESPACE" \
-    -ojsonpath="{.data.${key}}" --request-timeout=10s)" || {
+    -ojsonpath="{.data.${key}}" --request-timeout=10s 2>"$workdir/read.err")" || {
     echo "Error: failed to read the ${key} key from secret ${SECRET_NAME} in namespace ${TENANT_NAMESPACE} — the error body was suppressed deliberately to avoid forwarding credential-bearing output" >&2
     exit 1
   }
@@ -46,9 +46,9 @@ for key in accesskey secretkey; do
   fi
 done
 
-printf '%s' "http://minio-dspa.${TENANT_NAMESPACE}.svc.cluster.local:9000" > "$workdir/AWS_S3_ENDPOINT"
-printf '%s' "mlpipeline" > "$workdir/AWS_S3_BUCKET"
-printf '%s' "us-east-1" > "$workdir/AWS_DEFAULT_REGION"
+printf '%s' "http://minio-dspa.${TENANT_NAMESPACE}.svc.cluster.local:9000" > "$workdir/AWS_S3_ENDPOINT" || exit 1
+printf '%s' "mlpipeline" > "$workdir/AWS_S3_BUCKET" || exit 1
+printf '%s' "us-east-1" > "$workdir/AWS_DEFAULT_REGION" || exit 1
 
 if ! oc set data "secret/${SECRET_NAME}" -n "$TENANT_NAMESPACE" \
     --from-file=AWS_ACCESS_KEY_ID="$workdir/AWS_ACCESS_KEY_ID" \
