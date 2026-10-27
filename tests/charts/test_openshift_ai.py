@@ -1,11 +1,14 @@
-"""Focused tests for the openshift-ai chart perimeter change: configurable
-GatewayClass references with namespace-selective Route attachment, per-gateway
-replicas, and the bounded MaasTenantConfig configuration hook.
+"""Focused tests for the openshift-ai chart. The module now covers the
+configurable GatewayClass references with namespace-selective Route
+attachment and per-gateway replicas, the bounded MaasTenantConfig
+configuration hook, strict duplicate-key YAML parsing, the fail-closed
+maas-db bootstrap job, HardwareProfile Node/Queue scheduling, and the
+secured, bounded EvalHub credential-update job.
 
-Render tests run the rendered chart through ``helm template`` against a local
-stub of the postgres-cluster dependency (no registry access); script tests
-execute the rendered hook script with a fake ``oc``. No real API or network
-is contacted.
+Render tests run the rendered chart through ``helm template`` against a
+local stub of the postgres-cluster dependency (no registry access);
+script tests execute the rendered hook and bootstrap scripts with a
+fake ``oc``. No real API or network is contacted.
 """
 
 import base64
@@ -787,7 +790,10 @@ class MaasDbScriptTests(ChartFixture):
                 fi
                 if [[ "$1" == "apply" ]]; then
                   if [[ "$DB_SCENARIO" == "apply_fail" ]]; then
+                    # Hostile simulated client error carrying the decoded
+                    # URI in its body
                     echo 'Error: apply rejected' >&2
+                    echo "$DB_URI" >&2
                     exit 1
                   fi
                   cat > "$DB_TARGET_FILE"
@@ -1009,7 +1015,7 @@ class HwpProfileTests(ChartFixture):
         self.assertNotIn("node", scheduling)
 
     def test_queue_missing_local_queue_name_fails(self):
-        for kueue in (None, {}):
+        for kueue in (None, {}, {"extra": {"supported": "keys preserved"}}):
             profiles = {"a100-queue": {"type": "Queue"}}
             if kueue is not None:
                 profiles["a100-queue"]["kueue"] = kueue
@@ -1073,7 +1079,8 @@ class EvalHubJobRenderTests(ChartFixture):
 
     def test_hooks_absent_from_supporting_resources(self):
         by_kind = self.by_kind(self.render(self.evalhub_values()))
-        for kind in ("ServiceAccount", "RoleBinding", "Namespace", "EvalHub"):
+        for kind in ("ServiceAccount", "RoleBinding", "Role", "Namespace",
+                     "EvalHub"):
             self.assertIn(kind, by_kind)
             # Supporting objects stay ordinary release resources: no hook
             # annotations anywhere outside the hook Job
@@ -1084,6 +1091,26 @@ class EvalHubJobRenderTests(ChartFixture):
         self.assertEqual(
             [d["metadata"]["name"] for d in by_kind["ServiceAccount"]
              if d["metadata"]["name"] == "patch-secret"], ["patch-secret"])
+
+    def test_hook_manifest_classification(self):
+        # Model Helm manifest classification, not a cluster migration: with
+        # hooks enabled the update-secret-minio Job belongs to the hook
+        # manifest set (tagged with the hook annotations — that tagging is
+        # what makes a failed hook affect release status), while its
+        # supporting objects are ordinary manifests without hook annotations.
+        by_kind = self.by_kind(self.render(self.evalhub_values()))
+        job = self.pick(by_kind, "Job", "update-secret-minio")
+        annotations = job["metadata"]["annotations"]
+        self.assertEqual(annotations["helm.sh/hook"], EVALHOOK)
+        self.assertEqual(annotations["helm.sh/hook-delete-policy"],
+                         EVALHOOK_DELETE)
+        for kind in ("ServiceAccount", "RoleBinding", "Role", "Namespace",
+                     "DataSciencePipelinesApplication"):
+            for doc in by_kind[kind]:
+                self.assertNotIn("helm.sh/hook",
+                                 doc["metadata"].get("annotations") or {})
+                self.assertNotIn("helm.sh/hook-delete-policy",
+                                 doc["metadata"].get("annotations") or {})
 
     def test_gates(self):
         self.assertNotIn("Job", self.by_kind(self.render({})))
@@ -1165,6 +1192,10 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
                     case "$EH_SCENARIO" in
                       invalid_b64)
                         echo 'not!!valid' ;;
+                      secretkey_invalid)
+                        echo 'not!!valid' ;;
+                      secretkey_empty)
+                        exit 0 ;;
                       *)
                         printf '%s' "$(printf '%s' "$EH_SECRET" | base64)" ;;
                     esac
@@ -1173,7 +1204,11 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
                 fi
                 if [[ "$1" == "set" && "$2" == "data" ]]; then
                   if [[ "$EH_SCENARIO" == "set_fail" ]]; then
+                    # Hostile simulated client error carrying the decoded
+                    # synthetic credentials in its body
                     echo 'Error: set data rejected' >&2
+                    echo "$EH_ACCESS" >&2
+                    echo "$EH_SECRET" >&2
                     exit 1
                   fi
                   for a in "$@"; do
@@ -1327,10 +1362,30 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
 
+    def test_secretkey_invalid_fails_without_mutation(self):
+        # accesskey decodes fine; a broken secretkey must still fail without
+        # mutation
+        result = self.run_script("secretkey_invalid")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not valid base64", result.stderr)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
+    def test_secretkey_empty_fails_without_mutation(self):
+        result = self.run_script("secretkey_empty")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
     def test_set_data_failure_propagates_without_leaking(self):
+        # The fake oc is hostile: its error body carries the decoded
+        # credentials, but the script suppresses error bodies so they must
+        # not appear in the script's stdout/stderr (or argv)
         result = self.run_script("set_fail")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to update the data", result.stderr)
+        self.assertNotIn('AKIA"quoted', result.stdout + result.stderr)
+        self.assertNotIn("s3cr3t-key", result.stdout + result.stderr)
         self.assert_credentials_absent(result)
 
     def test_request_timeouts_bounded_to_ten_seconds(self):

@@ -69,6 +69,16 @@ command arguments or diagnostics. This validates the payload only — it does no
 validity. The Job has `backoffLimit: 3` and `activeDeadlineSeconds: waitTimeoutSeconds + 30`; like the tenant hook,
 longer configured waits need a matching Helm `--timeout`.
 
+The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
+(`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres`, and condition-gated by
+`maasDb.create`. With `maasDb.create: true`, the dependency deploys the Cluster and the bootstrap job derives its secret
+name from the `openshift-ai.pg.fullname` convention (see `templates/_helpers.tpl`); with `maasDb.secretName` set
+instead, the job runs out-of-band against an external Cluster.
+
+Both bootstrap Jobs run on the configured cluster-local `openshift/tools:latest` image (`global.toolsImage`); any
+override must provide Bash plus OpenShift `oc` with `set data --from-file` and the standard utilities the scripts use
+(`base64`, `date`, `sleep`, `mktemp`).
+
 Gateway classes
 ---------------
 
@@ -147,14 +157,12 @@ longer configured waits need a matching Helm `--timeout`.
 Helm 4 note: a plain `helm upgrade` defaults to `hookOnly` waiting, whose deletion waiter is a no-op, so
 `before-hook-creation` alone does not guarantee race-free Job name reuse while an old hook Job is still terminating.
 Explicit `--wait=watcher` (or bare `--wait`) or `--wait=legacy` provides deletion waiting, but also waits for normal
-release resources to become Ready before the post-hook executes. No invocation is promised race-free; real-cluster
-upgrade timing is not validated by this chart's tests.
-
-The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
-(`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres`, and condition-gated by
-`maasDb.create`. With `maasDb.create: true`, the dependency deploys the Cluster and the bootstrap job derives its secret
-name from the `openshift-ai.pg.fullname` convention (see `templates/_helpers.tpl`); with `maasDb.secretName` set
-instead, the job runs out-of-band against an external Cluster.
+release resources to become Ready before the post-hook executes. The installing identity — not the Job's `patch-secret`
+ServiceAccount — needs Job delete/get/create rights in the tenant namespace, plus the relevant list/watch permissions
+for watcher waits. `--no-hooks` skips credential configuration and is not an equivalent deployment mode. Helm does not
+directly uninstall hook Jobs; tenant Namespace deletion collects them. Helm rollback does not revert Secret side
+effects, and rollback to a pre-hook chart revision can encounter the existing hook Job. No invocation is promised
+race-free; real-cluster upgrade timing, migration, and rollback behavior are not validated by this chart's tests.
 
 Values
 ------

@@ -69,10 +69,21 @@ while true; do
 done
 
 # Read the uri key with a checked command status, then decode into a private
-# file. Both pipeline sides are checked: oc via ||, base64 via pipefail.
+# file. Both pipeline sides are checked: oc via ||, base64 via pipefail. The
+# request budget is capped to the remaining wall-clock wait like the
+# readiness requests, so a read cannot run past the wait budget.
+remaining=$(remaining_seconds)
+if [ "$remaining" -le 0 ]; then
+  echo "Error: timed out after ${WAIT_TIMEOUT}s waiting for secret ${DB_SOURCE_SECRET} in namespace ${DB_NAMESPACE}" >&2
+  exit 1
+fi
+budget=$remaining
+if [ "$budget" -gt "$REQUEST_TIMEOUT" ]; then
+  budget=$REQUEST_TIMEOUT
+fi
 uri_b64="$(oc get secret "$DB_SOURCE_SECRET" -n "$DB_NAMESPACE" \
-  -ojsonpath='{.data.uri}' --request-timeout="${REQUEST_TIMEOUT}s")" || {
-  echo "Error: failed to read the uri key from secret ${DB_SOURCE_SECRET} in namespace ${DB_NAMESPACE}" >&2
+  -ojsonpath='{.data.uri}' --request-timeout="${budget}s")" || {
+  echo "Error: failed to read the uri key from secret ${DB_SOURCE_SECRET} in namespace ${DB_NAMESPACE} — the error body was suppressed deliberately to avoid forwarding credential-bearing output" >&2
   exit 1
 }
 printf '%s' "$uri_b64" | base64 -d > "$workdir/DB_CONNECTION_URL" || {
@@ -93,7 +104,7 @@ if ! oc create secret generic maas-db-config -n "$DB_NAMESPACE" \
       --from-file=DB_CONNECTION_URL="$workdir/DB_CONNECTION_URL" \
       --dry-run=client -oyaml 2>"$workdir/create.err" \
    | oc apply -f- >/dev/null 2>"$workdir/apply.err"; then
-  echo "Error: failed to apply the maas-db-config secret in namespace ${DB_NAMESPACE} — see the pod's private error logs" >&2
+  echo "Error: failed to apply the maas-db-config secret in namespace ${DB_NAMESPACE} (client dry-run create plus apply) — the error body was suppressed deliberately to avoid forwarding credential-bearing output" >&2
   exit 1
 fi
 echo "maas-db-config secret applied in namespace ${DB_NAMESPACE}"
