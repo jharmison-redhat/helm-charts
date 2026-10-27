@@ -1,4 +1,4 @@
-"""Focused tests for the openshift-ai chart. The module now covers the
+"""Focused tests for the openshift-ai chart. The module covers the
 configurable GatewayClass references with namespace-selective Route
 attachment and per-gateway replicas, the bounded MaasTenantConfig
 configuration hook, strict duplicate-key YAML parsing, the fail-closed
@@ -874,6 +874,31 @@ class MaasDbScriptTests(ChartFixture):
         self.assertIn("src-secret", result.stderr)
         self.assert_no_mutation()
 
+    def test_read_request_timeout_capped_to_remaining_budget(self):
+        # Advance the simulated clock so only 5s of wall-clock budget remain
+        # after readiness; the post-readiness read request must be capped to
+        # the remaining budget instead of the fixed 10s request timeout
+        with open(os.path.join(self.work, "date"), "w") as f:
+            f.write(textwrap.dedent("""\
+                #!/bin/bash
+                n=$(cat "$DATE_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DATE_STATE"
+                if [ "$n" -eq 1 ]; then echo 1000000000; else echo 1000000015; fi
+                """))
+        os.chmod(os.path.join(self.work, "date"), 0o755)
+        os.environ["DATE_STATE"] = os.path.join(self.work, "date-state")
+        self.addCleanup(os.environ.pop, "DATE_STATE", None)
+        result = self.run_script("success", wait_timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        read_lines = [l for l in self.log().splitlines()
+                      if "data.uri" in l]
+        self.assertEqual(len(read_lines), 1)
+        timeout_args = [a for a in read_lines[0].split()
+                        if a.startswith("--request-timeout=")]
+        self.assertEqual(len(timeout_args), 1)
+        seconds = int(timeout_args[0].split("=")[1].rstrip("s"))
+        self.assertEqual(seconds, 5)
+        self.assertLess(seconds, 10)
+
     def test_forbidden_fails_immediately(self):
         result = self.run_script("forbidden")
         self.assertNotEqual(result.returncode, 0)
@@ -1284,18 +1309,16 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
             self.assertEqual(f.read(), EH_ACCESS)
         with open(os.path.join(self.target, "AWS_SECRET_ACCESS_KEY")) as f:
             self.assertEqual(f.read(), EH_SECRET)
-        self.assertEqual(
-            open(os.path.join(self.target, "AWS_S3_ENDPOINT")).read(),
-            "http://minio-dspa.evalhub-tenant.svc.cluster.local:9000")
-        self.assertEqual(
-            open(os.path.join(self.target, "AWS_S3_BUCKET")).read(), "mlpipeline")
-        self.assertEqual(
-            open(os.path.join(self.target, "AWS_DEFAULT_REGION")).read(),
-            "us-east-1")
+        with open(os.path.join(self.target, "AWS_S3_ENDPOINT")) as f:
+            self.assertEqual(f.read(),
+                             "http://minio-dspa.evalhub-tenant.svc.cluster.local:9000")
+        with open(os.path.join(self.target, "AWS_S3_BUCKET")) as f:
+            self.assertEqual(f.read(), "mlpipeline")
+        with open(os.path.join(self.target, "AWS_DEFAULT_REGION")) as f:
+            self.assertEqual(f.read(), "us-east-1")
         # The narrow update leaves unrelated keys untouched
-        self.assertEqual(
-            open(os.path.join(self.target, "unrelated-key")).read(),
-            "unrelated-value")
+        with open(os.path.join(self.target, "unrelated-key")) as f:
+            self.assertEqual(f.read(), "unrelated-value")
         set_lines = [l for l in self.log().splitlines()
                      if l.startswith("set data")]
         self.assertEqual(len(set_lines), 1)

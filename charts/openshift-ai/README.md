@@ -75,9 +75,10 @@ The chart declares an OCI dependency on the published `postgres-cluster` chart o
 name from the `openshift-ai.pg.fullname` convention (see `templates/_helpers.tpl`); with `maasDb.secretName` set
 instead, the job runs out-of-band against an external Cluster.
 
-Both bootstrap Jobs run on the configured cluster-local `openshift/tools:latest` image (`global.toolsImage`); any
-override must provide Bash plus OpenShift `oc` with `set data --from-file` and the standard utilities the scripts use
-(`base64`, `date`, `sleep`, `mktemp`).
+Every Job running on the configured cluster-local `openshift/tools:latest` image (`global.toolsImage` — the maas-db
+bootstrap, maas-tenant-config, and EvalHub credential Jobs) requires Bash plus OpenShift `oc` and the standard utilities
+the scripts use (`base64`, `date`, `sleep`, `mktemp`). The EvalHub credential Job additionally requires
+`oc set data --from-file`; the maas-db bootstrap Job requires `oc create --dry-run=client`/`apply` support.
 
 Gateway classes
 ---------------
