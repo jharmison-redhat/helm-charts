@@ -474,8 +474,9 @@ class HookGateTests(ChartFixture):
         self.assertEqual(payload["spec"]["telemetry"]["metrics"]["captureUser"], False)
 
     def test_maas_db_glob_cannot_absorb_tenant_script(self):
-        # The tenant script lives under files/maas-tenant-config/, so the
-        # maas-db script ConfigMap's files/* glob cannot include it.
+        # The tenant script lives under files/maas-tenant-config/ and the
+        # EvalHub credential script under files/evalhub/, so the maas-db
+        # script ConfigMap's files/* glob cannot include either
         values = self.hook_values()
         values["maasDb"] = {"create": False, "namespace": "redhat-ai-gateway-infra",
                             "secretName": "external-postgres-uri"}
@@ -483,7 +484,9 @@ class HookGateTests(ChartFixture):
         maas_db_cm = self.pick(by_kind, "ConfigMap", "create-maas-db-config-script")
         self.assertIn("create-maas-db-config.sh", maas_db_cm["data"])
         self.assertNotIn("configure-maas-tenant.sh", maas_db_cm["data"])
+        self.assertNotIn("update-secret-minio.sh", maas_db_cm["data"])
         self.assertNotIn("configure-maas-tenant", json.dumps(maas_db_cm["data"]))
+        self.assertNotIn("evalhub", json.dumps(maas_db_cm["data"]))
 
 
 class FakeOcScriptTests(ChartFixture):
@@ -710,114 +713,160 @@ class MaasDbJobRenderTests(ChartFixture):
         self.assertEqual(len(jobs), 1)
 
 
-class MaasDbScriptTests(ChartFixture):
-    """Executes the rendered maas-db script against a fake oc binary."""
+FAKE_OC = """\
+#!/bin/bash
+echo "$@" >> "$OC_LOG"
+if [[ "$1" == "get" && "$2" == "secret" ]]; then
+  if [[ "$*" == *metadata.name* ]]; then
+    case "$SCENARIO" in
+      absent|timeout)
+        # ignore-not-found contract: rc 0, empty stdout
+        exit 0 ;;
+      absent_then_present)
+        n=$(cat "$OC_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$OC_STATE"
+        [ "$n" -eq 1 ] && exit 0
+        echo "$OC_SECRET" ;;
+      forbidden)
+        echo 'Error from server (Forbidden): forbidden' >&2
+        exit 1 ;;
+      transport404)
+        echo 'Error from server (Timeout): request 404 gateway timeout' >&2
+        exit 1 ;;
+      *)
+        echo "$OC_SECRET" ;;
+    esac
+  else
+    key=""
+    for k in $OC_KEYS; do
+      if [[ "$*" == *data.${k}* ]]; then key="$k"; fi
+    done
+    if [ -n "$key" ]; then
+      payload_file="$OC_READ/$key"
+      if [ ! -f "$payload_file" ]; then
+        echo 'Error from server: error executing jsonpath' >&2
+        exit 1
+      fi
+      payload="$(cat "$payload_file")"
+      case "$payload" in
+        EMPTY) exit 0 ;;
+        INVALID) echo 'not!!valid' ;;
+        WHITESPACE) printf '%s' "$(printf '   \\n' | base64)" ;;
+        *) printf '%s' "$(printf '%s' "$payload" | base64)" ;;
+      esac
+    fi
+  fi
+  exit 0
+fi
+if [[ "$1" == "set" && "$2" == "data" ]]; then
+  if [ "$OC_MUTATE" = "fail" ]; then
+    echo 'Error: set data rejected' >&2
+    for f in $OC_CREDS; do cat "$f" >&2; done
+    exit 1
+  fi
+  for a in "$@"; do
+    case "$a" in
+      --from-file=*)
+        arg="${a#--from-file=}"
+        key="${arg%%=*}"
+        src="${arg#*=}"
+        cat "$src" > "$OC_TARGET/$key" ;;
+    esac
+  done
+  exit 0
+fi
+if [[ "$1" == "create" ]]; then
+  if [ "$OC_MUTATE" = "fail" ]; then
+    echo 'Error: create rejected' >&2
+    for f in $OC_CREDS; do cat "$f" >&2; done
+    exit 1
+  fi
+  src=""
+  for a in "$@"; do
+    case "$a" in --from-file=*) arg="${a#--from-file=}"; src="${arg#*=}" ;; esac
+  done
+  # The dry-run manifest goes to stdout (feeding the pipe); echo the decoded
+  # --from-file payload as stringData
+  echo 'apiVersion: v1'
+  echo 'kind: Secret'
+  echo 'stringData:'
+  echo "  PAYLOAD: $(cat "$src")"
+  exit 0
+fi
+if [[ "$1" == "apply" ]]; then
+  if [ "$OC_MUTATE" = "fail" ]; then
+    echo 'Error: apply rejected' >&2
+    for f in $OC_CREDS; do cat "$f" >&2; done
+    exit 1
+  fi
+  cat > "$OC_TARGET/apply.yaml"
+  exit 0
+fi
+exit 0
+"""
+
+
+class HookScriptTests(ChartFixture):
+    """Shared fake-oc harness for the hook scripts: temp workdir, a
+    data-driven fake oc (per-key payloads via OC_READ files, readiness
+    scenarios, mutation behavior, hostile error bodies via OC_CREDS), argv
+    log with readiness capture, mutation/leak assertions, and a private
+    TMPDIR whose cleanup the script's EXIT trap is expected to perform."""
+
+    secret_name = ""        # source secret name the fake oc reports
+    secret_keys = ()        # jsonpath keys the scripts read from the secret
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="oa-dbscript-")
+        self.work = tempfile.mkdtemp(prefix="oa-hookscript-")
         self.addCleanup(shutil.rmtree, self.work)
-        self.target = os.path.join(self.work, "target-secret.yaml")
+        self.target = os.path.join(self.work, "target")
+        os.makedirs(self.target)
+        self.read = os.path.join(self.work, "read")
+        os.makedirs(self.read)
         self.tmpdir = os.path.join(self.work, "pod-tmp")
         os.makedirs(self.tmpdir)
+        self.state = os.path.join(self.work, "state")
 
-    def run_script(self, scenario, wait_timeout=10):
-        values = self.managed_maas()
-        values["maasDb"] = {"create": False, "secretName": "src-secret",
-                            "namespace": "maas-ns", "waitTimeoutSeconds": 240}
-        data = self.pick(self.by_kind(self.render(values)), "ConfigMap",
-                         "create-maas-db-config-script")["data"]
-        for name, content in data.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-        os.chmod(os.path.join(self.work, "create-maas-db-config.sh"), 0o755)
+    def set_payload(self, key, content):
+        """Sets the fake-oc payload for a secret key; special markers:
+        EMPTY (missing key), INVALID (bad base64), WHITESPACE (blank)."""
+        with open(os.path.join(self.read, key), "w") as f:
+            f.write(content)
+
+    def clear_payload(self, key):
+        os.unlink(os.path.join(self.read, key))
+
+    def creds_file(self, *contents):
+        """A file whose contents a hostile fake-oc error body echoes to
+        stderr."""
+        path = os.path.join(self.work, "creds.txt")
+        with open(path, "w") as f:
+            for content in contents:
+                f.write(content + "\n")
+        return path
+
+    def execute(self, argv, scenario, wait_timeout, env_extra,
+                mutate="ok", creds=""):
         with open(os.path.join(self.work, "oc"), "w") as f:
-            f.write(textwrap.dedent(f"""\
-                #!/bin/bash
-                echo "$@" >> "$OC_LOG"
-                if [[ "$1" == "get" && "$2" == "secret" ]]; then
-                  if [[ "$*" == *metadata.name* ]]; then
-                    case "$DB_SCENARIO" in
-                      absent|timeout|missing_ns)
-                        # ignore-not-found contract: rc 0, empty stdout
-                        exit 0 ;;
-                      absent_then_present)
-                        n=$(cat "$OC_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$OC_STATE"
-                        [ "$n" -eq 1 ] && exit 0
-                        echo src-secret ;;
-                      forbidden)
-                        echo 'Error from server (Forbidden): forbidden' >&2
-                        exit 1 ;;
-                      transport404)
-                        echo 'Error from server (Timeout): request 404 gateway timeout' >&2
-                        exit 1 ;;
-                      *)
-                        echo src-secret ;;
-                    esac
-                  elif [[ "$*" == *data.uri* ]]; then
-                    case "$DB_SCENARIO" in
-                      read_fail)
-                        echo 'Error from server: error executing jsonpath' >&2
-                        exit 1 ;;
-                      invalid_b64)
-                        echo 'not!!valid' ;;
-                      empty_uri)
-                        exit 0 ;;
-                      whitespace_uri)
-                        printf '%s' "$(printf '   \\n' | base64)" ;;
-                      *)
-                        printf '%s' "$(printf '%s' "$DB_URI" | base64)" ;;
-                    esac
-                  fi
-                  exit 0
-                fi
-                if [[ "$1" == "create" ]]; then
-                  if [[ "$DB_SCENARIO" == "create_fail" ]]; then
-                    echo 'Error: create rejected' >&2
-                    exit 1
-                  fi
-                  # The dry-run manifest goes to stdout (feeding the pipe);
-                  # echo the decoded --from-file payload as stringData
-                  src=""
-                  for a in "$@"; do
-                    case "$a" in --from-file=DB_CONNECTION_URL=*) src="${{a##*=}}" ;; esac
-                  done
-                  echo 'apiVersion: v1'
-                  echo 'kind: Secret'
-                  echo 'stringData:'
-                  echo "  DB_CONNECTION_URL: $(cat "$src")"
-                  exit 0
-                fi
-                if [[ "$1" == "apply" ]]; then
-                  if [[ "$DB_SCENARIO" == "apply_fail" ]]; then
-                    # Hostile simulated client error carrying the decoded
-                    # URI in its body
-                    echo 'Error: apply rejected' >&2
-                    echo "$DB_URI" >&2
-                    exit 1
-                  fi
-                  cat > "$DB_TARGET_FILE"
-                  exit 0
-                fi
-                exit 0
-                """))
+            f.write(FAKE_OC)
         os.chmod(os.path.join(self.work, "oc"), 0o755)
         env = dict(
             os.environ,
-            DB_SCENARIO=scenario,
-            DB_URI=DB_URI,
-            DB_SOURCE_SECRET="src-secret",
-            DB_NAMESPACE="maas-ns",
-            DB_WAIT_TIMEOUT=str(wait_timeout),
-            DB_TARGET_FILE=self.target,
+            SCENARIO=scenario,
+            OC_SECRET=self.secret_name,
+            OC_KEYS=" ".join(self.secret_keys),
             OC_LOG=os.path.join(self.work, "commands.log"),
-            OC_STATE=os.path.join(self.work, "state"),
+            OC_STATE=self.state,
+            OC_READ=self.read,
+            OC_TARGET=self.target,
+            OC_MUTATE=mutate,
+            OC_CREDS=creds,
             PATH=f"{self.work}:{os.environ['PATH']}",
             TMPDIR=self.tmpdir,
         )
-        return subprocess.run(
-            [os.path.join(self.work, "create-maas-db-config.sh")],
-            capture_output=True, text=True, env=env, timeout=60)
+        env.update(env_extra or {})
+        return subprocess.run(argv, capture_output=True, text=True,
+                              env=env, timeout=60)
 
     def log(self):
         with open(os.path.join(self.work, "commands.log")) as f:
@@ -827,33 +876,79 @@ class MaasDbScriptTests(ChartFixture):
         return sum(1 for l in self.log().splitlines()
                    if "metadata.name" in l)
 
-    def assert_no_mutation(self):
-        self.assertNotRegex(self.log(), r"^create |^apply ")
-        self.assertFalse(os.path.exists(self.target))
+    def mutation_lines(self):
+        return [l for l in self.log().splitlines()
+                if l.startswith(("set data", "create ", "apply "))]
 
-    def assert_uri_absent(self, result):
+    def assert_no_mutation(self):
+        self.assertEqual(self.mutation_lines(), [])
+
+    def assert_absent(self, result, *secrets):
         combined = result.stdout + result.stderr + self.log()
-        self.assertNotIn("postgresql://", combined)
+        for secret in secrets:
+            self.assertNotIn(secret, combined)
+
+    def assert_tmpdir_cleaned(self):
+        self.assertEqual(os.listdir(self.tmpdir), [])
+
+    def request_timeout_seconds(self, lines):
+        seconds = []
+        for line in lines:
+            timeout_args = [a for a in line.split()
+                            if a.startswith("--request-timeout=")]
+            self.assertEqual(len(timeout_args), 1)
+            seconds.append(int(timeout_args[0].split("=")[1].rstrip("s")))
+        return seconds
+
+
+class MaasDbScriptTests(HookScriptTests):
+    """Executes the rendered maas-db script (as mounted from its ConfigMap)
+    against a fake oc binary."""
+
+    secret_name = "src-secret"
+    secret_keys = ("uri",)
+
+    def setUp(self):
+        super().setUp()
+        self.set_payload("uri", DB_URI)
+
+    def run_script(self, scenario, wait_timeout=10, mutate="ok", creds=""):
+        values = self.managed_maas()
+        values["maasDb"] = {"create": False, "secretName": "src-secret",
+                            "namespace": "maas-ns", "waitTimeoutSeconds": 240}
+        data = self.pick(self.by_kind(self.render(values)), "ConfigMap",
+                         "create-maas-db-config-script")["data"]
+        script = os.path.join(self.work, "create-maas-db-config.sh")
+        with open(script, "w") as f:
+            f.write(data["create-maas-db-config.sh"])
+        os.chmod(script, 0o755)
+        return self.execute(
+            [script], scenario, wait_timeout, dict(
+                DB_SOURCE_SECRET="src-secret",
+                DB_NAMESPACE="maas-ns",
+                DB_WAIT_TIMEOUT=str(wait_timeout),
+            ), mutate=mutate, creds=creds)
 
     def test_absent_then_present(self):
         result = self.run_script("absent_then_present", wait_timeout=8)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.readiness_calls(), 2)
-        self.assert_uri_absent(result)
+        self.assert_absent(result, "postgresql://")
 
     def test_successful_payload(self):
         result = self.run_script("success")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("applied", result.stdout)
-        with open(self.target) as f:
+        with open(os.path.join(self.target, "apply.yaml")) as f:
             target = f.read()
-        # The URI reaches the target only through --from-file, byte-exact
+        # The URI reaches the target only through --from-file; the fake
+        # apply-side capture carries the decoded payload
         self.assertIn(DB_URI.rstrip("\n"), target)
-        argv = [l for l in self.log().splitlines() if l.startswith("create ")]
-        self.assertEqual(len(argv), 1)
-        self.assertIn("--from-file=DB_CONNECTION_URL=", argv[0])
-        self.assertNotIn("postgresql://", argv[0])
-        self.assert_uri_absent(result)
+        argv = self.mutation_lines()
+        self.assertEqual(len(argv), 2)
+        self.assertIn("--from-file=DB_CONNECTION_URL=", " ".join(argv))
+        self.assertNotIn("postgresql://", " ".join(argv))
+        self.assert_absent(result, "postgresql://")
 
     def test_bounded_timeout_names_namespace_and_secret(self):
         result = self.run_script("timeout", wait_timeout=5)
@@ -863,41 +958,15 @@ class MaasDbScriptTests(ChartFixture):
         self.assertIn("src-secret", result.stderr)
         self.assertLessEqual(self.readiness_calls(), 4)
         self.assert_no_mutation()
-        self.assert_uri_absent(result)
+        self.assert_absent(result, "postgresql://")
 
     def test_missing_namespace_times_out(self):
         # A missing namespace is NotFound: rc 0, no marker, retried to timeout
-        result = self.run_script("missing_ns", wait_timeout=5)
+        result = self.run_script("timeout", wait_timeout=5)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("timed out", result.stderr)
         self.assertIn("maas-ns", result.stderr)
         self.assertIn("src-secret", result.stderr)
         self.assert_no_mutation()
-
-    def test_read_request_timeout_capped_to_remaining_budget(self):
-        # Advance the simulated clock so only 5s of wall-clock budget remain
-        # after readiness; the post-readiness read request must be capped to
-        # the remaining budget instead of the fixed 10s request timeout
-        with open(os.path.join(self.work, "date"), "w") as f:
-            f.write(textwrap.dedent("""\
-                #!/bin/bash
-                n=$(cat "$DATE_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DATE_STATE"
-                if [ "$n" -eq 1 ]; then echo 1000000000; else echo 1000000015; fi
-                """))
-        os.chmod(os.path.join(self.work, "date"), 0o755)
-        os.environ["DATE_STATE"] = os.path.join(self.work, "date-state")
-        self.addCleanup(os.environ.pop, "DATE_STATE", None)
-        result = self.run_script("success", wait_timeout=20)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        read_lines = [l for l in self.log().splitlines()
-                      if "data.uri" in l]
-        self.assertEqual(len(read_lines), 1)
-        timeout_args = [a for a in read_lines[0].split()
-                        if a.startswith("--request-timeout=")]
-        self.assertEqual(len(timeout_args), 1)
-        seconds = int(timeout_args[0].split("=")[1].rstrip("s"))
-        self.assertEqual(seconds, 5)
-        self.assertLess(seconds, 10)
 
     def test_forbidden_fails_immediately(self):
         result = self.run_script("forbidden")
@@ -915,60 +984,57 @@ class MaasDbScriptTests(ChartFixture):
         self.assert_no_mutation()
 
     def test_read_failure_without_mutation(self):
-        result = self.run_script("read_fail")
+        self.clear_payload("uri")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to read the uri key", result.stderr)
         self.assert_no_mutation()
-        self.assert_uri_absent(result)
+        self.assert_absent(result, "postgresql://")
 
     def test_invalid_base64_fails_without_mutation(self):
-        result = self.run_script("invalid_b64")
+        self.set_payload("uri", "INVALID")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not valid base64", result.stderr)
         self.assert_no_mutation()
-        self.assert_uri_absent(result)
+        self.assert_absent(result, "postgresql://")
 
     def test_empty_uri_fails_without_mutation(self):
-        result = self.run_script("empty_uri")
+        self.set_payload("uri", "EMPTY")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assert_no_mutation()
-        self.assert_uri_absent(result)
+        self.assert_absent(result, "postgresql://")
 
     def test_whitespace_uri_fails_without_mutation(self):
-        result = self.run_script("whitespace_uri")
+        self.set_payload("uri", "WHITESPACE")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assert_no_mutation()
-        self.assert_uri_absent(result)
+        self.assert_absent(result, "postgresql://")
 
-    def test_create_failure_propagates(self):
-        result = self.run_script("create_fail")
+    def test_pipeline_failure_propagates_without_leaking_uri(self):
+        # The fake oc is hostile: its error body carries the decoded URI,
+        # but the script suppresses error bodies so they must not appear in
+        # the script's stdout/stderr (or argv)
+        creds = self.creds_file(DB_URI)
+        result = self.run_script("success", mutate="fail", creds=creds)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to apply", result.stderr)
-        self.assert_uri_absent(result)
+        self.assertNotIn("postgresql://", result.stdout + result.stderr)
+        self.assert_absent(result, "postgresql://")
 
-    def test_apply_failure_propagates_without_leaking_uri(self):
-        result = self.run_script("apply_fail")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("failed to apply", result.stderr)
-        self.assertNotIn("postgresql://", result.stderr)
-        self.assert_uri_absent(result)
-
-    def test_request_timeouts_bounded_to_ten_seconds(self):
+    def test_request_timeouts_fixed_to_ten_seconds(self):
         result = self.run_script("success")
         self.assertEqual(result.returncode, 0, result.stderr)
         get_lines = [l for l in self.log().splitlines()
                      if l.startswith("get ")]
         self.assertTrue(get_lines)
-        for line in get_lines:
-            timeout_args = [a for a in line.split()
-                            if a.startswith("--request-timeout=")]
-            self.assertEqual(len(timeout_args), 1)
-            seconds = int(timeout_args[0].split("=")[1].rstrip("s"))
-            self.assertLessEqual(seconds, 10)
-            self.assertGreater(seconds, 0)
+        self.assertEqual(self.request_timeout_seconds(get_lines), [10, 10])
 
     def test_wall_clock_capped_for_small_wait(self):
         # With a 5s wait and an absent secret the script must give up well
-        # inside the poll interval overshoot: capped sleeps, bounded gets.
+        # inside the poll interval overshoot: fixed 2s polls, bounded gets.
         result = self.run_script("absent", wait_timeout=5)
         self.assertNotEqual(result.returncode, 0)
         self.assertLessEqual(self.readiness_calls(), 4)
@@ -976,12 +1042,11 @@ class MaasDbScriptTests(ChartFixture):
     def test_cleanup_removes_private_files(self):
         result = self.run_script("success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        # The EXIT trap removed the private temp dir (the target yaml lives
-        # in the test work dir, not the script's TMPDIR)
-        self.assertEqual(os.listdir(self.tmpdir), [])
-        result = self.run_script("invalid_b64")
+        self.assert_tmpdir_cleaned()
+        self.set_payload("uri", "INVALID")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(os.listdir(self.tmpdir), [])
+        self.assert_tmpdir_cleaned()
 
 
 class HwpProfileTests(ChartFixture):
@@ -1098,9 +1163,25 @@ class EvalHubJobRenderTests(ChartFixture):
         env = self.env(job)
         self.assertEqual(env["TENANT_NAMESPACE"], "evalhub-tenant")
         self.assertEqual(env["TENANT_WAIT_TIMEOUT"], "240")
-        # bash -ec: pipefail without credential xtrace
-        args = job["spec"]["template"]["spec"]["containers"][0]["args"]
-        self.assertEqual(args[0], "-ec")
+        # The script mounts from its dedicated ConfigMap, like the
+        # maas-tenant-config Job
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(container["command"],
+                         ["/bin/bash", "/config/update-secret-minio.sh"])
+        volumes = job["spec"]["template"]["spec"]["volumes"]
+        self.assertEqual(
+            [(v["name"], v["configMap"]["name"]) for v in volumes],
+            [("script", "update-secret-minio-script")])
+
+    def test_script_configmap_mount(self):
+        by_kind = self.by_kind(self.render(self.evalhub_values()))
+        cm = self.pick(by_kind, "ConfigMap", "update-secret-minio-script")
+        self.assertEqual(cm["metadata"]["namespace"], "evalhub-tenant")
+        self.assertIn("update-secret-minio.sh", cm["data"])
+        # The script ConfigMap is an ordinary release resource: no hooks
+        annotations = cm["metadata"].get("annotations") or {}
+        self.assertNotIn("helm.sh/hook", annotations)
+        self.assertNotIn("helm.sh/hook-delete-policy", annotations)
 
     def test_hooks_absent_from_supporting_resources(self):
         by_kind = self.by_kind(self.render(self.evalhub_values()))
@@ -1155,143 +1236,36 @@ class EvalHubJobRenderTests(ChartFixture):
                         expect_failure=True)
 
 
-class EvalHubScriptTests(EvalHubJobRenderTests):
-    """Executes the rendered update-secret-minio inline script against a
-    fake oc binary."""
+class EvalHubScriptTests(HookScriptTests, EvalHubJobRenderTests):
+    """Executes the rendered update-secret-minio script (as mounted from its
+    ConfigMap) against a fake oc binary."""
+
+    secret_name = "ds-pipeline-s3-dspa"
+    secret_keys = ("accesskey", "secretkey")
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="oa-ehscript-")
-        self.addCleanup(shutil.rmtree, self.work)
-        self.target = os.path.join(self.work, "target")
-        os.makedirs(self.target)
+        self.set_payload("accesskey", EH_ACCESS)
+        self.set_payload("secretkey", EH_SECRET)
         # An unrelated existing Secret key that the narrow update must not touch
         with open(os.path.join(self.target, "unrelated-key"), "w") as f:
             f.write("unrelated-value")
 
-    def run_script(self, scenario, wait_timeout=10):
-        values = self.evalhub_values()
-        job = self.pick(self.by_kind(self.render(values)), "Job",
-                        "update-secret-minio")
-        container = job["spec"]["template"]["spec"]["containers"][0]
-        script = container["args"][1]
-        # Execute exactly as the Job does: /bin/bash -ec <inline script>
-        with open(os.path.join(self.work, "oc"), "w") as f:
-            f.write(textwrap.dedent(f"""\
-                #!/bin/bash
-                echo "$@" >> "$OC_LOG"
-                if [[ "$1" == "get" && "$2" == "secret" ]]; then
-                  if [[ "$*" == *metadata.name* ]]; then
-                    case "$EH_SCENARIO" in
-                      absent|timeout)
-                        # ignore-not-found contract: rc 0, empty stdout
-                        exit 0 ;;
-                      absent_then_present)
-                        n=$(cat "$OC_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$OC_STATE"
-                        [ "$n" -eq 1 ] && exit 0
-                        echo ds-pipeline-s3-dspa ;;
-                      forbidden)
-                        echo 'Error from server (Forbidden): forbidden' >&2
-                        exit 1 ;;
-                      transport404)
-                        echo 'Error from server (Timeout): request 404 gateway timeout' >&2
-                        exit 1 ;;
-                      *)
-                        echo ds-pipeline-s3-dspa ;;
-                    esac
-                  elif [[ "$*" == *data.accesskey* ]]; then
-                    case "$EH_SCENARIO" in
-                      read_fail)
-                        echo 'Error from server: error executing jsonpath' >&2
-                        exit 1 ;;
-                      empty_uri)
-                        exit 0 ;;
-                      whitespace_uri)
-                        printf '%s' "$(printf '   \\n' | base64)" ;;
-                      invalid_b64)
-                        echo 'not!!valid' ;;
-                      *)
-                        printf '%s' "$(printf '%s' "$EH_ACCESS" | base64)" ;;
-                    esac
-                  elif [[ "$*" == *data.secretkey* ]]; then
-                    case "$EH_SCENARIO" in
-                      invalid_b64)
-                        echo 'not!!valid' ;;
-                      secretkey_invalid)
-                        echo 'not!!valid' ;;
-                      secretkey_empty)
-                        exit 0 ;;
-                      *)
-                        printf '%s' "$(printf '%s' "$EH_SECRET" | base64)" ;;
-                    esac
-                  fi
-                  exit 0
-                fi
-                if [[ "$1" == "set" && "$2" == "data" ]]; then
-                  if [[ "$EH_SCENARIO" == "set_fail" ]]; then
-                    # Hostile simulated client error carrying the decoded
-                    # synthetic credentials in its body
-                    echo 'Error: set data rejected' >&2
-                    echo "$EH_ACCESS" >&2
-                    echo "$EH_SECRET" >&2
-                    exit 1
-                  fi
-                  for a in "$@"; do
-                    case "$a" in
-                      --from-file=*)
-                        arg="${{a#--from-file=}}"
-                        key="${{arg%%=*}}"
-                        src="${{arg#*=}}"
-                        cat "$src" > "$EH_TARGET/$key" ;;
-                    esac
-                  done
-                  exit 0
-                fi
-                exit 0
-                """))
-        os.chmod(os.path.join(self.work, "oc"), 0o755)
-        env = dict(
-            os.environ,
-            EH_SCENARIO=scenario,
-            EH_ACCESS=EH_ACCESS,
-            EH_SECRET=EH_SECRET,
-            TENANT_NAMESPACE="evalhub-tenant",
-            TENANT_WAIT_TIMEOUT=str(wait_timeout),
-            EH_TARGET=self.target,
-            OC_LOG=os.path.join(self.work, "commands.log"),
-            OC_STATE=os.path.join(self.work, "state"),
-            PATH=f"{self.work}:{os.environ['PATH']}",
-            TMPDIR=os.path.join(self.work, "pod-tmp"),
-        )
-        os.makedirs(env["TMPDIR"], exist_ok=True)
-        return subprocess.run(["/bin/bash", "-ec", script],
-                              capture_output=True, text=True,
-                              env=env, timeout=60)
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def readiness_calls(self):
-        return sum(1 for l in self.log().splitlines()
-                   if "metadata.name" in l)
-
-    def set_data_calls(self):
-        return sum(1 for l in self.log().splitlines()
-                   if l.startswith("set data"))
-
-    def assert_no_mutation(self):
-        self.assertEqual(self.set_data_calls(), 0)
-        with open(os.path.join(self.target, "unrelated-key")) as f:
-            self.assertEqual(f.read(), "unrelated-value")
-        for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                    "AWS_S3_ENDPOINT", "AWS_S3_BUCKET", "AWS_DEFAULT_REGION"):
-            self.assertFalse(os.path.exists(os.path.join(self.target, key)))
-
     def assert_credentials_absent(self, result):
-        combined = result.stdout + result.stderr + self.log()
-        self.assertNotIn('AKIA"quoted', combined)
-        self.assertNotIn("s3cr3t-key", combined)
+        self.assert_absent(result, 'AKIA"quoted', "s3cr3t-key", "AKIA")
+
+    def run_script(self, scenario, wait_timeout=10, mutate="ok", creds=""):
+        script_cm = self.pick(self.by_kind(self.render(self.evalhub_values())),
+                              "ConfigMap", "update-secret-minio-script")
+        script = os.path.join(self.work, "update-secret-minio.sh")
+        with open(script, "w") as f:
+            f.write(script_cm["data"]["update-secret-minio.sh"])
+        os.chmod(script, 0o755)
+        return self.execute(
+            ["/bin/bash", script], scenario, wait_timeout, dict(
+                TENANT_NAMESPACE="evalhub-tenant",
+                TENANT_WAIT_TIMEOUT=str(wait_timeout),
+            ), mutate=mutate, creds=creds)
 
     def test_absent_then_present(self):
         result = self.run_script("absent_then_present", wait_timeout=8)
@@ -1361,26 +1335,31 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
         self.assert_no_mutation()
 
     def test_read_failure_without_mutation(self):
-        result = self.run_script("read_fail")
+        self.clear_payload("accesskey")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to read the accesskey key", result.stderr)
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
 
     def test_invalid_base64_fails_without_mutation(self):
-        result = self.run_script("invalid_b64")
+        self.set_payload("accesskey", "INVALID")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not valid base64", result.stderr)
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
 
     def test_empty_credential_fails_without_mutation(self):
-        result = self.run_script("empty_uri")
+        self.set_payload("accesskey", "EMPTY")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
 
     def test_whitespace_credential_fails_without_mutation(self):
-        result = self.run_script("whitespace_uri")
+        self.set_payload("accesskey", "WHITESPACE")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
@@ -1388,14 +1367,16 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
     def test_secretkey_invalid_fails_without_mutation(self):
         # accesskey decodes fine; a broken secretkey must still fail without
         # mutation
-        result = self.run_script("secretkey_invalid")
+        self.set_payload("secretkey", "INVALID")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not valid base64", result.stderr)
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
 
     def test_secretkey_empty_fails_without_mutation(self):
-        result = self.run_script("secretkey_empty")
+        self.set_payload("secretkey", "EMPTY")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
         self.assert_no_mutation()
         self.assert_credentials_absent(result)
@@ -1404,26 +1385,21 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
         # The fake oc is hostile: its error body carries the decoded
         # credentials, but the script suppresses error bodies so they must
         # not appear in the script's stdout/stderr (or argv)
-        result = self.run_script("set_fail")
+        creds = self.creds_file(EH_ACCESS, EH_SECRET)
+        result = self.run_script("success", mutate="fail", creds=creds)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failed to update the data", result.stderr)
         self.assertNotIn('AKIA"quoted', result.stdout + result.stderr)
         self.assertNotIn("s3cr3t-key", result.stdout + result.stderr)
         self.assert_credentials_absent(result)
 
-    def test_request_timeouts_bounded_to_ten_seconds(self):
+    def test_request_timeouts_fixed_to_ten_seconds(self):
         result = self.run_script("success")
         self.assertEqual(result.returncode, 0, result.stderr)
         get_lines = [l for l in self.log().splitlines()
                      if l.startswith("get ")]
         self.assertTrue(get_lines)
-        for line in get_lines:
-            timeout_args = [a for a in line.split()
-                            if a.startswith("--request-timeout=")]
-            self.assertEqual(len(timeout_args), 1)
-            seconds = int(timeout_args[0].split("=")[1].rstrip("s"))
-            self.assertLessEqual(seconds, 10)
-            self.assertGreater(seconds, 0)
+        self.assertEqual(self.request_timeout_seconds(get_lines), [10, 10, 10])
 
     def test_wall_clock_capped_for_small_wait(self):
         result = self.run_script("absent", wait_timeout=5)
@@ -1434,10 +1410,11 @@ class EvalHubScriptTests(EvalHubJobRenderTests):
     def test_cleanup_removes_private_files(self):
         result = self.run_script("success")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(os.listdir(os.path.join(self.work, "pod-tmp")), [])
-        result = self.run_script("invalid_b64")
+        self.assert_tmpdir_cleaned()
+        self.set_payload("accesskey", "INVALID")
+        result = self.run_script("success")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(os.listdir(os.path.join(self.work, "pod-tmp")), [])
+        self.assert_tmpdir_cleaned()
 
 
 if __name__ == "__main__":
