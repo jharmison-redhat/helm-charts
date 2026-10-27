@@ -1,14 +1,19 @@
 {{- if and (eq (include "openshift-ai.maasManaged" .) "true") (or .Values.maasDb.create .Values.maasDb.secretName) }}
+{{- $maasDb := .Values.maasDb }}
+{{- $secret := $maasDb.secretName | default (printf "%s-app" (include "openshift-ai.pg.fullname" .)) }}
+{{- $wait := int (include "openshift-ai.waitSeconds.validated" (dict "field" "maasDb.waitTimeoutSeconds" "value" $maasDb.waitTimeoutSeconds)) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: create-maas-db-config
-  namespace: {{ .Values.maasDb.namespace }}
+  namespace: {{ $maasDb.namespace }}
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 3
+  # The deadline covers the whole bounded wait plus Pod retries
+  activeDeadlineSeconds: {{ add $wait 30 }}
   template:
     spec:
       serviceAccountName: create-maas-db-config
@@ -20,6 +25,13 @@ spec:
           workingDir: /app
           command: ["/app/create-maas-db-config.sh"]
           args: []
+          env:
+            - name: DB_SOURCE_SECRET
+              value: {{ $secret | quote }}
+            - name: DB_NAMESPACE
+              value: {{ $maasDb.namespace | quote }}
+            - name: DB_WAIT_TIMEOUT
+              value: {{ $wait | quote }}
           volumeMounts:
             - name: create-maas-db-config-script
               mountPath: /app

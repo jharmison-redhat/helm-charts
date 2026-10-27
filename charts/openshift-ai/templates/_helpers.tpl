@@ -144,6 +144,34 @@ timing values must be positive integers.
 {{- end -}}
 
 {{/*
+Validates a positive-integral wait timeout in seconds, suitable for a
+Kubernetes activeDeadlineSeconds (int32). Rejects nulls, bools, strings,
+fractional values and values exceeding the int32 range; returns the validated
+integer. Shared by the bootstrap Jobs' wait values.
+*/}}
+{{- define "openshift-ai.waitSeconds.validated" -}}
+{{- $field := .field -}}
+{{- $v := .value -}}
+{{- if kindIs "invalid" $v -}}
+{{- fail (printf "%s is required — a missing wait timeout cannot bound the job" $field) -}}
+{{- end -}}
+{{- if kindIs "bool" $v -}}
+{{- fail (printf "%s must be an integer (got bool)" $field) -}}
+{{- end -}}
+{{- if not (or (kindIs "int" $v) (and (kindIs "float64" $v) (eq $v (mulf (floor $v) 1.0)))) -}}
+{{- fail (printf "%s must be an integer (got %s)" $field (kindOf $v)) -}}
+{{- end -}}
+{{- $n := int $v -}}
+{{- if le $n 0 -}}
+{{- fail (printf "%s must be positive (got %v)" $field $v) -}}
+{{- end -}}
+{{- if gt $n 2147483647 -}}
+{{- fail (printf "%s exceeds the int32 range (got %v)" $field $v) -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
+
+{{/*
 Validates a gateway's replicas override: null omits the patch field; explicit
 values must be nonnegative integers.
 */}}

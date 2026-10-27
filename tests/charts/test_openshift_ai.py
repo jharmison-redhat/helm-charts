@@ -27,6 +27,39 @@ def docs(text):
     return [d for d in yaml.safe_load_all(text) if d is not None]
 
 
+class _StrictLoader(yaml.SafeLoader):
+    pass
+
+
+def _no_duplicate_keys(loader, node, deep=False):
+    mapping = {}
+    for k_node, v_node in node.value:
+        key = loader.construct_object(k_node, deep=True)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", k_node.start_mark)
+        mapping[key] = loader.construct_object(v_node, deep=True)
+    return mapping
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys)
+
+
+def strict_docs(text):
+    """Documents with duplicate mapping keys rejected."""
+    return [d for d in yaml.load_all(text, Loader=_StrictLoader) if d is not None]
+
+
+class StrictYamlTests(unittest.TestCase):
+    def test_rejects_duplicate_keys(self):
+        with self.assertRaises(yaml.constructor.ConstructorError):
+            strict_docs("a: 1\na: 2")
+
+    def test_accepts_unique_keys(self):
+        self.assertEqual(strict_docs("a: 1\nb:\n  c: 2"), [{"a": 1, "b": {"c": 2}}])
+
+
 class ChartFixture(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="oa-test-")
@@ -591,6 +624,332 @@ class FakeOcScriptTests(ChartFixture):
         self.assertIn("--type=merge", argv)
         self.assertEqual(argv[argv.index("--patch-file") + 1],
                          os.path.join(self.work, "patch.json"))
+
+
+DB_URI = "postgresql://maas:secret@pg-app:5432/maas\n"
+
+
+class MaasDbJobRenderTests(ChartFixture):
+    """Render tests for the maas-db bootstrap Job env/deadline surfaces."""
+
+    def db_values(self, **overrides):
+        values = self.managed_maas()
+        db = {"create": True, "namespace": "redhat-ai-gateway-infra",
+              "waitTimeoutSeconds": 240}
+        db.update(overrides)
+        values["maasDb"] = db
+        return values
+
+    def db_job(self, values):
+        by_kind = self.by_kind(self.render(values))
+        return self.pick(by_kind, "Job", "create-maas-db-config")
+
+    def db_env(self, job):
+        return {e["name"]: e["value"] for e in
+                job["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    def test_managed_secret_name_and_deadline(self):
+        job = self.db_job(self.db_values())
+        env = self.db_env(job)
+        self.assertEqual(env["DB_SOURCE_SECRET"],
+                         "test-release-postgres-cluster-app")
+        self.assertEqual(env["DB_NAMESPACE"], "redhat-ai-gateway-infra")
+        self.assertEqual(env["DB_WAIT_TIMEOUT"], "240")
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 270)
+        self.assertEqual(job["spec"]["backoffLimit"], 3)
+        annotations = job["metadata"]["annotations"]
+        self.assertEqual(annotations["helm.sh/hook"], "post-install,post-upgrade")
+        self.assertEqual(annotations["helm.sh/hook-delete-policy"],
+                         "before-hook-creation")
+        self.assertEqual(job["metadata"]["namespace"], "redhat-ai-gateway-infra")
+
+    def test_external_secret_name(self):
+        job = self.db_job(self.db_values(create=False,
+                                         secretName="external-postgres-uri"))
+        self.assertEqual(self.db_env(job)["DB_SOURCE_SECRET"],
+                         "external-postgres-uri")
+
+    def test_custom_wait_deadline(self):
+        job = self.db_job(self.db_values(waitTimeoutSeconds=300))
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 330)
+        self.assertEqual(self.db_env(job)["DB_WAIT_TIMEOUT"], "300")
+
+    def test_invalid_wait_values_fail(self):
+        for v in (0, -5, "240", 1.5, True, None, 10 ** 15):
+            self.render(self.db_values(waitTimeoutSeconds=v),
+                        expect_failure=True)
+
+    def test_gates(self):
+        # Default maasDb (create false, secretName empty) renders nothing.
+        self.assertNotIn("Job", self.by_kind(self.render(self.managed_maas())))
+        # Both toggles unset in an explicit block: nothing.
+        self.assertNotIn("Job", self.by_kind(
+            self.render(self.db_values(create=False, secretName=""))))
+        # Non-Managed modelsAsAService: nothing.
+        values = self.db_values()
+        values["dataScienceCluster"]["components"]["aigateway"][
+            "modelsAsAService"] = {"managementState": "Removed"}
+        self.assertNotIn("Job", self.by_kind(self.render(values)))
+
+    def test_rendered_resources_parse_strictly(self):
+        self.stub_dependency()
+        text = subprocess.run(
+            ["helm", "template", "test-release", self.dir, "--namespace",
+             "test-release-ns", "--values",
+             self.values_file(self.db_values())],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(text.returncode, 0, text.stderr)
+        rendered = strict_docs(text.stdout)
+        jobs = [d for d in rendered if d["kind"] == "Job"
+                and d["metadata"]["name"] == "create-maas-db-config"]
+        self.assertEqual(len(jobs), 1)
+
+
+class MaasDbScriptTests(ChartFixture):
+    """Executes the rendered maas-db script against a fake oc binary."""
+
+    def setUp(self):
+        super().setUp()
+        self.work = tempfile.mkdtemp(prefix="oa-dbscript-")
+        self.addCleanup(shutil.rmtree, self.work)
+        self.target = os.path.join(self.work, "target-secret.yaml")
+        self.tmpdir = os.path.join(self.work, "pod-tmp")
+        os.makedirs(self.tmpdir)
+
+    def run_script(self, scenario, wait_timeout=10):
+        values = self.managed_maas()
+        values["maasDb"] = {"create": False, "secretName": "src-secret",
+                            "namespace": "maas-ns", "waitTimeoutSeconds": 240}
+        data = self.pick(self.by_kind(self.render(values)), "ConfigMap",
+                         "create-maas-db-config-script")["data"]
+        for name, content in data.items():
+            with open(os.path.join(self.work, name), "w") as f:
+                f.write(content)
+        os.chmod(os.path.join(self.work, "create-maas-db-config.sh"), 0o755)
+        with open(os.path.join(self.work, "oc"), "w") as f:
+            f.write(textwrap.dedent(f"""\
+                #!/bin/bash
+                echo "$@" >> "$OC_LOG"
+                if [[ "$1" == "get" && "$2" == "secret" ]]; then
+                  if [[ "$*" == *metadata.name* ]]; then
+                    case "$DB_SCENARIO" in
+                      absent|timeout|missing_ns)
+                        # ignore-not-found contract: rc 0, empty stdout
+                        exit 0 ;;
+                      absent_then_present)
+                        n=$(cat "$OC_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$OC_STATE"
+                        [ "$n" -eq 1 ] && exit 0
+                        echo src-secret ;;
+                      forbidden)
+                        echo 'Error from server (Forbidden): forbidden' >&2
+                        exit 1 ;;
+                      transport404)
+                        echo 'Error from server (Timeout): request 404 gateway timeout' >&2
+                        exit 1 ;;
+                      *)
+                        echo src-secret ;;
+                    esac
+                  elif [[ "$*" == *data.uri* ]]; then
+                    case "$DB_SCENARIO" in
+                      read_fail)
+                        echo 'Error from server: error executing jsonpath' >&2
+                        exit 1 ;;
+                      invalid_b64)
+                        echo 'not!!valid' ;;
+                      empty_uri)
+                        exit 0 ;;
+                      whitespace_uri)
+                        printf '%s' "$(printf '   \\n' | base64)" ;;
+                      *)
+                        printf '%s' "$(printf '%s' "$DB_URI" | base64)" ;;
+                    esac
+                  fi
+                  exit 0
+                fi
+                if [[ "$1" == "create" ]]; then
+                  if [[ "$DB_SCENARIO" == "create_fail" ]]; then
+                    echo 'Error: create rejected' >&2
+                    exit 1
+                  fi
+                  # The dry-run manifest goes to stdout (feeding the pipe);
+                  # echo the decoded --from-file payload as stringData
+                  src=""
+                  for a in "$@"; do
+                    case "$a" in --from-file=DB_CONNECTION_URL=*) src="${{a##*=}}" ;; esac
+                  done
+                  echo 'apiVersion: v1'
+                  echo 'kind: Secret'
+                  echo 'stringData:'
+                  echo "  DB_CONNECTION_URL: $(cat "$src")"
+                  exit 0
+                fi
+                if [[ "$1" == "apply" ]]; then
+                  if [[ "$DB_SCENARIO" == "apply_fail" ]]; then
+                    echo 'Error: apply rejected' >&2
+                    exit 1
+                  fi
+                  cat > "$DB_TARGET_FILE"
+                  exit 0
+                fi
+                exit 0
+                """))
+        os.chmod(os.path.join(self.work, "oc"), 0o755)
+        env = dict(
+            os.environ,
+            DB_SCENARIO=scenario,
+            DB_URI=DB_URI,
+            DB_SOURCE_SECRET="src-secret",
+            DB_NAMESPACE="maas-ns",
+            DB_WAIT_TIMEOUT=str(wait_timeout),
+            DB_TARGET_FILE=self.target,
+            OC_LOG=os.path.join(self.work, "commands.log"),
+            OC_STATE=os.path.join(self.work, "state"),
+            PATH=f"{self.work}:{os.environ['PATH']}",
+            TMPDIR=self.tmpdir,
+        )
+        return subprocess.run(
+            [os.path.join(self.work, "create-maas-db-config.sh")],
+            capture_output=True, text=True, env=env, timeout=60)
+
+    def log(self):
+        with open(os.path.join(self.work, "commands.log")) as f:
+            return f.read()
+
+    def readiness_calls(self):
+        return sum(1 for l in self.log().splitlines()
+                   if "metadata.name" in l)
+
+    def assert_no_mutation(self):
+        self.assertNotRegex(self.log(), r"^create |^apply ")
+        self.assertFalse(os.path.exists(self.target))
+
+    def assert_uri_absent(self, result):
+        combined = result.stdout + result.stderr + self.log()
+        self.assertNotIn("postgresql://", combined)
+
+    def test_absent_then_present(self):
+        result = self.run_script("absent_then_present", wait_timeout=8)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.readiness_calls(), 2)
+        self.assert_uri_absent(result)
+
+    def test_successful_payload(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("applied", result.stdout)
+        with open(self.target) as f:
+            target = f.read()
+        # The URI reaches the target only through --from-file, byte-exact
+        self.assertIn(DB_URI.rstrip("\n"), target)
+        argv = [l for l in self.log().splitlines() if l.startswith("create ")]
+        self.assertEqual(len(argv), 1)
+        self.assertIn("--from-file=DB_CONNECTION_URL=", argv[0])
+        self.assertNotIn("postgresql://", argv[0])
+        self.assert_uri_absent(result)
+
+    def test_bounded_timeout_names_namespace_and_secret(self):
+        result = self.run_script("timeout", wait_timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timed out", result.stderr)
+        self.assertIn("maas-ns", result.stderr)
+        self.assertIn("src-secret", result.stderr)
+        self.assertLessEqual(self.readiness_calls(), 4)
+        self.assert_no_mutation()
+        self.assert_uri_absent(result)
+
+    def test_missing_namespace_times_out(self):
+        # A missing namespace is NotFound: rc 0, no marker, retried to timeout
+        result = self.run_script("missing_ns", wait_timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timed out", result.stderr)
+        self.assertIn("maas-ns", result.stderr)
+        self.assertIn("src-secret", result.stderr)
+        self.assert_no_mutation()
+
+    def test_forbidden_fails_immediately(self):
+        result = self.run_script("forbidden")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected failure", result.stderr)
+        self.assertEqual(self.readiness_calls(), 1)
+        self.assert_no_mutation()
+
+    def test_transport_failure_with_404_text_fails(self):
+        # A transport diagnostic containing "404" is NOT startup absence
+        result = self.run_script("transport404")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected failure", result.stderr)
+        self.assertEqual(self.readiness_calls(), 1)
+        self.assert_no_mutation()
+
+    def test_read_failure_without_mutation(self):
+        result = self.run_script("read_fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_uri_absent(result)
+
+    def test_invalid_base64_fails_without_mutation(self):
+        result = self.run_script("invalid_b64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not valid base64", result.stderr)
+        self.assert_no_mutation()
+        self.assert_uri_absent(result)
+
+    def test_empty_uri_fails_without_mutation(self):
+        result = self.run_script("empty_uri")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_uri_absent(result)
+
+    def test_whitespace_uri_fails_without_mutation(self):
+        result = self.run_script("whitespace_uri")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_uri_absent(result)
+
+    def test_create_failure_propagates(self):
+        result = self.run_script("create_fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to apply", result.stderr)
+        self.assert_uri_absent(result)
+
+    def test_apply_failure_propagates_without_leaking_uri(self):
+        result = self.run_script("apply_fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to apply", result.stderr)
+        self.assertNotIn("postgresql://", result.stderr)
+        self.assert_uri_absent(result)
+
+    def test_request_timeouts_bounded_to_ten_seconds(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        get_lines = [l for l in self.log().splitlines()
+                     if l.startswith("get ")]
+        self.assertTrue(get_lines)
+        for line in get_lines:
+            timeout_args = [a for a in line.split()
+                            if a.startswith("--request-timeout=")]
+            self.assertEqual(len(timeout_args), 1)
+            seconds = int(timeout_args[0].split("=")[1].rstrip("s"))
+            self.assertLessEqual(seconds, 10)
+            self.assertGreater(seconds, 0)
+
+    def test_wall_clock_capped_for_small_wait(self):
+        # With a 5s wait and an absent secret the script must give up well
+        # inside the poll interval overshoot: capped sleeps, bounded gets.
+        result = self.run_script("absent", wait_timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLessEqual(self.readiness_calls(), 4)
+
+    def test_cleanup_removes_private_files(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The EXIT trap removed the private temp dir (the target yaml lives
+        # in the test work dir, not the script's TMPDIR)
+        self.assertEqual(os.listdir(self.tmpdir), [])
+        result = self.run_script("invalid_b64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(os.listdir(self.tmpdir), [])
 
 
 if __name__ == "__main__":

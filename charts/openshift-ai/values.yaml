@@ -236,6 +236,10 @@ maasDb:
   # URI. Empty in managed mode — the job then derives `<fullname>-app` from
   # the Cluster created by the dependency.
   secretName: ""
+  # Bounded wall-clock wait (seconds) for the source secret to appear before
+  # the bootstrap job fails; the Job's activeDeadlineSeconds is
+  # waitTimeoutSeconds + 30. Must be a positive integer
+  waitTimeoutSeconds: 240
 
 # PostgreSQL Cluster backing the maas-db (managed mode), deployed through the
 # postgres-cluster chart dependency (aliased to `postgres`, gated by

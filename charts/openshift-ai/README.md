@@ -60,6 +60,15 @@ The chart performs the following:
 The maas-db bootstrap Job runs as a `post-install,post-upgrade` Helm hook (recreated on re-runs via
 `before-hook-creation`), so it re-runs on upgrades the way the source GitOps PostSync hook did.
 
+The Job waits up to `maasDb.waitTimeoutSeconds` of wall-clock time for the source secret to appear, then fails without
+creating or applying anything. Only a missing named secret is retried — Forbidden, unauthorized, and transport errors
+fail immediately — and timeout diagnostics name both the namespace and the source secret. The Job reads the secret's
+`uri` key, rejects a missing key, invalid base64, or empty/whitespace-only content before writing anything, and feeds
+`DB_CONNECTION_URL` into the target `maas-db-config` Secret through `--from-file` so the connection URI never appears in
+command arguments or diagnostics. This validates the payload only — it does not verify URI grammar or credential
+validity. The Job has `backoffLimit: 3` and `activeDeadlineSeconds: waitTimeoutSeconds + 30`; like the tenant hook,
+longer configured waits need a matching Helm `--timeout`.
+
 Gateway classes
 ---------------
 
@@ -160,6 +169,8 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   managed mode (with `maasDb.create: true`) derives the Cluster's `<fullname>-app` secret name via the
   `openshift-ai.pg.fullname` helper; setting it instead runs the job against an external Cluster. Either `maasDb.create`
   or `maasDb.secretName` (with `maasManaged`) is required for any maas-db plumbing to render
+- `maasDb.waitTimeoutSeconds` — bounded wall-clock wait (default 240) for the source secret before the bootstrap Job
+  fails; the Job's `activeDeadlineSeconds` is this value plus 30. Must be a positive integer (validated at render time)
 - `postgres` — the postgres-cluster dependency's Cluster values (rendered only when `maasDb.create` is true; default: 2
   instances, 2Gi storage, modest resource requests/limits, namespace `redhat-ai-gateway-infra`)
 - `kedaMetricsReader.create` — opt-in KEDA metrics-reader plumbing (default: `false`); only enable when WVA/KEDA is
