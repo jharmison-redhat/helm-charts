@@ -1028,5 +1028,339 @@ class HwpProfileTests(ChartFixture):
         self.assertNotIn("kueue", l40s)
 
 
+EVALHOOK = "post-install,post-upgrade"
+EVALHOOK_DELETE = "before-hook-creation"
+EH_ACCESS = 'AKIA"quoted\\backslash'
+EH_SECRET = "s3cr3t-key\nwith trailing newline"
+
+
+class EvalHubJobRenderTests(ChartFixture):
+    """Render tests for the update-secret-minio hook Job."""
+
+    def evalhub_values(self, evalhub_create=True, tenant_create=True,
+                       **tenant_overrides):
+        tenant = {"create": tenant_create, "namespace": "evalhub-tenant",
+                  "waitTimeoutSeconds": 240}
+        tenant.update(tenant_overrides)
+        return {"evalhub": {"create": evalhub_create, "tenant": tenant}}
+
+    def job(self, values):
+        return self.pick(self.by_kind(self.render(values)), "Job",
+                         "update-secret-minio")
+
+    def env(self, job):
+        return {e["name"]: e["value"] for e in
+                job["spec"]["template"]["spec"]["containers"][0]["env"]}
+
+    def test_hooks_and_deadline(self):
+        job = self.job(self.evalhub_values())
+        annotations = job["metadata"]["annotations"]
+        self.assertEqual(annotations["helm.sh/hook"], EVALHOOK)
+        self.assertEqual(annotations["helm.sh/hook-delete-policy"],
+                         EVALHOOK_DELETE)
+        self.assertEqual(job["metadata"]["namespace"], "evalhub-tenant")
+        self.assertEqual(job["metadata"]["name"], "update-secret-minio")
+        self.assertEqual(job["spec"]["backoffLimit"], 3)
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 270)
+        self.assertEqual(job["spec"]["template"]["spec"]["serviceAccountName"],
+                         "patch-secret")
+        env = self.env(job)
+        self.assertEqual(env["TENANT_NAMESPACE"], "evalhub-tenant")
+        self.assertEqual(env["TENANT_WAIT_TIMEOUT"], "240")
+        # bash -ec: pipefail without credential xtrace
+        args = job["spec"]["template"]["spec"]["containers"][0]["args"]
+        self.assertEqual(args[0], "-ec")
+
+    def test_hooks_absent_from_supporting_resources(self):
+        by_kind = self.by_kind(self.render(self.evalhub_values()))
+        for kind in ("ServiceAccount", "RoleBinding", "Namespace", "EvalHub"):
+            self.assertIn(kind, by_kind)
+            # Supporting objects stay ordinary release resources: no hook
+            # annotations anywhere outside the hook Job
+            for doc in by_kind[kind]:
+                annotations = doc["metadata"].get("annotations") or {}
+                self.assertNotIn("helm.sh/hook", annotations)
+                self.assertNotIn("helm.sh/hook-delete-policy", annotations)
+        self.assertEqual(
+            [d["metadata"]["name"] for d in by_kind["ServiceAccount"]
+             if d["metadata"]["name"] == "patch-secret"], ["patch-secret"])
+
+    def test_gates(self):
+        self.assertNotIn("Job", self.by_kind(self.render({})))
+        self.assertNotIn("Job", self.by_kind(
+            self.render(self.evalhub_values(evalhub_create=False))))
+        self.assertNotIn("Job", self.by_kind(
+            self.render(self.evalhub_values(tenant_create=False))))
+
+    def test_custom_wait_deadline(self):
+        job = self.job(self.evalhub_values(waitTimeoutSeconds=300))
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 330)
+        self.assertEqual(self.env(job)["TENANT_WAIT_TIMEOUT"], "300")
+
+    def test_invalid_wait_values_fail(self):
+        for v in (0, -5, "240", 1.5, True, None, 10 ** 15):
+            self.render(self.evalhub_values(waitTimeoutSeconds=v),
+                        expect_failure=True)
+
+
+class EvalHubScriptTests(EvalHubJobRenderTests):
+    """Executes the rendered update-secret-minio inline script against a
+    fake oc binary."""
+
+    def setUp(self):
+        super().setUp()
+        self.work = tempfile.mkdtemp(prefix="oa-ehscript-")
+        self.addCleanup(shutil.rmtree, self.work)
+        self.target = os.path.join(self.work, "target")
+        os.makedirs(self.target)
+        # An unrelated existing Secret key that the narrow update must not touch
+        with open(os.path.join(self.target, "unrelated-key"), "w") as f:
+            f.write("unrelated-value")
+
+    def run_script(self, scenario, wait_timeout=10):
+        values = self.evalhub_values()
+        job = self.pick(self.by_kind(self.render(values)), "Job",
+                        "update-secret-minio")
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        script = container["args"][1]
+        # Execute exactly as the Job does: /bin/bash -ec <inline script>
+        with open(os.path.join(self.work, "oc"), "w") as f:
+            f.write(textwrap.dedent(f"""\
+                #!/bin/bash
+                echo "$@" >> "$OC_LOG"
+                if [[ "$1" == "get" && "$2" == "secret" ]]; then
+                  if [[ "$*" == *metadata.name* ]]; then
+                    case "$EH_SCENARIO" in
+                      absent|timeout)
+                        # ignore-not-found contract: rc 0, empty stdout
+                        exit 0 ;;
+                      absent_then_present)
+                        n=$(cat "$OC_STATE" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$OC_STATE"
+                        [ "$n" -eq 1 ] && exit 0
+                        echo ds-pipeline-s3-dspa ;;
+                      forbidden)
+                        echo 'Error from server (Forbidden): forbidden' >&2
+                        exit 1 ;;
+                      transport404)
+                        echo 'Error from server (Timeout): request 404 gateway timeout' >&2
+                        exit 1 ;;
+                      *)
+                        echo ds-pipeline-s3-dspa ;;
+                    esac
+                  elif [[ "$*" == *data.accesskey* ]]; then
+                    case "$EH_SCENARIO" in
+                      read_fail)
+                        echo 'Error from server: error executing jsonpath' >&2
+                        exit 1 ;;
+                      empty_uri)
+                        exit 0 ;;
+                      whitespace_uri)
+                        printf '%s' "$(printf '   \\n' | base64)" ;;
+                      invalid_b64)
+                        echo 'not!!valid' ;;
+                      *)
+                        printf '%s' "$(printf '%s' "$EH_ACCESS" | base64)" ;;
+                    esac
+                  elif [[ "$*" == *data.secretkey* ]]; then
+                    case "$EH_SCENARIO" in
+                      invalid_b64)
+                        echo 'not!!valid' ;;
+                      *)
+                        printf '%s' "$(printf '%s' "$EH_SECRET" | base64)" ;;
+                    esac
+                  fi
+                  exit 0
+                fi
+                if [[ "$1" == "set" && "$2" == "data" ]]; then
+                  if [[ "$EH_SCENARIO" == "set_fail" ]]; then
+                    echo 'Error: set data rejected' >&2
+                    exit 1
+                  fi
+                  for a in "$@"; do
+                    case "$a" in
+                      --from-file=*)
+                        arg="${{a#--from-file=}}"
+                        key="${{arg%%=*}}"
+                        src="${{arg#*=}}"
+                        cat "$src" > "$EH_TARGET/$key" ;;
+                    esac
+                  done
+                  exit 0
+                fi
+                exit 0
+                """))
+        os.chmod(os.path.join(self.work, "oc"), 0o755)
+        env = dict(
+            os.environ,
+            EH_SCENARIO=scenario,
+            EH_ACCESS=EH_ACCESS,
+            EH_SECRET=EH_SECRET,
+            TENANT_NAMESPACE="evalhub-tenant",
+            TENANT_WAIT_TIMEOUT=str(wait_timeout),
+            EH_TARGET=self.target,
+            OC_LOG=os.path.join(self.work, "commands.log"),
+            OC_STATE=os.path.join(self.work, "state"),
+            PATH=f"{self.work}:{os.environ['PATH']}",
+            TMPDIR=os.path.join(self.work, "pod-tmp"),
+        )
+        os.makedirs(env["TMPDIR"], exist_ok=True)
+        return subprocess.run(["/bin/bash", "-ec", script],
+                              capture_output=True, text=True,
+                              env=env, timeout=60)
+
+    def log(self):
+        with open(os.path.join(self.work, "commands.log")) as f:
+            return f.read()
+
+    def readiness_calls(self):
+        return sum(1 for l in self.log().splitlines()
+                   if "metadata.name" in l)
+
+    def set_data_calls(self):
+        return sum(1 for l in self.log().splitlines()
+                   if l.startswith("set data"))
+
+    def assert_no_mutation(self):
+        self.assertEqual(self.set_data_calls(), 0)
+        with open(os.path.join(self.target, "unrelated-key")) as f:
+            self.assertEqual(f.read(), "unrelated-value")
+        for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                    "AWS_S3_ENDPOINT", "AWS_S3_BUCKET", "AWS_DEFAULT_REGION"):
+            self.assertFalse(os.path.exists(os.path.join(self.target, key)))
+
+    def assert_credentials_absent(self, result):
+        combined = result.stdout + result.stderr + self.log()
+        self.assertNotIn('AKIA"quoted', combined)
+        self.assertNotIn("s3cr3t-key", combined)
+
+    def test_absent_then_present(self):
+        result = self.run_script("absent_then_present", wait_timeout=8)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.readiness_calls(), 2)
+        self.assert_credentials_absent(result)
+
+    def test_successful_update(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("updated", result.stdout)
+        # The five AWS_* keys carry the private file bytes; credentials are
+        # preserved byte-exact, including trailing newlines
+        with open(os.path.join(self.target, "AWS_ACCESS_KEY_ID")) as f:
+            self.assertEqual(f.read(), EH_ACCESS)
+        with open(os.path.join(self.target, "AWS_SECRET_ACCESS_KEY")) as f:
+            self.assertEqual(f.read(), EH_SECRET)
+        self.assertEqual(
+            open(os.path.join(self.target, "AWS_S3_ENDPOINT")).read(),
+            "http://minio-dspa.evalhub-tenant.svc.cluster.local:9000")
+        self.assertEqual(
+            open(os.path.join(self.target, "AWS_S3_BUCKET")).read(), "mlpipeline")
+        self.assertEqual(
+            open(os.path.join(self.target, "AWS_DEFAULT_REGION")).read(),
+            "us-east-1")
+        # The narrow update leaves unrelated keys untouched
+        self.assertEqual(
+            open(os.path.join(self.target, "unrelated-key")).read(),
+            "unrelated-value")
+        set_lines = [l for l in self.log().splitlines()
+                     if l.startswith("set data")]
+        self.assertEqual(len(set_lines), 1)
+        self.assertIn("secret/ds-pipeline-s3-dspa", set_lines[0])
+        self.assertIn("--from-file=AWS_ACCESS_KEY_ID=", set_lines[0])
+        self.assertNotIn("AKIA", set_lines[0])
+        self.assert_credentials_absent(result)
+
+    def test_literal_metacharacters_preserved(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Byte-exact regardless of shell metacharacters and trailing newline
+        with open(os.path.join(self.target, "AWS_ACCESS_KEY_ID"), "rb") as f:
+            self.assertEqual(f.read(), EH_ACCESS.encode())
+        with open(os.path.join(self.target, "AWS_SECRET_ACCESS_KEY"), "rb") as f:
+            self.assertEqual(f.read(), EH_SECRET.encode())
+
+    def test_bounded_timeout_names_namespace_and_secret(self):
+        result = self.run_script("timeout", wait_timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("timed out", result.stderr)
+        self.assertIn("evalhub-tenant", result.stderr)
+        self.assertIn("ds-pipeline-s3-dspa", result.stderr)
+        self.assertLessEqual(self.readiness_calls(), 4)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
+    def test_forbidden_fails_immediately(self):
+        result = self.run_script("forbidden")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected failure", result.stderr)
+        self.assertEqual(self.readiness_calls(), 1)
+        self.assert_no_mutation()
+
+    def test_transport_failure_with_404_text_fails(self):
+        result = self.run_script("transport404")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unexpected failure", result.stderr)
+        self.assertEqual(self.readiness_calls(), 1)
+        self.assert_no_mutation()
+
+    def test_read_failure_without_mutation(self):
+        result = self.run_script("read_fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
+    def test_invalid_base64_fails_without_mutation(self):
+        result = self.run_script("invalid_b64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not valid base64", result.stderr)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
+    def test_empty_credential_fails_without_mutation(self):
+        result = self.run_script("empty_uri")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
+    def test_whitespace_credential_fails_without_mutation(self):
+        result = self.run_script("whitespace_uri")
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_no_mutation()
+        self.assert_credentials_absent(result)
+
+    def test_set_data_failure_propagates_without_leaking(self):
+        result = self.run_script("set_fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed to update the data", result.stderr)
+        self.assert_credentials_absent(result)
+
+    def test_request_timeouts_bounded_to_ten_seconds(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        get_lines = [l for l in self.log().splitlines()
+                     if l.startswith("get ")]
+        self.assertTrue(get_lines)
+        for line in get_lines:
+            timeout_args = [a for a in line.split()
+                            if a.startswith("--request-timeout=")]
+            self.assertEqual(len(timeout_args), 1)
+            seconds = int(timeout_args[0].split("=")[1].rstrip("s"))
+            self.assertLessEqual(seconds, 10)
+            self.assertGreater(seconds, 0)
+
+    def test_wall_clock_capped_for_small_wait(self):
+        result = self.run_script("absent", wait_timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLessEqual(self.readiness_calls(), 4)
+        self.assert_no_mutation()
+
+    def test_cleanup_removes_private_files(self):
+        result = self.run_script("success")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(os.listdir(os.path.join(self.work, "pod-tmp")), [])
+        result = self.run_script("invalid_b64")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(os.listdir(os.path.join(self.work, "pod-tmp")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

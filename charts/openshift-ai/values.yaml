@@ -319,6 +319,10 @@ evalhub:
   tenant:
     create: true
     namespace: evalhub-tenant
+    # Bounded wall-clock wait (seconds) for the ds-pipeline-s3-dspa secret to
+    # appear before the credential Job fails; the Job's activeDeadlineSeconds
+    # is waitTimeoutSeconds + 30. Must be a positive integer
+    waitTimeoutSeconds: 240
     subjects:
       - apiGroup: rbac.authorization.k8s.io
         kind: User

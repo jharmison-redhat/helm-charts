@@ -127,6 +127,29 @@ credentials. A successful patch does not wait for all MaaS workloads to become R
 disablement, value removal, or uninstall: an explicit `null` inside `spec` removes a field, omission does not reset it.
 Helm rollback does not revert this side effect.
 
+EvalHub tenant credential job
+-----------------------------
+
+With `evalhub.create: true` AND `evalhub.tenant.create: true`, the chart renders the `update-secret-minio` Job in the
+tenant namespace as a `post-install,post-upgrade` Helm hook (recreated on re-runs via `before-hook-creation`); its
+ServiceAccount, RoleBinding, Namespace, and DSPA stay ordinary release resources. A failed hook affects release status.
+The Job waits up to `evalhub.tenant.waitTimeoutSeconds` of wall-clock time for the product-created `ds-pipeline-s3-dspa`
+Secret to appear, then fails without mutating anything. Only a missing named secret is retried — Forbidden,
+unauthorized, and transport errors fail immediately — and timeout diagnostics name both the namespace and the secret.
+The Job reads the secret's `accesskey`/`secretkey` keys, rejects a missing key, invalid base64, or empty/whitespace-only
+content before writing anything, and decodes them into private pod files (preserving literal quotes, backslashes, and
+newlines) feeding the five `AWS_*` keys into `oc set data secret/ds-pipeline-s3-dspa --from-file=<key>=<file>`. The CLI
+encodes the changed data map and patches only those keys — unrelated Secret keys, labels/annotations, and ownership are
+preserved — and credentials never appear in command arguments or diagnostics. This validates the payload only; it does
+not verify credential validity. The Job has `backoffLimit: 3` and `activeDeadlineSeconds: waitTimeoutSeconds + 30`;
+longer configured waits need a matching Helm `--timeout`.
+
+Helm 4 note: a plain `helm upgrade` defaults to `hookOnly` waiting, whose deletion waiter is a no-op, so
+`before-hook-creation` alone does not guarantee race-free Job name reuse while an old hook Job is still terminating.
+Explicit `--wait=watcher` (or bare `--wait`) or `--wait=legacy` provides deletion waiting, but also waits for normal
+release resources to become Ready before the post-hook executes. No invocation is promised race-free; real-cluster
+upgrade timing is not validated by this chart's tests.
+
 The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
 (`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres`, and condition-gated by
 `maasDb.create`. With `maasDb.create: true`, the dependency deploys the Cluster and the bootstrap job derives its secret
@@ -176,6 +199,9 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `kedaMetricsReader.create` — opt-in KEDA metrics-reader plumbing (default: `false`); only enable when WVA/KEDA is
   actually deployed
 - `mlflow.create` / `evalhub.create` — opt-in operands with free-form `spec` passthrough
+- `evalhub.tenant.waitTimeoutSeconds` — bounded wall-clock wait (default 240) for the product-created
+  `ds-pipeline-s3-dspa` secret before the `update-secret-minio` credential Job fails; the Job's `activeDeadlineSeconds`
+  is this value plus 30. Must be a positive integer (validated at render time)
 - `hardwareProfiles` — one `HardwareProfile` per entry (CPU/Memory/GPU identifiers, Node or Queue scheduling). A
   Queue-type profile (`type: Queue`) must set `kueue.localQueueName` naming an existing LocalQueue in the profile's
   namespace (default: `redhat-ods-applications`); rendering fails otherwise, since a missing LocalQueue reference
