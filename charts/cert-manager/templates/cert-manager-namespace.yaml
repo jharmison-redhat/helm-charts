@@ -1,0 +1,7 @@
+{{- if .Values.operator.create -}}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+{{- end }}

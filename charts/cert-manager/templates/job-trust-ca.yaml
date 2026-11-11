@@ -1,0 +1,64 @@
+{{- if .Values.ca.enabled -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trust-ca
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trust-ca
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: trust-ca
+  namespace: cert-manager
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trust-cert-manager-ca
+  namespace: cert-manager
+  annotations:
+    # Run after the release is applied; the Job is deleted and recreated on
+    # upgrade so the immutable Job spec is never rejected
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  # Outlasts the in-script wait (plus headroom) so the script's own timeout
+  # diagnostic fires before the Job controller kills the pod
+  activeDeadlineSeconds: {{ add (.Values.ca.trustTimeoutSeconds | default 120) 30 }}
+  template:
+    spec:
+      serviceAccountName: trust-ca
+      restartPolicy: Never
+      containers:
+      - name: trust-ca
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TRUST_CA_TIMEOUT
+          value: {{ .Values.ca.trustTimeoutSeconds | default 120 | quote }}
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |-
+          set -euo pipefail
+          deadline=$(( $(date +%s) + TRUST_CA_TIMEOUT ))
+          until oc get secret cert-manager-ca -n cert-manager >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Timed out waiting for secret cert-manager-ca in namespace cert-manager" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          ca=$(oc get secret cert-manager-ca -n cert-manager -ogo-template='{{ "{{" }}index .data "tls.crt" | base64decode{{ "}}" }}')
+          oc create configmap user-ca-bundle -n openshift-config --from-literal=ca-bundle.crt="$ca" --dry-run=client -oyaml | oc apply -n openshift-config -f-
+          oc patch proxy cluster --patch '{"spec": {"trustedCA": {"name": "user-ca-bundle"}}}' --type merge
+{{- end }}

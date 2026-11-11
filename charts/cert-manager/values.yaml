@@ -1,0 +1,98 @@
+---
+global:
+  toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
+  cluster:
+    # REQUIRED: set to your cluster name before enabling managed certificates —
+    # the placeholder is baked into the rendered DNS names otherwise
+    name: cluster
+    # REQUIRED: set to your cluster base domain before enabling managed certificates
+    baseDomain: domain.com
+
+# Whether this chart installs the cert-manager operator itself (Namespace,
+# OperatorGroup, Subscription, and the `CertManager` operator config CR).
+# Defaults to false: Helm applies all release manifests at once and does not
+# wait for OLM to establish the operator CRDs, so operand CRs (`CertManager`,
+# ClusterIssuer, Certificate) cannot be applied in the same install as the
+# Subscription on a fresh cluster. Install the operator via the
+# `install-operators` chart (repo convention) and keep this false; setting it
+# to true is only safe on a cluster where the operator CRDs are already
+# established (e.g. a cluster where the operator is already installed).
+operator:
+  create: false
+
+ca:
+  enabled: true
+  # Seconds the trust-ca Job waits for the `cert-manager-ca` Secret to exist
+  # before failing; the Job's activeDeadlineSeconds covers this plus headroom
+  trustTimeoutSeconds: 120
+  # Bring-your-own CA: set both to skip self-provisioning and trust the given
+  # keypair as `cert-manager-ca` instead
+  # tlsCrt: <PEM certificate>
+  # tlsKey: <PEM key>
+
+acme: {}
+# zerossl:
+#   server: https://acme.zerossl.com/v2/DV90
+#   email: <put your email here>
+#   externalAccountBinding:
+#     keyID: <put your ZeroSSL EAB key here>
+#     keySecretRef:
+#       name: acme-zerossl-eabsecret
+#       key: secret
+#     keyAlgorithm: HS256
+#   solvers:
+#     - type: dns
+#       dnsConfig:
+#         route53:
+#           accessKeyID: <put your AWS Access Key ID here>
+#           hostedZoneID: <put your Hosted Zone ID here>
+#           region: us-east-2
+#           secretAccessKeySecretRef:
+#             key: secret-access-key
+#             name: acme-zerossl-route53-creds
+#       dnsZones:
+#         - <put your baseDomain here>
+#   secrets:
+#     - name: route53-creds
+#       stringData:
+#         secret-access-key: <put your actual key here>
+#     - name: eabsecret
+#       stringData:
+#         secret: <put your actual HMAC key here>
+# letsencrypt:
+#   server: https://acme-v02.api.letsencrypt.org/directory
+#   email: <your email address here>
+#   disableAccountKeyGeneration: true
+#   privateKeySecretRef:
+#     name: letsencrypt-private-key
+#   solvers:
+#     - type: dns
+#       dnsConfig:
+#         route53:
+#           accessKeyID: <put your AWS Access Key ID here>
+#           hostedZoneID: <put your Hosted Zone ID here>
+#           region: us-west-2
+#           secretAccessKeySecretRef:
+#             key: secret-access-key
+#             name: acme-letsencrypt-route53-creds
+#       dnsZones:
+#         - <put your baseDomain here>
+#   secrets:
+#     - name: route53-creds
+#       stringData:
+#         secret-access-key: <put your actual key here>
+
+# Stock OpenShift clusters keep their platform-issued certificates unless a
+# service opts in; `managed` defaults to false so installing this chart does
+# not replace platform certs.
+certificates:
+  # ClusterIssuer used for managed certificates; must be a key of `acme` or
+  # `ca-issuer` when `ca.enabled`
+  clusterIssuer: zerossl
+  # clusterIssuer: letsencrypt
+  api:
+    managed: false
+  router:
+    managed: false
+  nlbRouter:
+    managed: false
