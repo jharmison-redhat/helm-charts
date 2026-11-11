@@ -1,0 +1,47 @@
+# https://aws.amazon.com/ec2/instance-types/#Accelerated_Computing
+instanceType: g6e.2xlarge
+desiredReplicas: 1
+baseName: gpu-worker
+rootDeviceSizeGB: 200
+autoscaling:
+  enabled: false
+  minReplicas: 0
+  maxReplicas: 1
+  scaleDown:
+    enabled: true
+    delayAfterAdd: 30m
+    delayAfterDelete: 5m
+    delayAfterFailure: 30s
+    unneededTime: 15m
+    utilizationThreshold: "0.7"
+
+taints:
+  - key: nvidia.com/gpu
+    value: ""
+    effect: NoSchedule
+
+nodeLabels:
+  node-role.kubernetes.io/gpu: ""
+
+# REQUIRED — the chart fails to render until this is set. The infraID constructs
+# the MachineSet names and the AWS resource names the MachineSets depend on: the
+# kubernetes.io/cluster/<infraID>: owned tag, the <infraID>-worker-profile IAM
+# instance profile, the <infraID>-node and <infraID>-lb security groups, and the
+# <infraID>-subnet-private-<az> subnets. Find it in the names of the existing
+# worker MachineSets in openshift-machine-api.
+cluster:
+  infraID: ""
+
+aws:
+  # REQUIRED — the region the cluster runs in (MachineSet placement).
+  region: ""
+  # Which availability zone carries the desired replicas; defaults to the last
+  # entry of azs. The other zones render with replicas: 0 (when autoscaling is
+  # disabled).
+  az: null
+  # REQUIRED — a non-empty list of availability zones; one MachineSet is
+  # rendered per entry.
+  azs: []
+  # REQUIRED — the RHCOS worker AMI ID for the cluster's region. Copy it from an
+  # existing worker MachineSet's providerSpec (see the README).
+  ami: ""

@@ -1,0 +1,14 @@
+# CI-only placeholder values: chart_ci.py passes this file with -f during the
+# default-values render check so the chart can render in CI. It exists ONLY for
+# that purpose — real installs must supply the real per-cluster values
+# (cluster.infraID, aws.region, aws.azs, aws.ami), which fail fast with
+# diagnostics when missing. Do not reference this file when installing the
+# chart. The chart's .helmignore excludes this file from helm package, so it
+# never ships in the published OCI artifact.
+cluster:
+  infraID: ci-placeholder
+aws:
+  region: us-west-2
+  azs:
+    - us-west-2a
+  ami: ami-00000000000000000

@@ -1,0 +1,86 @@
+{{- include "aws-nvidia-gpu-machinesets.validateInfraID" . -}}
+{{- include "aws-nvidia-gpu-machinesets.validateRegion" . -}}
+{{- include "aws-nvidia-gpu-machinesets.validateAmi" . -}}
+{{- include "aws-nvidia-gpu-machinesets.validateAzs" . -}}
+{{- range $az := .Values.aws.azs }}
+{{- with $ }}
+---
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: {{ .Values.cluster.infraID }}
+  name: {{ .Values.cluster.infraID }}-{{ .Values.baseName }}-{{ $az }}
+spec:
+  {{- if and (and (.Values.desiredReplicas) (not .Values.autoscaling.enabled)) (eq $az (include "aws-nvidia-gpu-machinesets.az" $)) }}
+  replicas: {{ .Values.desiredReplicas }}
+  {{- else if not .Values.autoscaling.enabled }}
+  replicas: 0
+  {{- end }}
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: {{ .Values.cluster.infraID }}
+      machine.openshift.io/cluster-api-machineset: {{ .Values.cluster.infraID }}-{{ .Values.baseName }}-{{ $az }}
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: {{ .Values.cluster.infraID }}
+        machine.openshift.io/cluster-api-machine-role: worker
+        machine.openshift.io/cluster-api-machine-type: worker
+        machine.openshift.io/cluster-api-machineset: {{ .Values.cluster.infraID }}-{{ .Values.baseName }}-{{ $az }}
+    spec:
+      {{- with .Values.nodeLabels }}
+      metadata:
+        labels:
+          {{- toYaml . | nindent 10 }}
+      {{- end }}
+      {{- with .Values.taints }}
+      taints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      providerSpec:
+        value:
+          apiVersion: machine.openshift.io/v1beta1
+          kind: AWSMachineProviderConfig
+          metadata:
+            creationTimestamp: null
+          ami:
+            id: {{ .Values.aws.ami }}
+          blockDevices:
+            - ebs:
+                encrypted: true
+                iops: 0
+                kmsKey:
+                  arn: ""
+                volumeSize: {{ .Values.rootDeviceSizeGB }}
+                volumeType: gp3
+          credentialsSecret:
+            name: aws-cloud-credentials
+          deviceIndex: 0
+          iamInstanceProfile:
+            id: {{ .Values.cluster.infraID }}-worker-profile
+          instanceType: {{ .Values.instanceType }}
+          placement:
+            availabilityZone: {{ $az }}
+            region: {{ .Values.aws.region }}
+          securityGroups:
+            - filters:
+                - name: tag:Name
+                  values:
+                    - {{ .Values.cluster.infraID }}-node
+            - filters:
+                - name: tag:Name
+                  values:
+                    - {{ .Values.cluster.infraID }}-lb
+          subnet:
+            filters:
+              - name: tag:Name
+                values:
+                  - {{ .Values.cluster.infraID }}-subnet-private-{{ $az }}
+          tags:
+            - name: kubernetes.io/cluster/{{ .Values.cluster.infraID }}
+              value: owned
+          userDataSecret:
+            name: worker-user-data
+{{- end }}
+{{- end }}
