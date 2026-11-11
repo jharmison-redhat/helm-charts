@@ -1,0 +1,41 @@
+{{- include "odf.validateModes" . -}}
+---
+apiVersion: ocs.openshift.io/v1
+kind: StorageCluster
+metadata:
+  name: ocs-storagecluster
+spec:
+  arbiter: {}
+  encryption:
+    keyRotation:
+      schedule: '@weekly'
+    kms: {}
+  externalStorage: {}
+  {{- with .Values.monDataDirHostPath }}
+  monDataDirHostPath: {{ quote . }}
+  {{- end }}
+  managedResources:
+    cephBlockPools: {}
+    cephDashboard: {}
+    cephFilesystems: {}
+    cephObjectStoreUsers: {}
+    cephObjectStores: {}
+    {{- with .Values.cephConfig }}
+    cephConfig:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+  resourceProfile: {{ .Values.resourceProfile }}
+  {{- with .Values.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  mirroring: {}
+  nodeTopologies: {}
+  {{- with .Values.storageDeviceSets }}
+  storageDeviceSets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.multiCloudGateway }}
+  multiCloudGateway:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}

@@ -1,0 +1,9 @@
+{{- with .Values.enableCephTools }}
+---
+apiVersion: ocs.openshift.io/v1
+kind: OCSInitialization
+metadata:
+  name: ocsinit
+spec:
+  enableCephTools: {{ . }}
+{{- end }}

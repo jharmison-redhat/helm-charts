@@ -1,0 +1,11 @@
+{{- if .Values.createStorageSystem }}
+---
+apiVersion: odf.openshift.io/v1alpha1
+kind: StorageSystem
+metadata:
+  name: ocs-storagecluster-storagesystem
+spec:
+  kind: storagecluster.ocs.openshift.io/v1
+  name: ocs-storagecluster
+  namespace: {{ .Release.Namespace }}
+{{- end }}

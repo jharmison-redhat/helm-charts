@@ -1,0 +1,14 @@
+{{- if .Values.enableConsolePlugin }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: enable-odf-console-plugin
+{{- /*
+The blank-line replace reproduces AsConfig's blank-line indentation so the
+rendered data stays byte-identical to the previous glob-based rendering.
+*/}}
+data:
+  enable-console-plugin.sh: |
+{{ .Files.Get "files/enable-console-plugin.sh" | trim | indent 4 | replace "\n    \n" "\n  \n" }}
+{{- end }}

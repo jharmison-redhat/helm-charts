@@ -1,0 +1,44 @@
+---
+install-odf:
+  enabled: true
+  operators:
+    odf-operator:
+      channel: stable-4.21
+      namespace: openshift-storage
+      operatorGroup:
+        enabled: true
+        # The OperatorGroup's target namespaces; install-operators reads them
+        # only from this operatorGroup block — an operator-level
+        # targetNamespaces key has no effect.
+        targetNamespaces:
+          - openshift-storage
+
+# The enableCephTools/createStorageSystem/storageDeviceSets/disks/
+# monDataDirHostPath/multiCloudGateway keys form two mutually exclusive modes
+# enforced at render time (see the README's "Configuration modes"):
+# - standalone MCGW (multiCloudGateway.reconcileStrategy: standalone): every
+#   Ceph key must be empty or false.
+# - full Ceph+MCGW: Ceph capacity from storageDeviceSets, or disks with
+#   monDataDirHostPath set.
+enableCephTools: true
+createStorageSystem: false
+storageDeviceSets: []
+# REQUIRED in full Ceph+MCGW mode when disks is the only capacity source —
+# host path on the labeled nodes for Ceph monitor data.
+monDataDirHostPath: ""
+# Nodes to label for ODF storage ({node: <name>} entries); each entry must pair
+# with monDataDirHostPath when no storageDeviceSets are configured.
+disks: []
+enableConsolePlugin: true
+resources: {}
+# Passthrough to the StorageCluster's managedResources.cephConfig block.
+cephConfig: {}
+# multiCloudGateway.reconcileStrategy: standalone selects standalone MCGW mode
+# (all Ceph keys must be empty or false); any other value or absence selects
+# full Ceph+MCGW mode.
+multiCloudGateway: {}
+resourceProfile: balanced
+
+rbac:
+  create: true
+  group: system:authenticated:oauth
