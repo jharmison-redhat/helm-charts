@@ -156,7 +156,15 @@ def build_registry(chart_dir):
 def lint(chart_dir):
     """helm lint plus a render check on the given directory."""
     run_helm(["lint", chart_dir], cwd=REPO_ROOT)
-    run_helm(["template", chart_dir], cwd=REPO_ROOT, render_quiet=True)
+    render_args = ["template", chart_dir]
+    # A chart-local ci-values.yaml exists solely so this default-values CI
+    # render succeeds for charts whose real values are required per cluster
+    # (missing values fail the render with diagnostics); installs never
+    # reference it.
+    ci_values = os.path.join(chart_dir, "ci-values.yaml")
+    if os.path.isfile(ci_values):
+        render_args.extend(["-f", ci_values])
+    run_helm(render_args, cwd=REPO_ROOT, render_quiet=True)
 
 
 def _work_root():

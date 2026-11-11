@@ -192,6 +192,22 @@ class LintAndBuildTest(unittest.TestCase):
             [call.args[0][1] for call in self.helm.call_args_list],
             ["lint", "template"])
 
+    def test_lint_render_passes_ci_values_when_present(self):
+        d = self.chart()
+        ci_values = os.path.join(d, "ci-values.yaml")
+        with open(ci_values, "w") as f:
+            f.write("cluster:\n  infraID: ci\n")
+        chart_ci.lint(d)
+        render_args = self.helm.call_args_list[1].args[0][1:]
+        self.assertEqual(render_args[0], "template")
+        self.assertEqual(render_args[2:], ["-f", ci_values])
+
+    def test_lint_render_omits_ci_values_when_absent(self):
+        d = self.chart()
+        chart_ci.lint(d)
+        self.assertEqual(self.helm.call_args_list[1].args[0][1:],
+                         ["template", d])
+
     def test_build_registry_retries_then_fails(self):
         d = self.chart(deps=True)
         self.helm.side_effect = subprocess.CalledProcessError(1, "helm")

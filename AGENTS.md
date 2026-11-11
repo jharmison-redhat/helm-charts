@@ -67,7 +67,10 @@ git archive HEAD charts/<name> | tar -x -C /tmp/opencode/pkg-check && helm packa
 ```
 
 `lint-local` lints a prepared copy (working-tree changes, vendored `charts/` and `Chart.lock` excluded), so it needs no
-registry auth; an external (non-intra-repo) dependency is a hard error there.
+registry auth; an external (non-intra-repo) dependency is a hard error there. A chart-local `ci-values.yaml` (if
+present) is passed as an extra `-f` to the CI render check so charts with required per-cluster values can lint and
+publish; it is CI-only and never referenced by installs, and charts using the convention must add `ci-values.yaml` to a
+chart-local `.helmignore` so the placeholder values are not published in the packaged chart.
 
 The umbrella example under `examples/maas-umbrella` is never published — `chart_versions.py` scans `charts/` only. It is
 linted locally in PRs, composed with local sub-charts.
