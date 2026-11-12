@@ -5,35 +5,33 @@ A chart to configure cert-manager on OpenShift and manage its issuer surface: a 
 issuer → CA Certificate → `cert-manager-ca` Secret → `ca-issuer` ClusterIssuer), optional ACME ClusterIssuers, and
 optional management of platform certificates (API server, default IngressController, NLB router).
 
-The operator install is gated behind `operator.create` (default `false`). Helm applies all release manifests at once and
-does not wait for OLM to establish the operator CRDs, so operand CRs (`CertManager`, ClusterIssuers, Certificates)
-cannot be applied in the same install as the Subscription on a fresh cluster. Per repo convention, install the operator
-through the `install-operators` chart instead:
+The cert-manager Operator for Red Hat OpenShift is NOT installed by this chart. It must already be installed before this
+chart is deployed — the chart renders custom resources directly (`CertManager`, ClusterIssuers, Certificates), and a
+plain `helm install` fails on the missing CRDs otherwise. Use the `install-operators` chart for the operator install:
 
 ```yaml
+# install-operators values
 operators:
   openshift-cert-manager-operator:
     channel: stable-v1
     namespace: cert-manager-operator
     operatorGroup:
-      enabled: true
+      enabled: true # AllNamespaces scope — no targetNamespaces
 ```
 
-With `operator.create: false`, this chart renders only the operand configuration. The `cert-manager` Namespace is
-operator-gated, so it must already exist (the operator install creates it) before this chart is deployed — these objects
-target it:
+Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of this chart.
+
+The `cert-manager` namespace must also exist before this chart is deployed (the operator install creates it) — these
+objects target it:
 
 - the `cert-manager-ca` Secret (bring-your-own CA path)
 - the `selfsigned-ca` Certificate, which creates the `cert-manager-ca` Secret on the self-provisioned path
 - the ACME credential Secrets from `secrets` entries under each `acme` provider
 - the `trust-ca` ServiceAccount and `trust-cert-manager-ca` Job
 
-Setting `operator.create: true` renders the `cert-manager` Namespace, an OperatorGroup, the
-`openshift-cert-manager-operator` Subscription (channel `stable-v1`, redhat-operators), and the `CertManager` operator
-config CR — which sets `--dns01-recursive-nameservers-only` with 9.9.9.9/1.1.1.1 so DNS01 challenges use public
-resolvers rather than the cluster DNS. This is only safe on a cluster where the operator CRDs are already established
-(for example, a cluster where the operator is already installed); on such a cluster it replaces a separate
-install-operators entry and avoids duplicate Subscriptions.
+The chart also renders the `CertManager` cluster-scoped operator configuration CR (governed by the operator's own CRD,
+so it applies as soon as the CRDs are established), which sets `--dns01-recursive-nameservers-only` with 9.9.9.9/1.1.1.1
+so DNS01 challenges use public resolvers rather than the cluster DNS.
 
 Issuers
 -------
