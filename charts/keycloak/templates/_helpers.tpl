@@ -62,6 +62,20 @@ literal.
 {{- end }}
 
 {{/*
+Render a boolean field with an effective default of true: nil (absent or
+null values key) emits true, any other value emits verbatim — unlike the
+`default` function, which treats an explicit false as empty and would
+invert it.
+*/}}
+{{- define "keycloak.defaultTrue" -}}
+{{- if kindIs "invalid" . -}}
+true
+{{- else -}}
+{{ . }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Full name of the postgres-cluster dependency's Cluster, replicating the
 postgres-cluster chart's fullname derivation against the dependency's values
 (subchart templates cannot be invoked with a subchart context). This is the
