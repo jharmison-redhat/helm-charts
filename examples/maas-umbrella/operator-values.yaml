@@ -7,7 +7,7 @@
 #       --values examples/maas-umbrella/operator-values.yaml
 #   # wait for the operator deployments to be ready, then:
 #   helm dependency build examples/maas-umbrella
-#   helm upgrade --install maas-umbrella examples/maas-umbrella
+#   helm upgrade --install maas-umbrella examples/maas-umbrella -n keycloak
 operators:
   rhbk-operator:
     channel: stable-v26.2

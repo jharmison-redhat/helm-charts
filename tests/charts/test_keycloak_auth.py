@@ -370,7 +370,7 @@ class UmbrellaMetadataTests(unittest.TestCase):
 
     def test_umbrella_version_and_pin_coherence(self):
         umbrella = self.load(os.path.join(UMBRELLA, "Chart.yaml"))
-        self.assertEqual(umbrella["version"], "0.5.0")
+        self.assertEqual(umbrella["version"], "0.5.1")
         self.assertNotIn("appVersion", umbrella)
         deps = {d["name"]: d["version"] for d in umbrella["dependencies"]}
         self.assertEqual(deps["keycloak-auth"], ">=0.3.0 <0.4.0")

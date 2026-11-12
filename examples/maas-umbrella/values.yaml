@@ -35,6 +35,32 @@ keycloak:
         cpu: 200m
         memory: 256Mi
 
+  realms:
+    sso:
+      admin:
+        username: admin
+        password: <admin-password>
+      generated:
+        prefix: user
+        count: 5
+        password: <user-password>
+      groupsFromRoles: true
+      clients:
+        ocp-idp:
+          secret: "{{ .Values.global.oidc.secret }}"
+          redirectUris:
+            - "*"
+          defaultClientScopes:
+            - acr
+            - basic
+            - email
+            - groups
+            - profile
+            - roles
+            - service_account
+            - web-origins
+          directAccessGrantsEnabled: false
+
 openshift-ai:
   # Both transitive postgres Cluster instances would derive the same fullname
   # from the shared release name, so the two instances get DISTINCT
@@ -60,31 +86,6 @@ openshift-ai:
       telemetry:
         metrics:
           captureUser: false
-
-  realms:
-    sso:
-      admin:
-        username: admin
-        password: <admin-password>
-      generated:
-        prefix: user
-        count: 5
-        password: <user-password>
-      groupsFromRoles: true
-      clients:
-        ocp-idp:
-          secret: "{{ .Values.global.oidc.secret }}"
-          redirectUris:
-            - "*"
-          defaultClientScopes:
-            - acr
-            - basic
-            - email
-            - groups
-            - profile
-            - roles
-            - service_account
-            - web-origins
 
 keycloak-auth:
   clusterAdmins:

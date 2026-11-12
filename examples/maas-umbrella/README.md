@@ -5,6 +5,22 @@ This is an example operand umbrella chart (not published) that composes the publ
 subchart dependencies with values overlays. It is deliberately placed outside `charts/` so the version-gated publishing
 script never discovers it.
 
+Prerequisites
+---
+
+The operand charts require the following before the operand install:
+
+- The RHBK and CloudNativePG operators are subscribed and their custom resource definitions are established. The
+  operator install does this: `operator-values.yaml` in this example carries `rhbk-operator` and `cloudnative-pg`
+  entries.
+- cert-manager runs with a CA-capable ClusterIssuer named `ca-issuer`: the `postgres-cluster` chart renders a
+  cert-manager `Certificate` whose issuerRef defaults to it, and the referenced Secret needs a `ca.crt`, which
+  cert-manager only populates for CA-capable issuers. Verify a Ready, CA-capable ClusterIssuer (default name
+  `ca-issuer`) exists before installing with `oc get clusterissuer ca-issuer`; a fresh cluster must create one, for
+  example via this repository's cert-manager chart or an existing platform issuer. Keycloak itself uses the OpenShift
+  service CA and needs no cert-manager.
+- Namespace `keycloak` exists. The operator install creates it.
+
 Two-install flow
 ---
 
@@ -27,8 +43,14 @@ its operand CR in one release. Deployment therefore uses two installs:
 
    ```
    helm dependency build examples/maas-umbrella
-   helm upgrade --install maas-umbrella examples/maas-umbrella
+   helm upgrade --install maas-umbrella examples/maas-umbrella -n keycloak
    ```
+
+   The operand release namespace must be `keycloak`: the RHBK OperatorGroup created by the operator install watches that
+   namespace only, and `install-operators` creates the namespace. The keycloak chart defaults every resource to the
+   release namespace, so with the release in `keycloak` the Keycloak CR, the KeycloakRealmImport, the postgres Cluster
+   and its secrets all co-locate inside the operator's watch scope; a release in any other namespace leaves the custom
+   resources unwatched.
 
    Create `redhat-ai-gateway-infra` before this install: the maas-db Cluster and bootstrap Job render there, and neither
    this chart nor the `postgres-cluster` dependency renders a Namespace. The `maasTenantConfig` hook Job runs in the
@@ -81,6 +103,6 @@ helm dependency build examples/maas-umbrella
 Lint and render the example:
 
 ```
-helm lint examples/maas-umbrella
-helm template examples/maas-umbrella
+helm lint examples/maas-umbrella -n keycloak
+helm template examples/maas-umbrella -n keycloak
 ```
