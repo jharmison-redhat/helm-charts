@@ -14,6 +14,19 @@ it validates (`charts/**`, `examples/**`) plus the helpers, test suites (`tests/
 plus manual dispatch, and lints every chart and the umbrella against locally resolved sub-charts; `publish-chart.yml`
 remains push-to-main and publishes only charts whose `version:` has no registry tag yet.
 
+## Porting discipline
+
+Charts are ports of components from the historical all-in-one repo into composable, independently publishable charts.
+Source parity is not a goal — the contract is correct behavior under normal Helm usage (`helm install`, `helm upgrade`,
+`helm uninstall`):
+
+- Jobs whose spec can change across chart versions are hooks (`post-install,post-upgrade` +
+  `helm.sh/hook-delete-policy: before-hook-creation`), since plain Jobs are immutable on upgrade.
+- Operand charts never install operators; operator Subscriptions belong to the `install-operators` chart.
+- ArgoCD-only mechanics (sync waves, `SkipDryRunOnMissingResource`, `ignoreDifferences`) do not port; replace them with
+  render-time validation (clear diagnostics) and documented prerequisites (operator/CRD establishment, pre-existing
+  namespaces).
+
 ## Chart dependencies — the guard that broke run 39966995703
 
 Vendored `charts/<name>/charts/*.tgz` and `Chart.lock` are **gitignored**. Any chart with a `dependencies:` block
