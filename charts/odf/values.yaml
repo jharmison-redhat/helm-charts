@@ -1,18 +1,4 @@
 ---
-install-odf:
-  enabled: true
-  operators:
-    odf-operator:
-      channel: stable-4.21
-      namespace: openshift-storage
-      operatorGroup:
-        enabled: true
-        # The OperatorGroup's target namespaces; install-operators reads them
-        # only from this operatorGroup block — an operator-level
-        # targetNamespaces key has no effect.
-        targetNamespaces:
-          - openshift-storage
-
 # The enableCephTools/createStorageSystem/storageDeviceSets/disks/
 # monDataDirHostPath/multiCloudGateway keys form two mutually exclusive modes
 # enforced at render time (see the README's "Configuration modes"):

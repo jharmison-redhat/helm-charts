@@ -3,9 +3,8 @@ odf
 
 A chart to deploy OpenShift Data Foundation: it renders the `StorageCluster` operand (named `ocs-storagecluster` — a
 fixed singleton name, one per cluster) along with the optional `StorageSystem`, `OCSInitialization`, Ceph/NooBaa
-visibility RBAC, console-plugin enablement, and storage-node labeling. The `odf-operator` itself is installed through
-the `install-operators` dependency chart, which renders the OLM `Subscription` and `OperatorGroup` in
-`openshift-storage` (namespaced; see `install-odf.operators.odf-operator`).
+visibility RBAC, console-plugin enablement, and storage-node labeling. The `odf-operator` itself is NOT installed by
+this chart — see Prerequisites.
 
 Configuration modes
 -------------------
@@ -93,14 +92,30 @@ behavior (whether a usable default backing store materializes without cloud cred
 test cluster. OBC provisioning may require an explicit `BackingStore`/`BucketClass` — do not assume the default
 `openshift-storage.noobaa.io` storage class provisions buckets in this mode until the live validation completes.
 
-Operator dependency
--------------------
+Prerequisites
+-------------
 
-The `install-odf` dependency (the `install-operators` chart, pinned `>=0.2.0 <0.3.0` from
-`oci://ghcr.io/jharmison-redhat/helm-charts`) renders the `odf-operator` Subscription and OperatorGroup. Set
-`install-odf.enabled: false` to skip operator installation and manage the operator yourself. Install the release into
-`openshift-storage` (`-n openshift-storage`) — the operator's resources are hardcoded there and the console-plugin
-ClusterRoleBinding references its ServiceAccount.
+The `odf-operator` is NOT installed by this chart. It must already be installed before this chart is deployed — the
+chart renders the `StorageCluster` CR directly, and a plain `helm install` fails on the missing CRDs otherwise. Use the
+`install-operators` chart for the operator install (see the `examples/maas-umbrella` README for the full two-install
+flow):
+
+```yaml
+# install-operators values
+operators:
+  odf-operator:
+    # stable-4.22 is the live packagemanifest default channel for odf-operator
+    channel: stable-4.22
+    namespace: openshift-storage
+    operatorGroup:
+      enabled: true
+      targetNamespaces:
+        - openshift-storage
+```
+
+The `openshift-storage` namespace must also exist before this chart is deployed — create it before install; the chart
+does not render it. Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of
+this chart.
 
 Install
 -------
@@ -111,15 +126,14 @@ helm install <name> charts/odf -n openshift-storage \
 ```
 
 Supply the mode-specific values with `-f` — one of the example files above (standalone MCGW or full Ceph+MCGW); the
-render fails with a mode-naming diagnostic when the values combination is incoherent.
+render fails with a mode-naming diagnostic when the values combination is incoherent. Install the release into
+`openshift-storage` — the console-plugin ClusterRoleBinding references the operator's ServiceAccount there.
 
 Values
 ------
 
 Real defaults live in `values.yaml`. Notable keys:
 
-- `install-odf` — the operator dependency's values surface (operator channel, namespace, OperatorGroup target
-  namespaces)
 - `enableCephTools` — renders an `OCSInitialization` enabling Ceph tooling (default `true`; must be `false` in
   standalone MCGW mode)
 - `createStorageSystem` — renders the `StorageSystem` CR (default `false`)

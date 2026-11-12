@@ -6,10 +6,3 @@ description: >
 type: application
 version: 0.1.0
 appVersion: 0.1.0
-
-dependencies:
-  - name: install-operators
-    version: ">=0.2.0 <0.3.0"
-    repository: oci://ghcr.io/jharmison-redhat/helm-charts
-    alias: install-odf
-    condition: install-odf.enabled
