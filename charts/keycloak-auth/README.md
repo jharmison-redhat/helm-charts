@@ -3,8 +3,8 @@ keycloak-auth
 
 A chart to configure OpenShift authentication against a Keycloak instance deployed by the Red Hat Build of Keycloak
 operator. It applies a cluster-scoped OAuth `OpenID` identity provider, manages the `openid-client-secret` Secret in
-`openshift-config`, sets up a `cluster-admins` Group with a ClusterRoleBinding, and optionally removes the `kubeadmin`
-Secret.
+`openshift-config`, sets up a `cluster-admins` Group with a ClusterRoleBinding, and can remove the `kubeadmin` Secret
+when explicitly opted in.
 
 This chart has no chart dependencies and renders standalone. It is designed to be consumed alongside the `keycloak`
 chart (which deploys the Keycloak instance and realm import): an umbrella consumer composes both and provides the OIDC
@@ -22,8 +22,9 @@ The chart performs the following:
 - Creates the `openid-client-secret` Secret in the `openshift-config` namespace from values (`global.oidc.secret` is
   required — no default is provided)
 - Creates a `cluster-admins` Group bound to the `cluster-admin` ClusterRole
-- Optionally removes the `kubeadmin` Secret via a Job that runs as a Helm `post-install,post-upgrade` hook (recreated on
-  re-runs via `before-hook-creation`); enabled by default, disable it with `removeKubeAdmin: false`
+- Removes the `kubeadmin` Secret via a Job that runs as a Helm `post-install,post-upgrade` hook (recreated on re-runs
+  via `before-hook-creation`); disabled by default — opt in with `removeKubeAdmin: true` only after exercising a
+  replacement administrator login (see `removeKubeAdmin` under Values)
 - Optionally renders a `router-ca` trust ConfigMap in `openshift-config` as the identity provider's CA (set `ingressCA`
   to enable it)
 
@@ -45,7 +46,7 @@ clusterAdmins:
   users:
     - admin
 
-removeKubeAdmin: true
+removeKubeAdmin: false
 ```
 
 Values
@@ -66,6 +67,17 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `oauth.idpName` — the identity provider name in the cluster OAuth resource (default: `rhbk`)
 - `ingressCA` — optional CA bundle; when set, the `router-ca` ConfigMap is rendered and the identity provider uses it
 - `clusterAdmins.users` — usernames added to the `cluster-admins` Group (default: `[admin]`)
-- `removeKubeAdmin` — set to `false` to keep the kubeadmin Secret (default: `true`)
+- `removeKubeAdmin` — set to `true` to remove the kubeadmin Secret (default: `false`)
 
 Secrets are never defaulted: the OIDC client secret must be provided through values.
+
+Kubeadmin removal
+-----------------
+
+The `kubeadmin` Secret is the break-glass administrator credential created by the OpenShift installer. Deleting it is
+irreversible: Helm rollback and `helm uninstall` do not recreate it, and this chart does not verify that a replacement
+administrator login works — rendered resources (the OAuth identity provider, the `cluster-admins` Group, or anything
+else this chart manages) are not proof that anyone can authenticate. Before setting `removeKubeAdmin: true`, log in as a
+replacement administrator and confirm that access works. The removal Job deletes only the `kubeadmin` Secret in
+`kube-system` with a delete-only Role; a successful run means the API accepted the deletion request, not that a login
+was verified.

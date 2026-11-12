@@ -90,4 +90,7 @@ keycloak-auth:
   clusterAdmins:
     users:
       - admin
-  removeKubeAdmin: true
+  # Keep the kubeadmin Secret unless deliberately opting in after an
+  # exercised replacement administrator login — removal is irreversible and
+  # Helm rollback/uninstall does not recreate it.
+  removeKubeAdmin: false

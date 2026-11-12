@@ -46,5 +46,8 @@ clusterAdmins:
   users:
     - admin
 
-# Set false to keep the kubeadmin Secret in place
-removeKubeAdmin: true
+# Default false: deleting the kubeadmin Secret is irreversible — Helm
+# rollback/uninstall does not recreate it, and this chart cannot verify that
+# a replacement administrator login works. Opt in only after exercising that
+# login.
+removeKubeAdmin: false

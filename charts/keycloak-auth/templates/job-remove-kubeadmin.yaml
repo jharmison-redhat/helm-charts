@@ -19,9 +19,16 @@ spec:
       - name: remove-kubeadmin
         image: {{ .Values.global.toolsImage }}
         imagePullPolicy: IfNotPresent
-        command: ["/bin/bash"]
+        command: ["oc"]
         args:
-          - -xc
-          - |-
-            oc delete secret kubeadmin ||:
+          - delete
+          - secret
+          - kubeadmin
+          - --namespace
+          - kube-system
+          - --ignore-not-found
+          # No wait keeps the Job's authority delete-only (waiting polls the
+          # Secret with get/watch); success means the API accepted the
+          # deletion request, not that a replacement login was verified.
+          - --wait=false
 {{- end }}
