@@ -5,7 +5,9 @@ enabled/standardFlowEnabled/directAccessGrantsEnabled/serviceAccountsEnabled,
 user enabled/emailVerified) render true when the values key is absent or
 null and verbatim when explicitly true or false, and client
 fullScopeAllowed is omitted when absent or null and rendered verbatim
-when explicitly true or false.
+when explicitly true or false. It also pins the apiVersion of the
+rendered Keycloak and KeycloakRealmImport custom resources to
+k8s.keycloak.org/v2alpha1.
 
 Render tests run the rendered chart through ``helm template`` against a
 local stub of the postgres-cluster dependency (no registry access). No
@@ -54,9 +56,8 @@ class ChartFixture(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
-    def render_realm(self, realm):
-        """Renders a single-realm values set; returns the realm spec of the
-        rendered KeycloakRealmImport."""
+    def render_docs(self, realm):
+        """Renders a single-realm values set; returns all rendered docs."""
         self.stub_dependency()
         result = subprocess.run(
             ["helm", "template", "test-release", self.dir,
@@ -64,7 +65,12 @@ class ChartFixture(unittest.TestCase):
              "--values", self.values_file({"realms": {"test": realm}})],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for d in docs(result.stdout):
+        return docs(result.stdout)
+
+    def render_realm(self, realm):
+        """Renders a single-realm values set; returns the realm spec of the
+        rendered KeycloakRealmImport."""
+        for d in self.render_docs(realm):
             if (d["kind"] == "KeycloakRealmImport"
                     and d["metadata"]["name"] == "test"):
                 return d["spec"]["realm"]
@@ -147,6 +153,16 @@ class FullScopeAllowedTests(ChartFixture):
 
 
 class BaselineRenderTests(ChartFixture):
+    def test_custom_resource_api_versions_pin_v2alpha1(self):
+        # Pinned to v2alpha1 because operators at least as old as 26.2.16
+        # (the target cluster's version) reject v2beta1; later releases
+        # (26.6+) still serve v2alpha1, deprecated but with identical schema.
+        kinds = {d["kind"]: d["apiVersion"]
+                 for d in self.render_docs(self.base_realm())}
+        for kind in ("Keycloak", "KeycloakRealmImport"):
+            self.assertEqual(
+                kinds[kind], "k8s.keycloak.org/v2alpha1", kind)
+
     def test_default_render_matches_contract(self):
         # No boolean field set anywhere: the eight default-true fields render
         # true and fullScopeAllowed is absent.
