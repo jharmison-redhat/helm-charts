@@ -1,0 +1,39 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- /* The hook Jobs need their scripts and the identity provider entry they
+upsert, so the oauth-idp-config ConfigMap is gated alongside the Jobs and the
+openid-client-secret Secret on global.oidc.secret being provided */ -}}
+{{- if ne $secret "" }}
+{{- $openID := dict
+      "claims" (dict
+        "email" (list "email")
+        "name" (list "name")
+        "preferredUsername" (list "preferred_username" "email" "name")
+        "groups" (list "groups"))
+      "clientID" .Values.global.oidc.clientId
+      "clientSecret" (dict "name" "openid-client-secret")
+      "extraScopes" (list)
+      "issuer" (printf "https://%s.%s/realms/%s"
+        .Values.keycloak.name .Values.global.wildcardDomain .Values.global.oidc.realm) }}
+{{- with .Values.ingressCA }}
+{{- $_ := set $openID "ca" (dict "name" "router-ca") }}
+{{- end }}
+{{- $entry := dict
+      "name" .Values.oauth.idpName
+      "type" "OpenID"
+      "mappingMethod" "claim"
+      "openID" $openID }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oauth-idp-config
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+data:
+  oauth-idp-upsert.sh: |-
+    {{- .Files.Get "files/oauth-idp-upsert.sh" | nindent 4 }}
+  oauth-idp-remove.sh: |-
+    {{- .Files.Get "files/oauth-idp-remove.sh" | nindent 4 }}
+  idp-entry.json: |-
+    {{- $entry | toJson | nindent 4 }}
+{{- end }}

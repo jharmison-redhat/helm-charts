@@ -1,0 +1,45 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- /* The hook Jobs read and patch only the platform's cluster-scoped OAuth
+object; the RBAC surface is gated on global.oidc.secret being provided,
+alongside the Jobs it serves */ -}}
+{{- if ne $secret "" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oauth-idp
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: oauth-idp
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - oauths
+  resourceNames:
+  - cluster
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oauth-idp
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: oauth-idp
+subjects:
+- kind: ServiceAccount
+  name: oauth-idp
+  namespace: {{ .Release.Namespace }}
+{{- end }}

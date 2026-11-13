@@ -1,19 +1,25 @@
 """Focused tests for the keycloak-auth chart. The module covers the
 default-off kubeadmin-removal surface (no removal Job, ServiceAccount,
 Role, or RoleBinding unless explicitly opted in), the exact named-secret
-delete-only RBAC and rendered removal command, and the umbrella
-example's explicit safe override, dependency pin, and metadata
-coherence.
+delete-only RBAC and rendered removal command, the OAuth identity-provider
+hook surface (the platform OAuth object is never owned — hook Jobs upsert
+and remove only this chart's named entry with a resourceVersion-conditional
+read-modify-write), the umbrella example's explicit safe override,
+dependency pin, and metadata coherence.
 
 Render tests run the chart through ``helm template`` (keycloak-auth has
 no chart dependencies, so no stubs or registry access are needed).
 Command tests execute the rendered Job argv against a fake ``oc``
 binary with an isolated environment; the fake is invoked by direct path
 substitution of the rendered argv, so no run can fall through to a real
-``oc`` or contact any cluster.
+``oc`` or contact any cluster. Script tests run the rendered hook scripts
+against a fake ``oc`` on a restricted PATH built entirely from symlinks,
+so neither a real ``oc`` nor the test host's ambient tools can leak into
+the run.
 """
 
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -55,6 +61,65 @@ case "$OC_SCENARIO" in
 esac
 """
 
+# Fake oc for the OAuth hook scripts: serves a canned OAuth object for get
+# and records every --patch= payload, with per-scenario API behavior. Each
+# get bumps the served metadata.resourceVersion (first get serves the canned
+# value, each later get serves it incremented), so a retry can only patch
+# successfully with a version from a fresh read. Every invocation is logged
+# so tests can assert the exact oc call surface.
+FAKE_OC_SCRIPT = """\
+#!/bin/bash
+echo "$@" >> "$OC_LOG"
+env | LC_ALL=C sort > "$OC_ENV"
+if [[ "$1" == "get" ]]; then
+  case "$OC_SCENARIO" in
+    absent-object)
+      echo 'Error from server (NotFound): oauths.config.openshift.io "cluster" not found' >&2
+      exit 1 ;;
+    get-error)
+      echo 'Error from server (Forbidden): oauths.config.openshift.io "cluster" is forbidden' >&2
+      exit 1 ;;
+    *)
+      rv_file="$OC_GET_FILE.rv"
+      if [[ -f "$rv_file" ]]; then
+        next_rv=$(($(cat "$rv_file") + 1))
+      else
+        next_rv=$(grep -oE '"resourceVersion": *"[0-9]+"' "$OC_GET_FILE" | grep -oE '[0-9]+')
+      fi
+      echo "$next_rv" > "$rv_file"
+      sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" "$OC_GET_FILE" ;;
+  esac
+elif [[ "$1" == "patch" ]]; then
+  for arg in "$@"; do
+    if [[ "$arg" == --patch=* ]]; then
+      printf '%s\\n' "${arg#--patch=}" >> "$OC_PATCH_LOG"
+    fi
+  done
+  attempts=$(cat "$OC_ATTEMPTS" 2>/dev/null || true)
+  attempts=$(( ${attempts:-0} + 1 ))
+  echo "$attempts" > "$OC_ATTEMPTS"
+  case "$OC_SCENARIO" in
+    conflict-then-success)
+      if [ "$attempts" -ge 2 ]; then
+        exit 0
+      fi
+      echo 'Error from server (Conflict): Operation cannot be fulfilled on oauths.config.openshift.io "cluster"' >&2
+      exit 1 ;;
+    conflict-exhausted)
+      echo 'Error from server (Conflict): Operation cannot be fulfilled on oauths.config.openshift.io "cluster"' >&2
+      exit 1 ;;
+    patch-error)
+      echo 'Error from server (Forbidden): oauths.config.openshift.io "cluster" is forbidden' >&2
+      exit 1 ;;
+    *)
+      exit 0 ;;
+  esac
+else
+  echo "unexpected oc invocation: $*" >&2
+  exit 64
+fi
+"""
+
 
 def docs(text):
     return [d for d in yaml.safe_load_all(text) if d is not None]
@@ -74,14 +139,17 @@ class ChartFixture(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
-    def render(self, values=None):
+    def render_raw(self, values=None):
         cmd = ["helm", "template", "test-release", self.dir,
                "--namespace", "test-release-ns"]
         if values is not None:
             cmd += ["--values", self.values_file(values)]
         result = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return [d for d in docs(result.stdout) if d is not None]
+        return result.stdout
+
+    def render(self, values=None):
+        return [d for d in docs(self.render_raw(values)) if d is not None]
 
     @staticmethod
     def by_kind(docs):
@@ -95,6 +163,19 @@ class ChartFixture(unittest.TestCase):
         matches = [d for d in by_kind[kind] if d["metadata"]["name"] == name]
         assert len(matches) == 1, (kind, name, by_kind[kind])
         return matches[0]
+
+    @staticmethod
+    def configured_values(remove=False, ingressCA=None):
+        values = {
+            "global": {"oidc": {"secret": "test-client-secret"}},
+            "removeKubeAdmin": remove,
+        }
+        if ingressCA is not None:
+            values["ingressCA"] = ingressCA
+        return values
+
+    def configured_render(self, ingressCA=None):
+        return self.by_kind(self.render(self.configured_values(ingressCA=ingressCA)))
 
     def opt_in_render(self):
         return self.by_kind(self.render({"removeKubeAdmin": True}))
@@ -138,40 +219,6 @@ class RemovalGateTests(ChartFixture):
                 "kind": "Group",
                 "name": "cluster-admins",
             }])
-
-    @staticmethod
-    def configured_values(remove):
-        return {
-            "global": {"oidc": {"secret": "test-client-secret"}},
-            "ingressCA": "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----",
-            "removeKubeAdmin": remove,
-        }
-
-    def test_configured_oauth_secret_and_ca_invariant_across_toggle(self):
-        # With the OIDC secret and ingressCA configured, the OAuth identity
-        # provider, its client Secret, and the router-ca trust ConfigMap all
-        # render, and every non-removal document is byte-identical across
-        # the removal toggle states.
-        off = self.by_kind(self.render(self.configured_values(False)))
-        on = self.by_kind(self.render(self.configured_values(True)))
-        for kind, name in (("OAuth", "cluster"),
-                           ("Secret", "openid-client-secret"),
-                           ("ConfigMap", "router-ca"),
-                           ("Group", "cluster-admins"),
-                           ("ClusterRoleBinding", "cluster-admins")):
-            for by_kind in (off, on):
-                self.assertIn(kind, by_kind)
-            self.assertEqual(self.pick(off, kind, name), self.pick(on, kind, name))
-        secret = self.pick(off, "Secret", "openid-client-secret")
-        self.assertEqual(secret["data"]["clientSecret"],
-                         base64.b64encode(b"test-client-secret").decode())
-        oauth = self.pick(off, "OAuth", "cluster")
-        idp = oauth["spec"]["identityProviders"][0]
-        self.assertEqual(idp["name"], "rhbk")
-        self.assertEqual(idp["openID"]["clientSecret"]["name"], "openid-client-secret")
-        self.assertEqual(idp["openID"]["ca"]["name"], "router-ca")
-        self.assertEqual(self.pick(off, "ConfigMap", "router-ca")["data"]["ca.crt"],
-                         self.configured_values(False)["ingressCA"])
 
     def test_job_identity_and_hooks(self):
         job = self.pick(self.opt_in_render(), "Job", "remove-kubeadmin")
@@ -239,110 +286,547 @@ class RemovalGateTests(ChartFixture):
         ])
 
 
-class FakeOcCommandTests(ChartFixture):
-    """Executes the rendered removal command against a fake oc binary.
+class OAuthNeverOwnedTests(ChartFixture):
+    """The platform OAuth object always exists on OpenShift, so the chart
+    must never render it as a release-owned manifest — configured or not."""
 
-    The fake oc is invoked by direct path substitution (fake binary path +
-    the rendered argument vector), never through PATH lookup, so the run
-    cannot fall through to a real oc. The child environment is an explicit
-    minimal set — no parent variables are inherited — with an isolated
-    HOME/KUBECONFIG, so no kubeconfig or cluster credential from the test
-    host can reach the command."""
+    def test_oauth_resource_never_renders(self):
+        for by_kind in (self.by_kind(self.render()),
+                        self.configured_render(),
+                        self.configured_render(ingressCA="CA"),
+                        self.by_kind(self.render(
+                            self.configured_values(remove=True, ingressCA="CA")))):
+            self.assertNotIn("OAuth", by_kind)
+
+    def test_oidc_not_configured_renders_no_oauth_surface(self):
+        by_kind = self.by_kind(self.render())
+        for kind in ("Job", "ServiceAccount", "ClusterRole", "ConfigMap"):
+            self.assertNotIn(kind, by_kind)
+        names = {d["metadata"]["name"] for docs in by_kind.values() for d in docs}
+        for name in ("oauth-idp-upsert", "oauth-idp-remove",
+                     "oauth-idp", "oauth-idp-config"):
+            self.assertNotIn(name, names)
+
+
+class OAuthHookSurfaceTests(ChartFixture):
+    """With the OIDC secret configured, the hook Jobs, script ConfigMap,
+    ServiceAccount, and minimal ClusterRole surface render with exact
+    hooks and RBAC."""
+
+    def test_upsert_job_identity_and_hooks(self):
+        job = self.pick(self.configured_render(), "Job", "oauth-idp-upsert")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook"],
+            "post-install,post-upgrade")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
+            "before-hook-creation")
+        self.assertEqual(job["spec"]["backoffLimit"], 4)
+        pod = job["spec"]["template"]["spec"]
+        self.assertEqual(pod["serviceAccountName"], "oauth-idp")
+        self.assertEqual(pod["restartPolicy"], "Never")
+        container = pod["containers"][0]
+        self.assertEqual(
+            container["image"],
+            "image-registry.openshift-image-registry.svc:5000/openshift/tools:latest")
+        self.assertEqual(container["imagePullPolicy"], "IfNotPresent")
+        self.assertEqual(container["command"], ["/mnt/oauth-idp-upsert.sh"])
+        self.assertEqual(container["env"],
+                         [{"name": "IDP_NAME", "value": "rhbk"}])
+        self.assertEqual(container["volumeMounts"], [{
+            "name": "oauth-idp-config", "mountPath": "/mnt",
+        }])
+        self.assertEqual(pod["volumes"], [{
+            "name": "oauth-idp-config",
+            "configMap": {"name": "oauth-idp-config", "defaultMode": 493},
+        }])
+
+    def test_remove_job_is_pre_delete_hook(self):
+        job = self.pick(self.configured_render(), "Job", "oauth-idp-remove")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook"], "pre-delete")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
+            "before-hook-creation")
+        self.assertEqual(
+            job["spec"]["template"]["spec"]["serviceAccountName"], "oauth-idp")
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(container["command"], ["/mnt/oauth-idp-remove.sh"])
+        self.assertEqual(container["env"],
+                         [{"name": "IDP_NAME", "value": "rhbk"}])
+
+    def test_script_configmap_delivers_scripts_and_entry(self):
+        cm = self.pick(self.configured_render(), "ConfigMap", "oauth-idp-config")
+        data = cm["data"]
+        for key in ("oauth-idp-upsert.sh", "oauth-idp-remove.sh", "idp-entry.json"):
+            self.assertIn(key, data)
+        self.assertIn("set -euo pipefail", data["oauth-idp-upsert.sh"])
+        self.assertIn("set -euo pipefail", data["oauth-idp-remove.sh"])
+        self.assertIn("oauths.config.openshift.io/cluster",
+                      data["oauth-idp-upsert.sh"])
+        self.assertIn("oauths.config.openshift.io/cluster",
+                      data["oauth-idp-remove.sh"])
+        entry = json.loads(data["idp-entry.json"])
+        self.assertEqual(entry["name"], "rhbk")
+
+    def test_service_account_gates_with_jobs(self):
+        # No explicit namespace: the SA, script ConfigMap, and hook Jobs all
+        # land in the release namespace, which only the ClusterRoleBinding
+        # subject needs to name explicitly.
+        sa = self.pick(self.configured_render(), "ServiceAccount", "oauth-idp")
+        self.assertNotIn("namespace", sa["metadata"])
+        for job_name in ("oauth-idp-upsert", "oauth-idp-remove"):
+            job = self.pick(self.configured_render(), "Job", job_name)
+            self.assertNotIn("namespace", job["metadata"])
+
+    def test_cluster_role_is_get_and_patch_on_named_oauth_only(self):
+        role = self.pick(self.configured_render(), "ClusterRole", "oauth-idp")
+        self.assertEqual(role["rules"], [{
+            "apiGroups": ["config.openshift.io"],
+            "resources": ["oauths"],
+            "resourceNames": ["cluster"],
+            "verbs": ["get", "patch"],
+        }])
+
+    def test_cluster_role_binding_binds_only_the_oauth_service_account(self):
+        binding = self.pick(self.configured_render(),
+                            "ClusterRoleBinding", "oauth-idp")
+        self.assertEqual(binding["roleRef"], {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "oauth-idp",
+        })
+        self.assertEqual(binding["subjects"], [{
+            "kind": "ServiceAccount",
+            "name": "oauth-idp",
+            "namespace": "test-release-ns",
+        }])
+
+    def test_client_secret_and_router_ca_render_with_oauth_surface(self):
+        off = self.configured_render()
+        on = self.configured_render(ingressCA="CA")
+        for by_kind in (off, on):
+            secret = self.pick(by_kind, "Secret", "openid-client-secret")
+            self.assertEqual(secret["data"]["clientSecret"],
+                             base64.b64encode(b"test-client-secret").decode())
+        self.assertEqual(
+            self.pick(on, "ConfigMap", "router-ca")["data"]["ca.crt"], "CA")
+        self.assertNotIn("router-ca", {d["metadata"]["name"]
+                                       for d in off.get("ConfigMap", [])})
+
+
+OLD_IDP_ENTRY = {
+    "name": "rhbk",
+    "type": "OpenID",
+    "mappingMethod": "claim",
+    "openID": {
+        "claims": {
+            "email": ["email"],
+            "name": ["name"],
+            "preferredUsername": ["preferred_username", "email", "name"],
+            "groups": ["groups"],
+        },
+        "clientID": "ocp-idp",
+        "clientSecret": {"name": "openid-client-secret"},
+        "extraScopes": [],
+        "issuer": "https://keycloak.apps.cluster.example.com/realms/sso",
+    },
+}
+
+
+class IdpEntryShapeTests(ChartFixture):
+    """The identity provider entry the hook Jobs upsert preserves the exact
+    shape the release-owned OAuth manifest used to render."""
+
+    def idp_entry(self, ingressCA=None):
+        cm = self.pick(self.configured_render(ingressCA=ingressCA),
+                       "ConfigMap", "oauth-idp-config")
+        return json.loads(cm["data"]["idp-entry.json"])
+
+    def test_entry_matches_old_oauth_manifest_shape(self):
+        self.assertEqual(self.idp_entry(), OLD_IDP_ENTRY)
+
+    def test_entry_with_ingress_ca_adds_ca_reference_only(self):
+        entry = self.idp_entry(ingressCA="CA")
+        with_ca = json.loads(json.dumps(OLD_IDP_ENTRY))
+        with_ca["openID"]["ca"] = {"name": "router-ca"}
+        self.assertEqual(entry, with_ca)
+
+    def test_entry_follows_non_default_values(self):
+        values = {
+            "global": {
+                "wildcardDomain": "apps.other.example.com",
+                "oidc": {
+                    "realm": "other-realm",
+                    "clientId": "other-client",
+                    "secret": "test-client-secret",
+                },
+            },
+            "keycloak": {"name": "other-keycloak"},
+            "oauth": {"idpName": "other-idp"},
+        }
+        cm = self.pick(self.by_kind(self.render(values)),
+                       "ConfigMap", "oauth-idp-config")
+        entry = json.loads(cm["data"]["idp-entry.json"])
+        expected = json.loads(json.dumps(OLD_IDP_ENTRY))
+        expected["name"] = "other-idp"
+        expected["openID"]["clientID"] = "other-client"
+        expected["openID"]["issuer"] = (
+            "https://other-keycloak.apps.other.example.com/realms/other-realm")
+        self.assertEqual(entry, expected)
+        self.assertEqual(entry["openID"]["clientSecret"],
+                         {"name": "openid-client-secret"})
+
+    def test_entry_carries_no_secret_material(self):
+        for entry in (self.idp_entry(), self.idp_entry(ingressCA="CA")):
+            self.assertNotIn("test-client-secret", json.dumps(entry))
+
+
+class PayloadHygieneTests(ChartFixture):
+    """No credential may ever appear in a rendered manifest outside the
+    client Secret resource itself."""
+
+    def test_secret_value_appears_nowhere_outside_the_secret(self):
+        secret_b64 = base64.b64encode(b"test-client-secret").decode()
+        for values in (self.configured_values(),
+                       self.configured_values(remove=True, ingressCA="CA")):
+            raw = self.render_raw(values)
+            self.assertNotIn("test-client-secret", raw)
+            self.assertEqual(raw.count(secret_b64), 1,
+                             "the secret's encoded value must appear exactly "
+                             "once, in the openid-client-secret Secret")
+
+
+class OAuthIdpScriptTests(ChartFixture):
+    """Executes the rendered OAuth hook scripts against a fake oc binary.
+
+    Each run gets a restricted PATH built solely from symlinks in an
+    isolated bin directory (the JSON tool chosen per test path, core
+    utilities, and the fake oc), so no ambient host tool or real oc can be
+    reached. The child environment is an explicit minimal set — no parent
+    variables are inherited."""
+    MAX_ATTEMPTS = 5
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="ka-script-")
+        self.work = tempfile.mkdtemp(prefix="ka-oauth-script-")
         self.addCleanup(shutil.rmtree, self.work)
-        container = self.pick(
-            self.opt_in_render(), "Job", "remove-kubeadmin"
-        )["spec"]["template"]["spec"]["containers"][0]
-        self.argv = container["command"] + container["args"]
+        cm = self.pick(self.configured_render(), "ConfigMap", "oauth-idp-config")
+        self.scripts = {name: cm["data"][name]
+                        for name in ("oauth-idp-upsert.sh", "oauth-idp-remove.sh")}
+        self.entry = json.loads(cm["data"]["idp-entry.json"])
+        with open(os.path.join(self.work, "entry.json"), "w") as f:
+            json.dump(self.entry, f)
+        self.other_idp = {
+            "name": "htpasswd",
+            "type": "HTPasswd",
+            "mappingMethod": "claim",
+            "htpasswd": {"fileData": {"name": "htpasswd-secret"}},
+        }
 
-    def run_command(self, scenario):
-        fake = os.path.join(self.work, "oc")
-        with open(fake, "w") as f:
-            f.write(FAKE_OC)
-        os.chmod(fake, 0o755)
-        # Substitute the rendered binary name with the fake: argv[0] "oc"
-        # becomes the fake's path, the rendered arguments are untouched.
-        # The env dict replaces the parent environment entirely; the
-        # sentinel below only exists in the parent and must never appear
-        # in the fake's recorded environment.
+    def oauth_doc(self, idps, resource_version="1597"):
+        return {
+            "apiVersion": "config.openshift.io/v1",
+            "kind": "OAuth",
+            "metadata": {"name": "cluster", "resourceVersion": resource_version},
+            "spec": {"identityProviders": idps},
+        }
+
+    def build_bin_dir(self, include_jq=None, include_python=None):
+        bin_dir = os.path.join(self.work, "bin")
+        os.makedirs(bin_dir, exist_ok=True)
+        for name in os.listdir(bin_dir):
+            os.unlink(os.path.join(bin_dir, name))
+        if include_jq is None:
+            include_jq = shutil.which("jq") is not None
+        if include_python is None:
+            include_python = shutil.which("python3") is not None
+        tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
+        if include_jq:
+            self.assertTrue(shutil.which("jq"),
+                            "jq requested but not available on the host")
+            tools.append("jq")
+        if include_python:
+            self.assertTrue(shutil.which("python3"),
+                            "python3 requested but not available on the host")
+            tools.append("python3")
+        for tool in tools:
+            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
+        fake_oc = os.path.join(bin_dir, "oc")
+        with open(fake_oc, "w") as f:
+            f.write(FAKE_OC_SCRIPT)
+        os.chmod(fake_oc, 0o755)
+        return bin_dir
+
+    def run_script(self, script_name, scenario, oauth_doc=None,
+                   include_jq=None, include_python=None):
+        bin_dir = self.build_bin_dir(include_jq=include_jq,
+                                     include_python=include_python)
+        script_path = os.path.join(self.work, script_name)
+        with open(script_path, "w") as f:
+            f.write(self.scripts[script_name])
+        if oauth_doc is None:
+            oauth_doc = self.oauth_doc([])
+        get_file = os.path.join(self.work, "oauth.json")
+        with open(get_file, "w") as f:
+            json.dump(oauth_doc, f)
+        # Each run is self-contained: drop logs and the fake oc's
+        # resourceVersion counter left by any earlier run.
+        for stale in ("commands.log", "env.log", "patches.log", "attempts",
+                      get_file + ".rv"):
+            stale_path = os.path.join(self.work, stale)
+            if os.path.exists(stale_path):
+                os.unlink(stale_path)
         env = {
-            "PATH": "/usr/bin:/bin",
+            "PATH": bin_dir,
             "HOME": self.work,
-            "KUBECONFIG": os.path.join(self.work, "kubeconfig"),
+            "IDP_NAME": "rhbk",
+            "ENTRY_FILE": os.path.join(self.work, "entry.json"),
             "OC_SCENARIO": scenario,
             "OC_LOG": os.path.join(self.work, "commands.log"),
             "OC_ENV": os.path.join(self.work, "env.log"),
+            "OC_GET_FILE": get_file,
+            "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
+            "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
         }
         with mock.patch.dict(os.environ, {"KA_PARENT_SENTINEL": "must-not-leak"}):
             return subprocess.run(
-                [fake] + self.argv[1:], capture_output=True, text=True,
-                env=env, timeout=30)
+                ["/bin/bash", script_path], capture_output=True, text=True,
+                env=env, timeout=120)
 
     def log(self):
         with open(os.path.join(self.work, "commands.log")) as f:
             return f.read()
+
+    def patches(self):
+        path = os.path.join(self.work, "patches.log")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [json.loads(line) for line in f.read().splitlines() if line]
 
     def child_env(self):
         with open(os.path.join(self.work, "env.log")) as f:
             return dict(
                 line.split("=", 1) for line in f.read().splitlines() if "=" in line)
 
+    def assert_get_argv(self):
+        argv = self.log().splitlines()
+        self.assertEqual(
+            argv[0],
+            "get oauths.config.openshift.io/cluster -o json "
+            "--request-timeout=30s")
+
     def test_child_environment_is_minimal_and_isolated(self):
-        result = self.run_command("success")
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]))
         self.assertEqual(result.returncode, 0, result.stderr)
         child = self.child_env()
         # The parent-only sentinel proves no parent variable leaked through.
         self.assertNotIn("KA_PARENT_SENTINEL", child)
+        self.assertEqual(child["IDP_NAME"], "rhbk")
         self.assertEqual(child["HOME"], self.work)
-        self.assertEqual(child["KUBECONFIG"], os.path.join(self.work, "kubeconfig"))
-        self.assertEqual(child["PATH"], "/usr/bin:/bin")
-        self.assertEqual(child["OC_SCENARIO"], "success")
+        self.assertEqual(child["PATH"], os.path.join(self.work, "bin"))
         self.assertEqual(
             {k for k in child if k.startswith("OC_")},
-            {"OC_SCENARIO", "OC_LOG", "OC_ENV"})
+            {"OC_SCENARIO", "OC_LOG", "OC_ENV", "OC_GET_FILE",
+             "OC_PATCH_LOG", "OC_ATTEMPTS"})
 
-    def test_success(self):
-        result = self.run_command("success")
+    def test_upsert_success(self):
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("delete secret kubeadmin", self.log())
+        self.assert_get_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0], {
+            "metadata": {"resourceVersion": "1597"},
+            "spec": {"identityProviders": [self.other_idp, self.entry]},
+        })
 
-    def test_absent_secret_is_successful_delete(self):
-        # The API's NotFound response combined with --ignore-not-found is a
-        # successful, idempotent deletion.
-        result = self.run_command("absent")
+    def test_upsert_is_idempotent_no_op_when_entry_matches(self):
+        result = self.run_script(
+            "oauth-idp-upsert.sh", "fresh",
+            self.oauth_doc([self.other_idp, self.entry]))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("--ignore-not-found", self.log())
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(len(self.log().splitlines()), 1)
 
-    def test_forbidden_fails(self):
-        result = self.run_command("forbidden")
+    def test_upsert_replaces_stale_same_name_entry(self):
+        stale = json.loads(json.dumps(self.entry))
+        stale["openID"]["clientID"] = "stale-client"
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([stale]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["spec"]["identityProviders"], [self.entry])
+
+    def tool_path_variants(self):
+        """Both JSON tool paths the hook scripts can take; the jq path is
+        included only when the host provides jq."""
+        variants = [{"include_jq": False, "include_python": True}]
+        if shutil.which("jq"):
+            variants.append({"include_jq": True, "include_python": False})
+        return variants
+
+    def test_upsert_no_op_when_equal_entry_is_not_last(self):
+        # An exactly equal entry earlier in the list must be a no-op, not a
+        # reordering patch — the entry is matched by name.
+        for variant in self.tool_path_variants():
+            with self.subTest(**variant):
+                result = self.run_script(
+                    "oauth-idp-upsert.sh", "fresh",
+                    self.oauth_doc([self.entry, self.other_idp]), **variant)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.patches(), [])
+                self.assertEqual(len(self.log().splitlines()), 1)
+
+    def test_upsert_replaces_stale_mid_list_entry_in_place(self):
+        stale = json.loads(json.dumps(self.entry))
+        stale["openID"]["clientID"] = "stale-client"
+        tail = {"name": "ldap", "type": "LDAP", "mappingMethod": "claim",
+                "ldap": {"url": "ldap://ldap.example.com"}}
+        for variant in self.tool_path_variants():
+            with self.subTest(**variant):
+                result = self.run_script(
+                    "oauth-idp-upsert.sh", "fresh",
+                    self.oauth_doc([self.other_idp, stale, tail]), **variant)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                patches = self.patches()
+                self.assertEqual(len(patches), 1)
+                self.assertEqual(patches[0]["spec"]["identityProviders"],
+                                 [self.other_idp, self.entry, tail])
+
+    def test_upsert_retries_conflict_then_succeeds(self):
+        result = self.run_script("oauth-idp-upsert.sh", "conflict-then-success",
+                                 self.oauth_doc([self.other_idp]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Exactly one GET per attempt: the retry must re-read the object.
+        gets = [line for line in self.log().splitlines()
+                if line.startswith("get ")]
+        self.assertEqual(len(gets), 2)
+        patches = self.patches()
+        self.assertEqual(len(patches), 2)
+        # The fake oc bumps the served resourceVersion on every GET, so the
+        # failed attempt carried the stale version and the successful retry
+        # carried the fresh one from its own re-read.
+        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1597")
+        self.assertEqual(patches[1]["metadata"]["resourceVersion"], "1598")
+        self.assertIn("retrying", result.stderr)
+
+    def test_upsert_conflict_exhaustion_fails(self):
+        result = self.run_script("oauth-idp-upsert.sh", "conflict-exhausted",
+                                 self.oauth_doc([self.other_idp]))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
+        self.assertIn("concurrently", result.stderr)
+        self.assertIn("Conflict", result.stderr)
+
+    def test_upsert_non_conflict_api_error_propagates(self):
+        result = self.run_script("oauth-idp-upsert.sh", "patch-error",
+                                 self.oauth_doc([self.other_idp]))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Forbidden", result.stderr)
+        self.assertEqual(len(self.patches()), 1)
 
-    def test_transport_failure_fails(self):
-        result = self.run_command("transport")
+    def test_upsert_absent_oauth_object_fails_with_prerequisite(self):
+        result = self.run_script("oauth-idp-upsert.sh", "absent-object",
+                                 self.oauth_doc([self.other_idp]))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("connection refused", result.stderr)
+        self.assertIn("prerequisite missing", result.stderr)
+        self.assertEqual(self.patches(), [])
 
-    def test_other_failure_fails(self):
-        result = self.run_command("other")
+    def test_upsert_get_error_propagates(self):
+        result = self.run_script("oauth-idp-upsert.sh", "get-error")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("deletion rejected", result.stderr)
+        self.assertIn("Forbidden", result.stderr)
+        self.assertEqual(self.patches(), [])
 
-    def test_rendered_argv_is_delete_only(self):
-        result = self.run_command("success")
+    def test_upsert_python3_tool_path(self):
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]),
+                                 include_jq=False, include_python=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        argv = self.log().splitlines()
-        self.assertEqual(len(argv), 1)
-        argv = argv[0].split()
-        self.assertEqual(argv[:3], ["delete", "secret", "kubeadmin"])
-        self.assertEqual(argv[argv.index("--namespace") + 1], "kube-system")
-        self.assertIn("--ignore-not-found", argv)
-        self.assertIn("--wait=false", argv)
-        for verb in ("get", "list", "watch"):
-            self.assertNotIn(verb, argv)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["spec"]["identityProviders"],
+                         [self.other_idp, self.entry])
+
+    def test_upsert_jq_tool_path(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq not available on the host")
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]),
+                                 include_jq=True, include_python=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["spec"]["identityProviders"],
+                         [self.other_idp, self.entry])
+
+    def test_missing_json_tool_fails_before_any_cluster_call(self):
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]),
+                                 include_jq=False, include_python=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("neither jq nor python3", result.stderr)
+        self.assertEqual(self.patches(), [])
+        self.assertFalse(
+            os.path.exists(os.path.join(self.work, "commands.log")),
+            "oc must not be invoked when no JSON tool is available")
+
+    def test_patch_payload_carries_no_secret_material(self):
+        result = self.run_script("oauth-idp-upsert.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for patch in self.patches():
+            self.assertNotIn("test-client-secret", json.dumps(patch))
+            self.assertNotIn(base64.b64encode(b"test-client-secret").decode(),
+                             json.dumps(patch))
+
+    def test_remove_success_preserves_other_idps(self):
+        result = self.run_script("oauth-idp-remove.sh", "fresh",
+                                 self.oauth_doc([self.other_idp, self.entry]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0], {
+            "metadata": {"resourceVersion": "1597"},
+            "spec": {"identityProviders": [self.other_idp]},
+        })
+
+    def test_remove_python3_tool_path(self):
+        result = self.run_script("oauth-idp-remove.sh", "fresh",
+                                 self.oauth_doc([self.other_idp, self.entry]),
+                                 include_jq=False, include_python=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0], {
+            "metadata": {"resourceVersion": "1597"},
+            "spec": {"identityProviders": [self.other_idp]},
+        })
+
+    def test_remove_is_idempotent_no_op_when_entry_absent(self):
+        result = self.run_script("oauth-idp-remove.sh", "fresh",
+                                 self.oauth_doc([self.other_idp]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(len(self.log().splitlines()), 1)
+
+    def test_remove_absent_oauth_object_is_successful_no_op(self):
+        result = self.run_script("oauth-idp-remove.sh", "absent-object",
+                                 self.oauth_doc([self.other_idp]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.patches(), [])
+
+    def test_remove_conflict_exhaustion_fails(self):
+        result = self.run_script("oauth-idp-remove.sh", "conflict-exhausted",
+                                 self.oauth_doc([self.other_idp, self.entry]))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
+        self.assertIn("concurrently", result.stderr)
 
 
 class UmbrellaMetadataTests(unittest.TestCase):
@@ -365,20 +849,20 @@ class UmbrellaMetadataTests(unittest.TestCase):
 
     def test_auth_chart_version_bump(self):
         meta = self.load(os.path.join(CHART, "Chart.yaml"))
-        self.assertEqual(meta["version"], "0.3.0")
-        self.assertEqual(meta["appVersion"], "0.3.0")
+        self.assertEqual(meta["version"], "0.4.0")
+        self.assertEqual(meta["appVersion"], "0.4.0")
 
     def test_umbrella_version_and_pin_coherence(self):
         umbrella = self.load(os.path.join(UMBRELLA, "Chart.yaml"))
-        self.assertEqual(umbrella["version"], "0.5.1")
+        self.assertEqual(umbrella["version"], "0.5.2")
         self.assertNotIn("appVersion", umbrella)
         deps = {d["name"]: d["version"] for d in umbrella["dependencies"]}
-        self.assertEqual(deps["keycloak-auth"], ">=0.3.0 <0.4.0")
+        self.assertEqual(deps["keycloak-auth"], ">=0.4.0 <0.5.0")
         # The pin's range must contain the chart's new version.
         chart_version = tuple(
             int(p) for p in self.load(os.path.join(CHART, "Chart.yaml"))["version"].split("."))
-        self.assertGreaterEqual(chart_version, (0, 3, 0))
-        self.assertLess(chart_version, (0, 4, 0))
+        self.assertGreaterEqual(chart_version, (0, 4, 0))
+        self.assertLess(chart_version, (0, 5, 0))
 
 
 class CommandContractTests(unittest.TestCase):

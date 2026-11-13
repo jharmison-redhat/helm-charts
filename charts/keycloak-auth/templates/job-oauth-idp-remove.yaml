@@ -1,0 +1,49 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- /* The platform OAuth object always exists on OpenShift, so the identity
+provider entry is removed from it through this hook Job instead of a
+release-owned manifest being pruned; the Job is gated on global.oidc.secret
+being provided, alongside the oauth-idp-config ConfigMap it mounts */ -}}
+{{- if ne $secret "" }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: oauth-idp-remove
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+  annotations:
+    # Runs before the release deletes the openid-client-secret Secret, so the
+    # identity provider never references a Secret that no longer exists
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: oauth-idp
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: oauth-idp-remove
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: IDP_NAME
+          value: {{ .Values.oauth.idpName | quote }}
+        command: ["/mnt/oauth-idp-remove.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: oauth-idp-config
+          mountPath: /mnt
+      volumes:
+      - name: oauth-idp-config
+        configMap:
+          name: oauth-idp-config
+          defaultMode: 493
+{{- end }}

@@ -8,7 +8,8 @@ global:
   # global.wildcardDomain
   wildcardDomain: apps.cluster.example.com
 
-  # Image for the kubeadmin-removal Job container (requires the `oc` CLI)
+  # Image for the hook Job containers (kubeadmin removal and OAuth identity
+  # provider upsert/remove — requires the `oc` CLI plus jq or python3)
   toolsImage: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
 
   # Single-source OIDC settings shared with the keycloak chart through
@@ -17,8 +18,9 @@ global:
   # in the keycloak chart and cannot reference these values. Setting realm
   # to a name with no matching realm in the keycloak chart makes the issuer
   # point at a realm that was never imported (no fail-fast). Leave secret
-  # empty to skip rendering the OAuth resource and the
-  # openid-client-secret Secret.
+  # empty to skip rendering the identity-provider hook Jobs, their
+  # oauth-idp ServiceAccount/ClusterRole/ClusterRoleBinding, the
+  # oauth-idp-config ConfigMap, and the openid-client-secret Secret.
   oidc:
     realm: sso
     clientId: ocp-idp
@@ -35,7 +37,8 @@ keycloak:
   name: keycloak
 
 oauth:
-  # Name of the OpenID identity provider in the cluster OAuth resource
+  # Name of the OpenID identity provider entry the hook Jobs manage in the
+  # platform's cluster OAuth resource; all other entries there are preserved
   idpName: rhbk
 
 # Optional CA bundle; when set, this chart also renders the router-ca
