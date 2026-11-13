@@ -10,26 +10,14 @@
 # loudly instead of overwriting it.
 set -euo pipefail
 
+source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+
 CONSOLE="consoles.config.openshift.io/cluster"
-REQUEST_TIMEOUT="30s"
-MAX_ATTEMPTS=5
-RETRY_SLEEP=2
 
 REDIRECT_URL_FILE="${REDIRECT_URL_FILE:-/mnt/logout-redirect-url}"
 
-if ! command -v oc >/dev/null 2>&1; then
-  echo "ERROR: the oc CLI is not available in this image; cannot set the console logout redirect" >&2
-  exit 1
-fi
-
-if command -v jq >/dev/null 2>&1; then
-  JSON_TOOL=jq
-elif command -v python3 >/dev/null 2>&1; then
-  JSON_TOOL=python3
-else
-  echo "ERROR: neither jq nor python3 is available in this image; cannot manipulate the Console object" >&2
-  exit 1
-fi
+require_oc "cannot set the console logout redirect"
+select_json_tool "cannot manipulate the Console object"
 
 if [ ! -s "$REDIRECT_URL_FILE" ]; then
   echo "ERROR: the logout redirect URL file ($REDIRECT_URL_FILE) is missing or empty" >&2
@@ -82,57 +70,40 @@ PYEOF
   esac
 }
 
-workdir=$(mktemp -d)
-trap 'rm -rf "$workdir"' EXIT
-console_json="$workdir/console.json"
-oc_err="$workdir/oc.err"
-
-attempt=1
-while :; do
-  if ! oc get "$CONSOLE" -o json --request-timeout="$REQUEST_TIMEOUT" \
-      >"$console_json" 2>"$oc_err"; then
-    if grep -q '(NotFound)' "$oc_err"; then
-      echo "ERROR: prerequisite missing: the platform Console object ($CONSOLE) does not exist on this cluster; install OpenShift's web console before applying this chart" >&2
-      exit 1
-    fi
-    cat "$oc_err" >&2
-    exit 1
-  fi
-
-  if ! current=$(read_current "$console_json"); then
+# Produces the patch for conditional_write per its compute-function contract:
+# nothing to change when the field already holds the derived URL, a fatal
+# condition (reported here) when it holds a foreign value, and the patch once
+# the field is verified unset.
+prepare_patch() {
+  local current
+  if ! current=$(read_current "$1"); then
     echo "ERROR: failed to read spec.authentication.logoutRedirect from the live Console object" >&2
-    exit 1
+    return 4
   fi
   if [ "$current" = "$REDIRECT_URL" ]; then
-    echo "Console logoutRedirect is already up to date; no changes needed"
-    exit 0
+    return 0
   fi
   if [ -n "$current" ]; then
     echo "ERROR: the Console logoutRedirect is set to a foreign value '$current' that this release did not set; refusing to overwrite it — remove the value manually (or point logoutRedirect at this chart's derived URL) and re-run" >&2
-    exit 1
+    return 4
   fi
+  compute_patch "$1"
+}
 
-  if ! merged=$(compute_patch "$console_json"); then
-    echo "ERROR: failed to compute the logoutRedirect merge patch from the live Console object" >&2
-    exit 1
-  fi
-
-  if oc patch "$CONSOLE" --type=merge --patch="$merged" \
-      --request-timeout="$REQUEST_TIMEOUT" >/dev/null 2>"$oc_err"; then
+write_rc=0
+conditional_write "$CONSOLE" prepare_patch "logoutRedirect" "Console object" || write_rc=$?
+case $write_rc in
+  0)
     echo "Console logoutRedirect set"
-    exit 0
-  fi
-
-  if ! grep -q '(Conflict)' "$oc_err"; then
-    cat "$oc_err" >&2
+    ;;
+  3)
+    echo "Console logoutRedirect is already up to date; no changes needed"
+    ;;
+  2)
+    echo "ERROR: prerequisite missing: the platform Console object ($CONSOLE) does not exist on this cluster; install OpenShift's web console before applying this chart" >&2
     exit 1
-  fi
-  if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-    echo "ERROR: the Console object was modified concurrently on every attempt ($MAX_ATTEMPTS); giving up" >&2
-    cat "$oc_err" >&2
+    ;;
+  *)
     exit 1
-  fi
-  echo "Console object was modified concurrently (conflict); retrying (attempt $attempt of $MAX_ATTEMPTS)" >&2
-  attempt=$((attempt + 1))
-  sleep "$RETRY_SLEEP"
-done
+    ;;
+esac

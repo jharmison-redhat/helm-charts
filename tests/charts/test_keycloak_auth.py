@@ -75,6 +75,13 @@ FAKE_OC_SCRIPT = """\
 echo "$@" >> "$OC_LOG"
 env | LC_ALL=C sort > "$OC_ENV"
 if [[ "$1" == "get" ]]; then
+  src="$OC_GET_FILE"
+  if [[ "$OC_SCENARIO" == "conflict-then-foreign" && -f "$OC_GET_FILE.rv" ]]; then
+    # Past the first get, the conflict-then-foreign scenario serves the
+    # foreign-value variant, so the re-read after a 409 returns a value
+    # the hook must never overwrite.
+    src="$OC_GET_FILE.foreign"
+  fi
   case "$OC_SCENARIO" in
     absent-object)
       echo 'Error from server (NotFound): oauths.config.openshift.io "cluster" not found' >&2
@@ -90,7 +97,7 @@ if [[ "$1" == "get" ]]; then
         next_rv=$(grep -oE '"resourceVersion": *"[0-9]+"' "$OC_GET_FILE" | grep -oE '[0-9]+')
       fi
       echo "$next_rv" > "$rv_file"
-      sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" "$OC_GET_FILE" ;;
+      sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" "$src" ;;
   esac
 elif [[ "$1" == "patch" ]]; then
   for arg in "$@"; do
@@ -103,6 +110,12 @@ elif [[ "$1" == "patch" ]]; then
   echo "$attempts" > "$OC_ATTEMPTS"
   case "$OC_SCENARIO" in
     conflict-then-success)
+      if [ "$attempts" -ge 2 ]; then
+        exit 0
+      fi
+      echo 'Error from server (Conflict): Operation cannot be fulfilled on oauths.config.openshift.io "cluster"' >&2
+      exit 1 ;;
+    conflict-then-foreign)
       if [ "$attempts" -ge 2 ]; then
         exit 0
       fi
@@ -366,7 +379,8 @@ class OAuthHookSurfaceTests(ChartFixture):
     def test_script_configmap_delivers_scripts_and_entry(self):
         cm = self.pick(self.configured_render(), "ConfigMap", "oauth-idp-config")
         data = cm["data"]
-        for key in ("oauth-idp-upsert.sh", "oauth-idp-remove.sh", "idp-entry.json"):
+        for key in ("hook-preamble.sh", "oauth-idp-upsert.sh",
+                    "oauth-idp-remove.sh", "idp-entry.json"):
             self.assertIn(key, data)
         self.assertIn("set -euo pipefail", data["oauth-idp-upsert.sh"])
         self.assertIn("set -euo pipefail", data["oauth-idp-remove.sh"])
@@ -587,9 +601,12 @@ class FakeOcScriptFixture(ChartFixture):
                    include_jq=None, include_python=None):
         bin_dir = self.build_bin_dir(include_jq=include_jq,
                                      include_python=include_python)
-        script_path = os.path.join(self.work, script_name)
-        with open(script_path, "w") as f:
-            f.write(self.scripts[script_name])
+        # Every staged file lands in the same directory as the entry script
+        # because the scripts source their shared preamble from their own
+        # directory, mirroring the single ConfigMap mount.
+        for name, content in self.scripts.items():
+            with open(os.path.join(self.work, name), "w") as f:
+                f.write(content)
         if canned_doc is None:
             canned_doc = self.canned_doc()
         get_file = os.path.join(self.work, self.get_file_name)
@@ -613,7 +630,7 @@ class FakeOcScriptFixture(ChartFixture):
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
             "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
         }
-        return self.run_child(script_path, env)
+        return self.run_child(os.path.join(self.work, script_name), env)
 
 
 class OAuthIdpScriptTests(FakeOcScriptFixture):
@@ -625,7 +642,8 @@ class OAuthIdpScriptTests(FakeOcScriptFixture):
         super().setUp()
         cm = self.pick(self.configured_render(), "ConfigMap", "oauth-idp-config")
         self.scripts = {name: cm["data"][name]
-                        for name in ("oauth-idp-upsert.sh", "oauth-idp-remove.sh")}
+                        for name in ("hook-preamble.sh", "oauth-idp-upsert.sh",
+                                     "oauth-idp-remove.sh")}
         self.entry = json.loads(cm["data"]["idp-entry.json"])
         with open(os.path.join(self.work, "entry.json"), "w") as f:
             json.dump(self.entry, f)
@@ -979,8 +997,8 @@ class LogoutRedirectSurfaceTests(ChartFixture):
         cm = self.pick(self.configured(), "ConfigMap",
                        "logout-redirect-config")
         data = cm["data"]
-        for key in ("logout-redirect-set.sh", "logout-redirect-unset.sh",
-                    "logout-redirect-url"):
+        for key in ("hook-preamble.sh", "logout-redirect-set.sh",
+                    "logout-redirect-unset.sh", "logout-redirect-url"):
             self.assertIn(key, data)
         for key in ("logout-redirect-set.sh", "logout-redirect-unset.sh"):
             self.assertIn("set -euo pipefail", data[key])
@@ -1015,7 +1033,7 @@ class LogoutRedirectScriptTests(FakeOcScriptFixture):
         cm = self.pick(self.configured_render(), "ConfigMap",
                        "logout-redirect-config")
         self.scripts = {name: cm["data"][name]
-                        for name in ("logout-redirect-set.sh",
+                        for name in ("hook-preamble.sh", "logout-redirect-set.sh",
                                      "logout-redirect-unset.sh")}
         self.url = cm["data"]["logout-redirect-url"].strip()
         self.url_file = os.path.join(self.work, "logout-redirect-url")
@@ -1110,6 +1128,29 @@ class LogoutRedirectScriptTests(FakeOcScriptFixture):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
         self.assertIn("concurrently", result.stderr)
+
+    def test_set_conflict_re_read_of_foreign_value_stops(self):
+        # The write carries the resourceVersion from the initial read, so a
+        # concurrent modification surfaces as a 409; the retry re-reads the
+        # object and finds a foreign value — the hook must stop loudly
+        # instead of overwriting it with the second patch attempt.
+        foreign = "https://elsewhere.example.com"
+        foreign_path = os.path.join(self.work, "console.json.foreign")
+        with open(foreign_path, "w") as f:
+            json.dump(self.console_doc(foreign), f)
+        result = self.run_script("logout-redirect-set.sh",
+                                 "conflict-then-foreign", self.console_doc())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("foreign", result.stderr)
+        self.assertIn(foreign, result.stderr)
+        gets = [line for line in self.log().splitlines()
+                if line.startswith("get ")]
+        self.assertEqual(len(gets), 2)
+        # The single emitted patch is the rejected 409 attempt carrying the
+        # stale version; no patch ever carried the fresh re-read version.
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1597")
 
     def test_unset_clears_own_value(self):
         result = self.run_script("logout-redirect-unset.sh", "fresh",
@@ -1234,8 +1275,8 @@ class UmbrellaMetadataTests(unittest.TestCase):
 
     def test_auth_chart_version_bump(self):
         meta = self.load(os.path.join(CHART, "Chart.yaml"))
-        self.assertEqual(meta["version"], "0.4.1")
-        self.assertEqual(meta["appVersion"], "0.4.1")
+        self.assertEqual(meta["version"], "0.4.2")
+        self.assertEqual(meta["appVersion"], "0.4.2")
 
     def test_umbrella_version_and_pin_coherence(self):
         umbrella = self.load(os.path.join(UMBRELLA, "Chart.yaml"))

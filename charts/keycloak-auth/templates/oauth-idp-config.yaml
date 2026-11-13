@@ -30,6 +30,8 @@ metadata:
   labels:
     {{- include "keycloak-auth.labels" . | nindent 4 }}
 data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
   oauth-idp-upsert.sh: |-
     {{- .Files.Get "files/oauth-idp-upsert.sh" | nindent 4 }}
   oauth-idp-remove.sh: |-

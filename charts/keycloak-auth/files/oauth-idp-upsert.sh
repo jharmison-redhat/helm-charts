@@ -7,27 +7,15 @@
 # and retried. Other identity providers are preserved untouched.
 set -euo pipefail
 
+source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+
 OAUTH="oauths.config.openshift.io/cluster"
-REQUEST_TIMEOUT="30s"
-MAX_ATTEMPTS=5
-RETRY_SLEEP=2
 
 : "${IDP_NAME:?IDP_NAME must be set}"
 ENTRY_FILE="${ENTRY_FILE:-/mnt/idp-entry.json}"
 
-if ! command -v oc >/dev/null 2>&1; then
-  echo "ERROR: the oc CLI is not available in this image; cannot configure the OAuth identity provider" >&2
-  exit 1
-fi
-
-if command -v jq >/dev/null 2>&1; then
-  JSON_TOOL=jq
-elif command -v python3 >/dev/null 2>&1; then
-  JSON_TOOL=python3
-else
-  echo "ERROR: neither jq nor python3 is available in this image; cannot manipulate the identityProviders list" >&2
-  exit 1
-fi
+require_oc "cannot configure the OAuth identity provider"
+select_json_tool "cannot manipulate the identityProviders list"
 
 # Reads the live OAuth object JSON from $1 and prints the merge patch carrying
 # the current resourceVersion and the upserted list. The named entry is looked
@@ -80,48 +68,20 @@ PYEOF
   esac
 }
 
-workdir=$(mktemp -d)
-trap 'rm -rf "$workdir"' EXIT
-oauth_json="$workdir/oauth.json"
-oc_err="$workdir/oc.err"
-
-attempt=1
-while :; do
-  if ! oc get "$OAUTH" -o json --request-timeout="$REQUEST_TIMEOUT" \
-      >"$oauth_json" 2>"$oc_err"; then
-    if grep -q '(NotFound)' "$oc_err"; then
-      echo "ERROR: prerequisite missing: the platform OAuth object ($OAUTH) does not exist on this cluster; install OpenShift's default authentication before applying this chart" >&2
-      exit 1
-    fi
-    cat "$oc_err" >&2
-    exit 1
-  fi
-
-  if ! merged=$(compute_patch "$oauth_json"); then
-    echo "ERROR: failed to compute the identity provider merge patch from the live OAuth object" >&2
-    exit 1
-  fi
-  if [ -z "$merged" ]; then
-    echo "OAuth identity provider '$IDP_NAME' is already up to date; no changes needed"
-    exit 0
-  fi
-
-  if oc patch "$OAUTH" --type=merge --patch="$merged" \
-      --request-timeout="$REQUEST_TIMEOUT" >/dev/null 2>"$oc_err"; then
+write_rc=0
+conditional_write "$OAUTH" compute_patch "identity provider" "OAuth object" || write_rc=$?
+case $write_rc in
+  0)
     echo "OAuth identity provider '$IDP_NAME' upserted"
-    exit 0
-  fi
-
-  if ! grep -q '(Conflict)' "$oc_err"; then
-    cat "$oc_err" >&2
+    ;;
+  3)
+    echo "OAuth identity provider '$IDP_NAME' is already up to date; no changes needed"
+    ;;
+  2)
+    echo "ERROR: prerequisite missing: the platform OAuth object ($OAUTH) does not exist on this cluster; install OpenShift's default authentication before applying this chart" >&2
     exit 1
-  fi
-  if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-    echo "ERROR: the OAuth object was modified concurrently on every attempt ($MAX_ATTEMPTS); giving up" >&2
-    cat "$oc_err" >&2
+    ;;
+  *)
     exit 1
-  fi
-  echo "OAuth object was modified concurrently (conflict); retrying (attempt $attempt of $MAX_ATTEMPTS)" >&2
-  attempt=$((attempt + 1))
-  sleep "$RETRY_SLEEP"
-done
+    ;;
+esac
