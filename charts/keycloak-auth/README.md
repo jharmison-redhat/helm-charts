@@ -71,7 +71,9 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   chart-name-based CR name)
 - `oauth.idpName` — the identity provider entry name the hook Jobs manage in the cluster OAuth resource (default:
   `rhbk`)
-- `ingressCA` — optional CA bundle; when set, the `router-ca` ConfigMap is rendered and the identity provider uses it
+- `ingressCA` — optional CA bundle; when set, the `router-ca` ConfigMap is rendered and the identity provider uses it —
+  only needed when the identity provider's TLS is issued by private enterprise PKI (a CA that is neither publicly
+  trusted nor the cluster's own, whose CA the OAuth server already trusts)
 - `clusterAdmins.users` — usernames added to the `cluster-admins` Group (default: `[admin]`)
 - `removeKubeAdmin` — set to `true` to remove the kubeadmin Secret (default: `false`)
 

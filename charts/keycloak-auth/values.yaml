@@ -43,6 +43,9 @@ oauth:
 
 # Optional CA bundle; when set, this chart also renders the router-ca
 # ConfigMap in openshift-config and the OAuth identity provider references it
+# (only needed when the identity provider's serving certificate is issued by private enterprise PKI — a CA that is
+# neither publicly trusted nor the cluster's own, whose CA the OAuth server already trusts; the cluster's default
+# ingress certificate needs no value)
 ingressCA: ""
 
 clusterAdmins:
