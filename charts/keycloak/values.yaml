@@ -10,10 +10,24 @@ global:
   # realm to a name with no matching `realms` entry makes the issuer point
   # at a realm that was never imported (no fail-fast). The secret is picked
   # up by realm client entries that reference global.oidc.secret via tpl.
+  # consoleHost optionally names the OpenShift web console host for the
+  # single-logout wiring (oidcLogoutRedirect below and the keycloak-auth
+  # chart's logoutRedirect): both derive it from this value when set, else
+  # from console-openshift-console.<wildcardDomain>.
   oidc:
     realm: sso
     clientId: ocp-idp
     secret: ""
+    consoleHost: ""
+
+# Single-logout wiring for the OIDC identity-provider client: when the client named by
+# global.oidc.clientId renders (in the realm named by global.oidc.realm), the chart adds
+# the post.logout.redirect.uris attribute pointing at the OpenShift web console — the
+# client side of the console's logoutRedirect single-logout flow (keycloak-auth chart).
+# Both charts derive the console host from global.oidc.consoleHost when set, else
+# console-openshift-console.<global.wildcardDomain>.
+oidcLogoutRedirect:
+  enabled: true
 
 nameOverride: ""
 fullnameOverride: ""

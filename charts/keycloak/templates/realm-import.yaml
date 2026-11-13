@@ -55,7 +55,24 @@ spec:
         serviceAccountsEnabled: {{ include "keycloak.defaultTrue" $client.serviceAccountsEnabled }}
         frontchannelLogout: {{ $client.frontchannelLogout | default false }}
         protocol: {{ include "keycloak.oidc.tplValue" (dict "root" $ "value" ($client.protocol | default "openid-connect")) }}
-        {{- with $client.attributes }}
+        {{- /* Single-logout wiring: the client named by global.oidc.clientId
+             in the realm named by global.oidc.realm gets the
+             post.logout.redirect.uris attribute pointing at the OpenShift
+             web console, unless the consumer set that attribute key
+             explicitly. Merged into a copy so the shared values map is
+             never mutated across loop iterations. */ -}}
+        {{- $oidc := $.Values.global.oidc | default dict }}
+        {{- $logout := $.Values.oidcLogoutRedirect | default dict }}
+        {{- $attrs := $client.attributes | default dict }}
+        {{- if and (eq $name $oidc.realm)
+                   (eq $cid $oidc.clientId)
+                   (eq (include "keycloak.defaultTrue" $logout.enabled) "true")
+                   (not (hasKey $attrs "post.logout.redirect.uris")) }}
+          {{- $consoleHost := $oidc.consoleHost
+              | default (printf "console-openshift-console.%s" $.Values.global.wildcardDomain) }}
+          {{- $attrs = merge (dict) $attrs (dict "post.logout.redirect.uris" (printf "https://%s" $consoleHost)) }}
+        {{- end }}
+        {{- with $attrs }}
         attributes:
           {{- toYaml . | nindent 10 }}
         {{- end }}

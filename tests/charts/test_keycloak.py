@@ -7,8 +7,12 @@ null and verbatim when explicitly true or false, and client
 fullScopeAllowed is omitted when absent or null and rendered verbatim
 when explicitly true or false. It also pins the apiVersion of the
 rendered Keycloak and KeycloakRealmImport custom resources to
-k8s.keycloak.org/v2alpha1, and pins the serving-certificate Service
-that carries the service-ca annotation.
+k8s.keycloak.org/v2alpha1, pins the serving-certificate Service
+that carries the service-ca annotation, and covers the single-logout
+client-attribute injection (auto-injection on the client named by
+global.oidc.clientId in the realm named by global.oidc.realm, no
+injection elsewhere, consumer-set attribute wins, enabled=false
+suppresses, consoleHost override honored).
 
 Render tests run the rendered chart through ``helm template`` against a
 local stub of the postgres-cluster dependency (no registry access). No
@@ -57,16 +61,20 @@ class ChartFixture(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
-    def render_docs(self, realm):
-        """Renders a single-realm values set; returns all rendered docs."""
+    def render_values(self, values):
+        """Renders arbitrary values; returns all rendered docs."""
         self.stub_dependency()
         result = subprocess.run(
             ["helm", "template", "test-release", self.dir,
              "--namespace", "test-release-ns",
-             "--values", self.values_file({"realms": {"test": realm}})],
+             "--values", self.values_file(values)],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return docs(result.stdout)
+
+    def render_docs(self, realm):
+        """Renders a single-realm values set; returns all rendered docs."""
+        return self.render_values({"realms": {"test": realm}})
 
     def render_realm(self, realm):
         """Renders a single-realm values set; returns the realm spec of the
@@ -76,6 +84,16 @@ class ChartFixture(unittest.TestCase):
                     and d["metadata"]["name"] == "test"):
                 return d["spec"]["realm"]
         self.fail("KeycloakRealmImport 'test' not rendered")
+
+    def rendered_client(self, values, realm_name, client_id):
+        """Renders arbitrary values; returns the realm client with the
+        given clientId from the named KeycloakRealmImport."""
+        for d in self.render_values(values):
+            if (d["kind"] == "KeycloakRealmImport"
+                    and d["metadata"]["name"] == realm_name):
+                return next(c for c in d["spec"]["realm"]["clients"]
+                            if c["clientId"] == client_id)
+        self.fail(f"KeycloakRealmImport '{realm_name}' not rendered")
 
     def base_realm(self):
         return {"clients": {CLIENT: {}}, "users": {USER: {}}}
@@ -186,3 +204,85 @@ class BaselineRenderTests(ChartFixture):
             self.assertIs(self.get_field(rendered, scope, field), True,
                           (scope, field))
         self.assertNotIn("fullScopeAllowed", rendered["clients"][0])
+
+
+class LogoutRedirectTests(ChartFixture):
+    """The single-logout client-attribute injection: the client named by
+    global.oidc.clientId rendering in the realm named by global.oidc.realm
+    receives post.logout.redirect.uris pointing at the derived console
+    host unless the consumer set that attribute key or disabled the
+    feature."""
+
+    SSO_REALM = "sso"
+    OCP_CLIENT = "ocp-idp"
+
+    def sso_values(self, **oidc_overrides):
+        values = {
+            "realms": {
+                self.SSO_REALM: {"clients": {self.OCP_CLIENT: {}}},
+            },
+        }
+        if oidc_overrides:
+            values["global"] = {"oidc": oidc_overrides}
+        return values
+
+    def test_matching_client_receives_logout_redirect_attribute(self):
+        client = self.rendered_client(self.sso_values(), self.SSO_REALM,
+                                      self.OCP_CLIENT)
+        self.assertEqual(client["attributes"], {
+            "post.logout.redirect.uris":
+                "https://console-openshift-console.apps.cluster.example.com",
+        })
+
+    def test_non_matching_client_gets_no_attributes(self):
+        values = {
+            "realms": {
+                self.SSO_REALM: {"clients": {"other-client": {}}},
+            },
+        }
+        client = self.rendered_client(values, self.SSO_REALM, "other-client")
+        self.assertNotIn("attributes", client)
+
+    def test_non_matching_realm_gets_no_injection(self):
+        values = {
+            "realms": {
+                "test": {"clients": {self.OCP_CLIENT: {}}},
+            },
+        }
+        client = self.rendered_client(values, "test", self.OCP_CLIENT)
+        self.assertNotIn("attributes", client)
+
+    def test_consumer_set_attribute_wins(self):
+        values = self.sso_values()
+        values["realms"][self.SSO_REALM]["clients"][self.OCP_CLIENT] = {
+            "attributes": {
+                "post.logout.redirect.uris": "https://custom.example.com",
+            },
+        }
+        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
+        self.assertEqual(client["attributes"]["post.logout.redirect.uris"],
+                         "https://custom.example.com")
+
+    def test_injection_merges_with_existing_consumer_attributes(self):
+        values = self.sso_values()
+        values["realms"][self.SSO_REALM]["clients"][self.OCP_CLIENT] = {
+            "attributes": {"display.on.consent.screen": "false"},
+        }
+        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
+        self.assertEqual(client["attributes"], {
+            "display.on.consent.screen": "false",
+            "post.logout.redirect.uris":
+                "https://console-openshift-console.apps.cluster.example.com",
+        })
+
+    def test_enabled_false_suppresses_injection(self):
+        values = self.sso_values()
+        values["oidcLogoutRedirect"] = {"enabled": False}
+        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
+        self.assertNotIn("attributes", client)
+
+    def test_console_host_override_honored(self):
+        values = self.sso_values(consoleHost="console.example.com")
+        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
+        self.assertEqual(client["attributes"]["post.logout.redirect.uris"],
+                         "https://console.example.com")
