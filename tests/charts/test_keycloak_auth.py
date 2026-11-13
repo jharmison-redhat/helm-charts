@@ -209,10 +209,15 @@ class RemovalGateTests(ChartFixture):
             self.assertEqual(doc["metadata"]["namespace"], "kube-system")
 
     def test_unrelated_admin_binding_unchanged(self):
-        # The cluster-admins Group/ClusterRoleBinding is independent of the
-        # removal opt-in and keeps its Group subject in both modes.
+        # The keycloak-auth-cluster-admins ClusterRoleBinding is independent of
+        # the removal opt-in and keeps its cluster-admins Group subject in both
+        # modes. The binding is chart-prefixed so it cannot collide with the
+        # OpenShift platform's own bootstrap `cluster-admins` binding; the
+        # Group it targets is deliberately unprefixed (OAuth group-mapping
+        # target).
         for by_kind in (self.by_kind(self.render()), self.opt_in_render()):
-            binding = self.pick(by_kind, "ClusterRoleBinding", "cluster-admins")
+            binding = self.pick(by_kind, "ClusterRoleBinding",
+                                "keycloak-auth-cluster-admins")
             self.assertEqual(binding["roleRef"]["name"], "cluster-admin")
             self.assertEqual(binding["subjects"], [{
                 "apiGroup": "rbac.authorization.k8s.io",
