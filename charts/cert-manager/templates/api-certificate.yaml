@@ -1,4 +1,5 @@
 {{- if .Values.certificates.api.managed -}}
+{{- include "cert-manager.validateCertificateIssuer" . -}}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -17,20 +18,4 @@ spec:
     kind: ClusterIssuer
     name: {{ .Values.certificates.clusterIssuer }}
   secretName: openshift-api
----
-apiVersion: config.openshift.io/v1
-kind: APIServer
-metadata:
-  name: cluster
-spec:
-  servingCerts:
-    namedCertificates:
-      - names:
-          {{- if .Values.certificates.api.dnsNames }}
-          {{- toYaml .Values.certificates.api.dnsNames | nindent 10 }}
-          {{- else }}
-          - api.{{ .Values.global.cluster.name }}.{{ .Values.global.cluster.baseDomain }}
-          {{- end }}
-        servingCertificate:
-          name: openshift-api
 {{- end }}

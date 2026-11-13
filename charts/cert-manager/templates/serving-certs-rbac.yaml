@@ -1,0 +1,71 @@
+{{- if or .Values.certificates.api.managed .Values.certificates.router.managed -}}
+{{- /* The hook Jobs patch only the two platform objects they configure, by
+resourceName; router mode needs a namespaced grant in
+openshift-ingress-operator, API mode a cluster-scoped one */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: serving-certs
+{{- if .Values.certificates.router.managed }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: serving-certs-router
+  namespace: openshift-ingress-operator
+rules:
+- apiGroups:
+  - operator.openshift.io
+  resources:
+  - ingresscontrollers
+  resourceNames:
+  - default
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: serving-certs-router
+  namespace: openshift-ingress-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: serving-certs-router
+subjects:
+- kind: ServiceAccount
+  name: serving-certs
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.certificates.api.managed }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: serving-certs-api
+rules:
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - apiservers
+  resourceNames:
+  - cluster
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: serving-certs-api
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: serving-certs-api
+subjects:
+- kind: ServiceAccount
+  name: serving-certs
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}

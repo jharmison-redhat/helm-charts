@@ -13,3 +13,8 @@ spec:
     overrideArgs:
       - "--dns01-recursive-nameservers=9.9.9.9:53,1.1.1.1:53"
       - "--dns01-recursive-nameservers-only"
+      # Certificate Secrets are created by cert-manager, not Helm; keeping
+      # the owner reference off makes them survive helm uninstall with the
+      # Certificate resources deleted. Note this flag is controller-global,
+      # so it also applies to the CA-family and nlb Secrets
+      - "--enable-certificate-owner-ref=false"

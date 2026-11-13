@@ -1,3 +1,6 @@
+{{- if or .Values.certificates.router.managed .Values.certificates.nlbRouter.managed -}}
+{{- include "cert-manager.validateCertificateIssuer" . -}}
+{{- end -}}
 {{- if .Values.certificates.router.managed -}}
 ---
 apiVersion: cert-manager.io/v1
@@ -18,15 +21,6 @@ spec:
     kind: ClusterIssuer
     name: {{ .Values.certificates.clusterIssuer }}
   secretName: router-cert
----
-apiVersion: operator.openshift.io/v1
-kind: IngressController
-metadata:
-  name: default
-  namespace: openshift-ingress-operator
-spec:
-  defaultCertificate:
-    name: router-cert
 {{- end }}
 {{ if .Values.certificates.nlbRouter.managed -}}
 ---

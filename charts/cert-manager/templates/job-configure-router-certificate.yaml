@@ -1,0 +1,42 @@
+{{- if .Values.certificates.router.managed -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: configure-router-certificate
+  annotations:
+    # Run after the release is applied; the Job is deleted and recreated on
+    # upgrade so the immutable Job spec is never rejected
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 4
+  # Outlasts the worst-case script runtime (5 attempts of paired 30s request
+  # timeouts plus 8s of conflict retry sleeps) with headroom so the script's
+  # own diagnostics fire before the Job controller kills the pod
+  activeDeadlineSeconds: {{ add (mul 5 60) (mul 4 2) 30 }}
+  template:
+    spec:
+      serviceAccountName: serving-certs
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: configure-router-certificate
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        command: ["/mnt/configure-router-cert.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: serving-certs-config
+          mountPath: /mnt
+      volumes:
+      - name: serving-certs-config
+        configMap:
+          name: serving-certs-config
+          defaultMode: 493
+{{- end }}

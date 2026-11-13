@@ -19,6 +19,10 @@ ca:
   # tlsKey: <PEM key>
 
 acme: {}
+# One ClusterIssuer renders per key. Each entry requires `server` and
+# `email`; every solver requires `type: dns` (with `dnsConfig`) or
+# `type: http` (with `ingressClassName`) — rendering fails otherwise.
+# The EAB HMAC key must be un-padded base64url.
 # zerossl:
 #   server: https://acme.zerossl.com/v2/DV90
 #   email: <put your email here>
@@ -27,7 +31,6 @@ acme: {}
 #     keySecretRef:
 #       name: acme-zerossl-eabsecret
 #       key: secret
-#     keyAlgorithm: HS256
 #   solvers:
 #     - type: dns
 #       dnsConfig:
@@ -50,9 +53,6 @@ acme: {}
 # letsencrypt:
 #   server: https://acme-v02.api.letsencrypt.org/directory
 #   email: <your email address here>
-#   disableAccountKeyGeneration: true
-#   privateKeySecretRef:
-#     name: letsencrypt-private-key
 #   solvers:
 #     - type: dns
 #       dnsConfig:
@@ -69,18 +69,41 @@ acme: {}
 #     - name: route53-creds
 #       stringData:
 #         secret-access-key: <put your actual key here>
+# To pre-provision the ACME account key instead of letting cert-manager
+# generate one, add these keys to the `letsencrypt` block above — a second
+# `letsencrypt:` key here would fail YAML validation. Set
+# disableAccountKeyGeneration: true only with the pre-provisioned account
+# key in the referenced Secret (the chart renders it as
+# acme-<name>-privatekey, expecting the key under `tls.key`), provided via
+# a secrets entry named `privatekey` with a `tls.key` data key:
+# letsencrypt:
+#   disableAccountKeyGeneration: true
+#   secrets:
+#     - name: privatekey
+#       data:
+#         tls.key: <base64-encoded PEM account key>
 
 # Stock OpenShift clusters keep their platform-issued certificates unless a
 # service opts in; `managed` defaults to false so installing this chart does
 # not replace platform certs.
 certificates:
-  # ClusterIssuer used for managed certificates; must be a key of `acme` or
-  # `ca-issuer` when `ca.enabled`
+  # ClusterIssuer used for managed certificates; rendering fails unless it
+  # names a rendered ClusterIssuer — a key of `acme`, or `ca-issuer` when
+  # `ca.enabled`
   clusterIssuer: zerossl
   # clusterIssuer: letsencrypt
-  api:
-    managed: false
+  # When managed, the Certificate renders as a release-owned resource and a
+  # post-install/post-upgrade hook Job writes the platform reference
+  # (IngressController/default.defaultCertificate) with a
+  # resourceVersion-conditional merge patch; a reference to a foreign
+  # certificate stops the hook instead of overwriting
   router:
     managed: false
+  # Same hook pattern for the APIServer cluster object's
+  # servingCerts.namedCertificates list
+  api:
+    managed: false
+  # Renders a Certificate only — the external LB references it; no platform
+  # object is patched
   nlbRouter:
     managed: false

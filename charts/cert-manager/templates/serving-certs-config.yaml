@@ -1,0 +1,27 @@
+{{- if or .Values.certificates.api.managed .Values.certificates.router.managed -}}
+{{- $apiNames := .Values.certificates.api.dnsNames
+      | default (list (printf "api.%s.%s"
+        .Values.global.cluster.name .Values.global.cluster.baseDomain)) -}}
+{{- /* The hook Jobs need their scripts and the expected certificate
+references they write, so the serving-certs-config ConfigMap is gated
+alongside the Jobs and the serving-certs ServiceAccount on
+certificates.api.managed or certificates.router.managed; each mode's
+script and reference only render when that mode is managed */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serving-certs-config
+data:
+  {{- if .Values.certificates.router.managed }}
+  configure-router-cert.sh: |-
+    {{- .Files.Get "files/configure-router-cert.sh" | nindent 4 }}
+  router-reference.json: |-
+    {{- dict "name" "router-cert" | toJson | nindent 4 }}
+  {{- end }}
+  {{- if .Values.certificates.api.managed }}
+  configure-api-cert.sh: |-
+    {{- .Files.Get "files/configure-api-cert.sh" | nindent 4 }}
+  api-reference.json: |-
+    {{- dict "names" $apiNames "servingCertificate" (dict "name" "openshift-api") | toJson | nindent 4 }}
+  {{- end }}
+{{- end }}

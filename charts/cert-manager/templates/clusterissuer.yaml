@@ -1,3 +1,5 @@
+{{- include "cert-manager.validateCa" . }}
+{{- include "cert-manager.validateAcme" . -}}
 {{- range $name, $acme := .Values.acme -}}
 ---
 apiVersion: cert-manager.io/v1
@@ -9,6 +11,9 @@ spec:
     email: {{ $acme.email }}
     {{- with $acme.preferredChain }}
     preferredChain: {{ toYaml . }}
+    {{- end }}
+    {{- with $acme.disableAccountKeyGeneration }}
+    disableAccountKeyGeneration: {{ . }}
     {{- end }}
     privateKeySecretRef:
       name: acme-{{ $name }}-privatekey
