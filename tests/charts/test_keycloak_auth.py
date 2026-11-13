@@ -4,7 +4,10 @@ Role, or RoleBinding unless explicitly opted in), the exact named-secret
 delete-only RBAC and rendered removal command, the OAuth identity-provider
 hook surface (the platform OAuth object is never owned — hook Jobs upsert
 and remove only this chart's named entry with a resourceVersion-conditional
-read-modify-write), the umbrella example's explicit safe override,
+read-modify-write), the console logout-redirect surface (hook Jobs set and
+unset spec.authentication.logoutRedirect on the platform Console object with
+the same conditional-write discipline, gated on logoutRedirect.enabled and
+global.oidc.secret), the umbrella example's explicit safe override,
 dependency pin, and metadata coherence.
 
 Render tests run the chart through ``helm template`` (keycloak-auth has
@@ -502,11 +505,10 @@ class PayloadHygieneTests(ChartFixture):
                              "once, in the openid-client-secret Secret")
 
 
-class OAuthIdpScriptTests(ChartFixture):
-    """Executes the rendered OAuth hook scripts against a fake oc binary.
-
-    Each run gets a restricted PATH built solely from symlinks in an
-    isolated bin directory (the JSON tool chosen per test path, core
+class FakeOcScriptFixture(ChartFixture):
+    """Shared plumbing for executing rendered hook scripts against a fake
+    oc binary. Each run gets a restricted PATH built solely from symlinks
+    in an isolated bin directory (the JSON tool chosen per test path, core
     utilities, and the fake oc), so no ambient host tool or real oc can be
     reached. The child environment is an explicit minimal set — no parent
     variables are inherited."""
@@ -514,28 +516,8 @@ class OAuthIdpScriptTests(ChartFixture):
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="ka-oauth-script-")
+        self.work = tempfile.mkdtemp(prefix="ka-script-")
         self.addCleanup(shutil.rmtree, self.work)
-        cm = self.pick(self.configured_render(), "ConfigMap", "oauth-idp-config")
-        self.scripts = {name: cm["data"][name]
-                        for name in ("oauth-idp-upsert.sh", "oauth-idp-remove.sh")}
-        self.entry = json.loads(cm["data"]["idp-entry.json"])
-        with open(os.path.join(self.work, "entry.json"), "w") as f:
-            json.dump(self.entry, f)
-        self.other_idp = {
-            "name": "htpasswd",
-            "type": "HTPasswd",
-            "mappingMethod": "claim",
-            "htpasswd": {"fileData": {"name": "htpasswd-secret"}},
-        }
-
-    def oauth_doc(self, idps, resource_version="1597"):
-        return {
-            "apiVersion": "config.openshift.io/v1",
-            "kind": "OAuth",
-            "metadata": {"name": "cluster", "resourceVersion": resource_version},
-            "spec": {"identityProviders": idps},
-        }
 
     def build_bin_dir(self, include_jq=None, include_python=None):
         bin_dir = os.path.join(self.work, "bin")
@@ -563,41 +545,13 @@ class OAuthIdpScriptTests(ChartFixture):
         os.chmod(fake_oc, 0o755)
         return bin_dir
 
-    def run_script(self, script_name, scenario, oauth_doc=None,
-                   include_jq=None, include_python=None):
-        bin_dir = self.build_bin_dir(include_jq=include_jq,
-                                     include_python=include_python)
-        script_path = os.path.join(self.work, script_name)
-        with open(script_path, "w") as f:
-            f.write(self.scripts[script_name])
-        if oauth_doc is None:
-            oauth_doc = self.oauth_doc([])
-        get_file = os.path.join(self.work, "oauth.json")
-        with open(get_file, "w") as f:
-            json.dump(oauth_doc, f)
-        # Each run is self-contained: drop logs and the fake oc's
-        # resourceVersion counter left by any earlier run.
-        for stale in ("commands.log", "env.log", "patches.log", "attempts",
-                      get_file + ".rv"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
-        env = {
-            "PATH": bin_dir,
-            "HOME": self.work,
-            "IDP_NAME": "rhbk",
-            "ENTRY_FILE": os.path.join(self.work, "entry.json"),
-            "OC_SCENARIO": scenario,
-            "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_ENV": os.path.join(self.work, "env.log"),
-            "OC_GET_FILE": get_file,
-            "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
-            "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
-        }
-        with mock.patch.dict(os.environ, {"KA_PARENT_SENTINEL": "must-not-leak"}):
-            return subprocess.run(
-                ["/bin/bash", script_path], capture_output=True, text=True,
-                env=env, timeout=120)
+    def tool_path_variants(self):
+        """Both JSON tool paths the hook scripts can take; the jq path is
+        included only when the host provides jq."""
+        variants = [{"include_jq": False, "include_python": True}]
+        if shutil.which("jq"):
+            variants.append({"include_jq": True, "include_python": False})
+        return variants
 
     def log(self):
         with open(os.path.join(self.work, "commands.log")) as f:
@@ -614,6 +568,90 @@ class OAuthIdpScriptTests(ChartFixture):
         with open(os.path.join(self.work, "env.log")) as f:
             return dict(
                 line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+
+    def run_child(self, script_path, env):
+        with mock.patch.dict(os.environ, {"KA_PARENT_SENTINEL": "must-not-leak"}):
+            return subprocess.run(
+                ["/bin/bash", script_path], capture_output=True, text=True,
+                env=env, timeout=120)
+
+    def canned_doc(self):
+        """Canned object the fake oc serves for get."""
+        raise NotImplementedError
+
+    def script_env(self):
+        """Capability-specific entries merged into the child environment."""
+        raise NotImplementedError
+
+    def run_script(self, script_name, scenario, canned_doc=None,
+                   include_jq=None, include_python=None):
+        bin_dir = self.build_bin_dir(include_jq=include_jq,
+                                     include_python=include_python)
+        script_path = os.path.join(self.work, script_name)
+        with open(script_path, "w") as f:
+            f.write(self.scripts[script_name])
+        if canned_doc is None:
+            canned_doc = self.canned_doc()
+        get_file = os.path.join(self.work, self.get_file_name)
+        with open(get_file, "w") as f:
+            json.dump(canned_doc, f)
+        # Each run is self-contained: drop logs and the fake oc's
+        # resourceVersion counter left by any earlier run.
+        for stale in ("commands.log", "env.log", "patches.log", "attempts",
+                      get_file + ".rv"):
+            stale_path = os.path.join(self.work, stale)
+            if os.path.exists(stale_path):
+                os.unlink(stale_path)
+        env = {
+            "PATH": bin_dir,
+            "HOME": self.work,
+            **self.script_env(),
+            "OC_SCENARIO": scenario,
+            "OC_LOG": os.path.join(self.work, "commands.log"),
+            "OC_ENV": os.path.join(self.work, "env.log"),
+            "OC_GET_FILE": get_file,
+            "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
+            "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
+        }
+        return self.run_child(script_path, env)
+
+
+class OAuthIdpScriptTests(FakeOcScriptFixture):
+    """Executes the rendered OAuth hook scripts against a fake oc binary."""
+
+    get_file_name = "oauth.json"
+
+    def setUp(self):
+        super().setUp()
+        cm = self.pick(self.configured_render(), "ConfigMap", "oauth-idp-config")
+        self.scripts = {name: cm["data"][name]
+                        for name in ("oauth-idp-upsert.sh", "oauth-idp-remove.sh")}
+        self.entry = json.loads(cm["data"]["idp-entry.json"])
+        with open(os.path.join(self.work, "entry.json"), "w") as f:
+            json.dump(self.entry, f)
+        self.other_idp = {
+            "name": "htpasswd",
+            "type": "HTPasswd",
+            "mappingMethod": "claim",
+            "htpasswd": {"fileData": {"name": "htpasswd-secret"}},
+        }
+
+    def oauth_doc(self, idps, resource_version="1597"):
+        return {
+            "apiVersion": "config.openshift.io/v1",
+            "kind": "OAuth",
+            "metadata": {"name": "cluster", "resourceVersion": resource_version},
+            "spec": {"identityProviders": idps},
+        }
+
+    def canned_doc(self):
+        return self.oauth_doc([])
+
+    def script_env(self):
+        return {
+            "IDP_NAME": "rhbk",
+            "ENTRY_FILE": os.path.join(self.work, "entry.json"),
+        }
 
     def assert_get_argv(self):
         argv = self.log().splitlines()
@@ -666,14 +704,6 @@ class OAuthIdpScriptTests(ChartFixture):
         patches = self.patches()
         self.assertEqual(len(patches), 1)
         self.assertEqual(patches[0]["spec"]["identityProviders"], [self.entry])
-
-    def tool_path_variants(self):
-        """Both JSON tool paths the hook scripts can take; the jq path is
-        included only when the host provides jq."""
-        variants = [{"include_jq": False, "include_python": True}]
-        if shutil.which("jq"):
-            variants.append({"include_jq": True, "include_python": False})
-        return variants
 
     def test_upsert_no_op_when_equal_entry_is_not_last(self):
         # An exactly equal entry earlier in the list must be a no-op, not a
@@ -834,6 +864,356 @@ class OAuthIdpScriptTests(ChartFixture):
         self.assertIn("concurrently", result.stderr)
 
 
+class LogoutRedirectSurfaceTests(ChartFixture):
+    """With logoutRedirect.enabled and the OIDC secret configured, the
+    console logout-redirect surface renders: the script/URL ConfigMap, its
+    dedicated ServiceAccount/ClusterRole/ClusterRoleBinding, and the set
+    (post-install,post-upgrade) and unset (pre-delete) hook Jobs. The
+    surface skips silently when the secret is absent (the chart's
+    documented convention for IdP resources) or the feature is disabled."""
+
+    DEFAULT_URL = (
+        "https://keycloak.apps.cluster.example.com/realms/sso/protocol/"
+        "openid-connect/logout?client_id=ocp-idp"
+        "&post_logout_redirect_uri=https%3A%2F%2F"
+        "console-openshift-console.apps.cluster.example.com")
+
+    def configured(self, **logout_overrides):
+        values = self.configured_values()
+        if logout_overrides:
+            values["logoutRedirect"] = logout_overrides
+        return self.by_kind(self.render(values))
+
+    def logout_names(self, by_kind):
+        return {d["metadata"]["name"]
+                for kind in ("ConfigMap", "ServiceAccount", "ClusterRole",
+                             "ClusterRoleBinding", "Job")
+                for d in by_kind.get(kind, [])
+                if d["metadata"]["name"].startswith("logout-")}
+
+    def test_default_secret_configured_renders_full_surface(self):
+        by_kind = self.configured()
+        names = self.logout_names(by_kind)
+        for name in ("logout-redirect-config", "logout-redirect",
+                     "logout-redirect-set", "logout-redirect-unset"):
+            self.assertIn(name, names)
+        self.assertEqual(
+            self.pick(by_kind, "ConfigMap", "logout-redirect-config")
+            ["data"]["logout-redirect-url"], self.DEFAULT_URL)
+
+    def test_enabled_without_secret_skips_silently(self):
+        # enabled defaults to true; an empty global.oidc.secret gates the
+        # whole surface off (same conjunction as the IdP surface) whether
+        # the enabled key is defaulted or explicit.
+        for by_kind in (self.by_kind(self.render()),
+                        self.by_kind(
+                            self.render({"logoutRedirect": {"enabled": True}})),
+                        self.configured(enabled=False)):
+            self.assertEqual(self.logout_names(by_kind), set())
+
+    def test_set_job_is_post_install_post_upgrade_hook(self):
+        job = self.pick(self.configured(), "Job", "logout-redirect-set")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook"],
+            "post-install,post-upgrade")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
+            "before-hook-creation")
+        self.assertEqual(job["spec"]["backoffLimit"], 4)
+        pod = job["spec"]["template"]["spec"]
+        self.assertEqual(pod["serviceAccountName"], "logout-redirect")
+        self.assertEqual(pod["restartPolicy"], "Never")
+        container = pod["containers"][0]
+        self.assertEqual(container["command"],
+                         ["/mnt/logout-redirect-set.sh"])
+        self.assertEqual(
+            container["image"],
+            "image-registry.openshift-image-registry.svc:5000/openshift/tools:latest")
+        self.assertEqual(container["volumeMounts"], [{
+            "name": "logout-redirect-config", "mountPath": "/mnt",
+        }])
+        self.assertEqual(pod["volumes"], [{
+            "name": "logout-redirect-config",
+            "configMap": {"name": "logout-redirect-config",
+                          "defaultMode": 493},
+        }])
+
+    def test_unset_job_is_pre_delete_hook(self):
+        job = self.pick(self.configured(), "Job", "logout-redirect-unset")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook"], "pre-delete")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
+            "before-hook-creation")
+        self.assertEqual(
+            job["spec"]["template"]["spec"]["serviceAccountName"],
+            "logout-redirect")
+        self.assertEqual(
+            job["spec"]["template"]["spec"]["containers"][0]["command"],
+            ["/mnt/logout-redirect-unset.sh"])
+
+    def test_rbac_is_get_and_patch_on_named_console_only(self):
+        by_kind = self.configured()
+        sa = self.pick(by_kind, "ServiceAccount", "logout-redirect")
+        self.assertNotIn("namespace", sa["metadata"])
+        role = self.pick(by_kind, "ClusterRole", "logout-redirect")
+        self.assertEqual(role["rules"], [{
+            "apiGroups": ["config.openshift.io"],
+            "resources": ["consoles"],
+            "resourceNames": ["cluster"],
+            "verbs": ["get", "patch"],
+        }])
+        binding = self.pick(by_kind, "ClusterRoleBinding", "logout-redirect")
+        self.assertEqual(binding["roleRef"], {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "logout-redirect",
+        })
+        self.assertEqual(binding["subjects"], [{
+            "kind": "ServiceAccount",
+            "name": "logout-redirect",
+            "namespace": "test-release-ns",
+        }])
+
+    def test_configmap_delivers_scripts_and_url(self):
+        cm = self.pick(self.configured(), "ConfigMap",
+                       "logout-redirect-config")
+        data = cm["data"]
+        for key in ("logout-redirect-set.sh", "logout-redirect-unset.sh",
+                    "logout-redirect-url"):
+            self.assertIn(key, data)
+        for key in ("logout-redirect-set.sh", "logout-redirect-unset.sh"):
+            self.assertIn("set -euo pipefail", data[key])
+            self.assertIn("consoles.config.openshift.io/cluster", data[key])
+
+    def test_console_host_override_honored(self):
+        values = {
+            "global": {
+                "oidc": {
+                    "secret": "test-client-secret",
+                    "consoleHost": "console.example.com",
+                },
+            },
+        }
+        cm = self.pick(self.by_kind(self.render(values)), "ConfigMap",
+                       "logout-redirect-config")
+        self.assertEqual(
+            cm["data"]["logout-redirect-url"],
+            "https://keycloak.apps.cluster.example.com/realms/sso/protocol/"
+            "openid-connect/logout?client_id=ocp-idp"
+            "&post_logout_redirect_uri=https%3A%2F%2Fconsole.example.com")
+
+
+class LogoutRedirectScriptTests(FakeOcScriptFixture):
+    """Executes the rendered logout-redirect hook scripts against a fake
+    oc binary serving a canned Console object."""
+
+    get_file_name = "console.json"
+
+    def setUp(self):
+        super().setUp()
+        cm = self.pick(self.configured_render(), "ConfigMap",
+                       "logout-redirect-config")
+        self.scripts = {name: cm["data"][name]
+                        for name in ("logout-redirect-set.sh",
+                                     "logout-redirect-unset.sh")}
+        self.url = cm["data"]["logout-redirect-url"].strip()
+        self.url_file = os.path.join(self.work, "logout-redirect-url")
+        with open(self.url_file, "w") as f:
+            f.write(self.url + "\n")
+
+    def console_doc(self, logout_redirect=None, resource_version="1597"):
+        doc = {
+            "apiVersion": "config.openshift.io/v1",
+            "kind": "Console",
+            "metadata": {"name": "cluster",
+                         "resourceVersion": resource_version},
+            "spec": {},
+        }
+        if logout_redirect is not None:
+            doc["spec"]["authentication"] = {
+                "logoutRedirect": logout_redirect}
+        return doc
+
+    def canned_doc(self):
+        return self.console_doc()
+
+    def script_env(self):
+        return {"REDIRECT_URL_FILE": self.url_file}
+
+    def assert_get_argv(self):
+        argv = self.log().splitlines()
+        self.assertEqual(
+            argv[0],
+            "get consoles.config.openshift.io/cluster -o json "
+            "--request-timeout=30s")
+
+    def assert_patch_argv(self):
+        for line in self.log().splitlines():
+            if line.startswith("patch "):
+                self.assertIn(
+                    "patch consoles.config.openshift.io/cluster --type=merge",
+                    line)
+
+    def test_set_success_on_unset_field(self):
+        result = self.run_script("logout-redirect-set.sh", "fresh",
+                                 self.console_doc())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_get_argv()
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0], {
+            "metadata": {"resourceVersion": "1597"},
+            "spec": {"authentication": {"logoutRedirect": self.url}},
+        })
+
+    def test_set_is_idempotent_no_op_when_equal(self):
+        result = self.run_script("logout-redirect-set.sh", "fresh",
+                                 self.console_doc(self.url))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(len(self.log().splitlines()), 1)
+
+    def test_set_stops_loudly_on_foreign_value(self):
+        result = self.run_script("logout-redirect-set.sh", "fresh",
+                                 self.console_doc("https://elsewhere.example.com"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("foreign", result.stderr)
+        self.assertIn("https://elsewhere.example.com", result.stderr)
+        self.assertEqual(self.patches(), [])
+
+    def test_set_absent_console_object_fails_with_prerequisite(self):
+        result = self.run_script("logout-redirect-set.sh", "absent-object",
+                                 self.console_doc())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("prerequisite missing", result.stderr)
+        self.assertEqual(self.patches(), [])
+
+    def test_set_retries_conflict_then_succeeds(self):
+        result = self.run_script("logout-redirect-set.sh",
+                                 "conflict-then-success", self.console_doc())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        gets = [line for line in self.log().splitlines()
+                if line.startswith("get ")]
+        self.assertEqual(len(gets), 2)
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 2)
+        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1597")
+        self.assertEqual(patches[1]["metadata"]["resourceVersion"], "1598")
+        self.assertIn("retrying", result.stderr)
+
+    def test_set_conflict_exhaustion_fails(self):
+        result = self.run_script("logout-redirect-set.sh",
+                                 "conflict-exhausted", self.console_doc())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
+        self.assertIn("concurrently", result.stderr)
+
+    def test_unset_clears_own_value(self):
+        result = self.run_script("logout-redirect-unset.sh", "fresh",
+                                 self.console_doc(self.url))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0], {
+            "metadata": {"resourceVersion": "1597"},
+            "spec": {"authentication": {"logoutRedirect": None}},
+        })
+
+    def test_unset_leaves_foreign_value(self):
+        result = self.run_script("logout-redirect-unset.sh", "fresh",
+                                 self.console_doc("https://elsewhere.example.com"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(len(self.log().splitlines()), 1)
+
+    def test_unset_is_no_op_when_already_unset(self):
+        result = self.run_script("logout-redirect-unset.sh", "fresh",
+                                 self.console_doc())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(len(self.log().splitlines()), 1)
+
+    def test_unset_absent_console_object_is_successful_no_op(self):
+        result = self.run_script("logout-redirect-unset.sh", "absent-object",
+                                 self.console_doc(self.url))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.patches(), [])
+
+    def test_unset_conflict_exhaustion_fails(self):
+        result = self.run_script("logout-redirect-unset.sh",
+                                 "conflict-exhausted",
+                                 self.console_doc(self.url))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
+        self.assertIn("concurrently", result.stderr)
+
+    def test_set_python3_tool_path(self):
+        result = self.run_script("logout-redirect-set.sh", "fresh",
+                                 self.console_doc(),
+                                 include_jq=False, include_python=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["spec"]["authentication"]
+                         ["logoutRedirect"], self.url)
+
+    def test_set_jq_tool_path(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq not available on the host")
+        result = self.run_script("logout-redirect-set.sh", "fresh",
+                                 self.console_doc(),
+                                 include_jq=True, include_python=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertEqual(patches[0]["spec"]["authentication"]
+                         ["logoutRedirect"], self.url)
+
+    def test_unset_python3_tool_path(self):
+        result = self.run_script("logout-redirect-unset.sh", "fresh",
+                                 self.console_doc(self.url),
+                                 include_jq=False, include_python=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertIsNone(
+            patches[0]["spec"]["authentication"]["logoutRedirect"])
+
+    def test_unset_jq_tool_path(self):
+        if shutil.which("jq") is None:
+            self.skipTest("jq not available on the host")
+        result = self.run_script("logout-redirect-unset.sh", "fresh",
+                                 self.console_doc(self.url),
+                                 include_jq=True, include_python=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_patch_argv()
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assertIsNone(
+            patches[0]["spec"]["authentication"]["logoutRedirect"])
+
+    def test_missing_json_tool_fails_before_any_cluster_call(self):
+        for script in ("logout-redirect-set.sh", "logout-redirect-unset.sh"):
+            with self.subTest(script=script):
+                result = self.run_script(script, "fresh",
+                                         self.console_doc(),
+                                         include_jq=False,
+                                         include_python=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("neither jq nor python3", result.stderr)
+                self.assertEqual(self.patches(), [])
+                self.assertFalse(
+                    os.path.exists(os.path.join(self.work, "commands.log")),
+                    "oc must not be invoked when no JSON tool is available")
+
+
 class UmbrellaMetadataTests(unittest.TestCase):
     """Parses the umbrella example's values and metadata: its explicit
     safe override and the pin/version coherence with the edited chart,
@@ -854,8 +1234,8 @@ class UmbrellaMetadataTests(unittest.TestCase):
 
     def test_auth_chart_version_bump(self):
         meta = self.load(os.path.join(CHART, "Chart.yaml"))
-        self.assertEqual(meta["version"], "0.4.0")
-        self.assertEqual(meta["appVersion"], "0.4.0")
+        self.assertEqual(meta["version"], "0.4.1")
+        self.assertEqual(meta["appVersion"], "0.4.1")
 
     def test_umbrella_version_and_pin_coherence(self):
         umbrella = self.load(os.path.join(UMBRELLA, "Chart.yaml"))

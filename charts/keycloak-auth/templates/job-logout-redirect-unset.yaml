@@ -1,0 +1,49 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- $logout := .Values.logoutRedirect | default dict }}
+{{- /* The platform Console object always exists on OpenShift, so the logout
+redirect is removed from it through this hook Job instead of a release-owned
+manifest being pruned; the Job is gated on the same conjunction as the IdP
+surface (logoutRedirect.enabled and global.oidc.secret provided), alongside
+the logout-redirect-config ConfigMap it mounts */ -}}
+{{- if and (ne $secret "") $logout.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: logout-redirect-unset
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+  annotations:
+    # Restores the console's logoutRedirect to unset on uninstall — the field
+    # pre-existed unset and a dangling redirect to a dead Keycloak breaks
+    # console logout after teardown
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: logout-redirect
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: logout-redirect-unset
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        command: ["/mnt/logout-redirect-unset.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: logout-redirect-config
+          mountPath: /mnt
+      volumes:
+      - name: logout-redirect-config
+        configMap:
+          name: logout-redirect-config
+          defaultMode: 493
+{{- end }}

@@ -3,8 +3,9 @@ keycloak-auth
 
 A chart to configure OpenShift authentication against a Keycloak instance deployed by the Red Hat Build of Keycloak
 operator. It configures the platform's cluster-scoped OAuth object with an `OpenID` identity provider, manages the
-`openid-client-secret` Secret in `openshift-config`, sets up a `cluster-admins` Group with a ClusterRoleBinding, and can
-remove the `kubeadmin` Secret when explicitly opted in.
+`openid-client-secret` Secret in `openshift-config`, sets up a `cluster-admins` Group with a ClusterRoleBinding, wires
+the web console's logout redirect so a console logout ends the Keycloak SSO session, and can remove the `kubeadmin`
+Secret when explicitly opted in.
 
 This chart has no chart dependencies and renders standalone. It is designed to be consumed alongside the `keycloak`
 chart (which deploys the Keycloak instance and realm import): an umbrella consumer composes both and provides the OIDC
@@ -29,6 +30,7 @@ The chart performs the following:
   replacement administrator login (see `removeKubeAdmin` under Values)
 - Optionally renders a `router-ca` trust ConfigMap in `openshift-config` as the identity provider's CA (set `ingressCA`
   to enable it)
+- Sets the web console's logout redirect (see Console logout redirect below)
 
 An example `values.yaml` you could use to actuate some of these features would look like this:
 
@@ -64,13 +66,17 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   client secret (defaults: `sso`, `ocp-idp`, empty). The realm must match a `realms` map key and the client ID a client
   name in the `keycloak` chart; setting the realm to a name with no matching realm makes the issuer point at a realm
   that was never imported (no fail-fast). The secret is required and must match the corresponding realm client secret in
-  the `keycloak` chart. Leaving the secret empty skips rendering the identity-provider hook Jobs, their
-  `oauth-idp` ServiceAccount/ClusterRole/ClusterRoleBinding, the `oauth-idp-config` ConfigMap, and the
-  `openid-client-secret` Secret.
+  the `keycloak` chart. Leaving the secret empty skips rendering the identity-provider hook Jobs, their `oauth-idp`
+  ServiceAccount/ClusterRole/ClusterRoleBinding, the `oauth-idp-config` ConfigMap, and the `openid-client-secret`
+  Secret. The optional `consoleHost` override names the OpenShift web console host for the logout-redirect wiring
+  (default: derived — see Console logout redirect below)
 - `keycloak.name` — the Keycloak CR name for the issuer URL (default: `keycloak`, matching the keycloak chart's
   chart-name-based CR name)
 - `oauth.idpName` — the identity provider entry name the hook Jobs manage in the cluster OAuth resource (default:
   `rhbk`)
+- `logoutRedirect.enabled` — sets the web console's `spec.authentication.logoutRedirect` to the Keycloak RP-initiated
+  logout URL, ending the SSO session on console logout (default: `true`; requires `global.oidc.secret` to be set — see
+  Console logout redirect below)
 - `ingressCA` — optional CA bundle; when set, the `router-ca` ConfigMap is rendered and the identity provider uses it —
   only needed when the identity provider's TLS is issued by private enterprise PKI (a CA that is neither publicly
   trusted nor the cluster's own, whose CA the OAuth server already trusts)
@@ -106,6 +112,42 @@ The identity provider entry contains no secret material — the client secret is
 `openid-client-secret` Secret this chart creates. Verifying that a replacement administrator can log in through the
 configured identity provider remains the operator's responsibility; the presence of the identity provider entry is not
 proof that anyone can authenticate.
+
+Console logout redirect
+-----------------------
+
+Logging out of the OpenShift web console does not end the Keycloak SSO session by itself — the platform OAuth server
+cannot propagate logout to identity providers (a documented OpenShift limitation). The documented single-logout (SLO)
+surface is console-side: `Console.config.openshift.io/cluster` `spec.authentication.logoutRedirect` sends the browser to
+a URL of the operator's choosing after the console clears its own session. With `logoutRedirect.enabled` (default
+`true`) and the OIDC IdP configured, `post-install,post-upgrade` hook Jobs set that field to the Keycloak RP-initiated
+logout endpoint
+(`https://<keycloak.name>.<wildcardDomain>/realms/<realm>/protocol/openid-connect/logout?client_id=<clientId>&post_logout_redirect_uri=...`),
+so a console logout ends the Keycloak SSO session too. The client side of the flow — the Keycloak client attribute that
+authorizes the `post_logout_redirect_uri` — is provided by the `keycloak` chart. Both charts derive the console host
+from the same single source: `global.oidc.consoleHost` when set, else
+`console-openshift-console.<global.wildcardDomain>`. The redirect URL is templated at render time and not validated
+against a live Keycloak or console route (consistent with this chart's no-validation issuer stance), so a standalone
+consumer that does not match `keycloak.name` and `global.wildcardDomain` to a real Keycloak points the redirect at a
+host that does not resolve.
+
+The write is resourceVersion-conditional with bounded conflict retries, and it is conditional on the field's current
+value: if `logoutRedirect` is unset, it is set; if it already equals this chart's derived URL, the Job is a successful
+no-op; if it holds a foreign value (a redirect something else configured), the Job fails loudly rather than overwriting
+it. On `helm uninstall`, a `pre-delete` hook Job restores the field to unset when it equals this chart's URL, and is a
+successful no-op when the field is unset, foreign, or the Console object itself is gone.
+
+Clearing `logoutRedirect.enabled` or `global.oidc.secret` on an upgrade does not restore the console's `logoutRedirect`:
+Helm does not prune manifests a release stops rendering, pre-delete hooks do not run on upgrade, and the unset hook
+itself only exists while the feature and secret are set. The field must be restored manually
+(`oc patch console.config.openshift.io/cluster --type=merge -p '{"spec":{"authentication":{"logoutRedirect":null}}}'`)
+if the feature is later disabled while the chart stays installed.
+
+Changing any input of the derived URL (`global.oidc.consoleHost`, `global.wildcardDomain`, `keycloak.name`,
+`global.oidc.realm`, or `global.oidc.clientId`) changes the URL the set hook writes, so the previously chart-set value
+then reads as foreign on the next upgrade: the set Job fails loudly until `spec.authentication.logoutRedirect` is
+cleared manually (or the release is uninstalled with the old values still set, which runs the unset hook against a
+matching revision).
 
 Kubeadmin removal
 -----------------

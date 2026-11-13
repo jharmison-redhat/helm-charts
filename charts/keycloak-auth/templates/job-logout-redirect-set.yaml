@@ -1,0 +1,46 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- $logout := .Values.logoutRedirect | default dict }}
+{{- /* The platform Console object always exists on OpenShift, so the
+logout redirect is set on it through this hook Job instead of a release-owned
+manifest; the Job is gated on the same conjunction as the IdP surface
+(logoutRedirect.enabled and global.oidc.secret provided), alongside the
+logout-redirect-config ConfigMap it mounts */ -}}
+{{- if and (ne $secret "") $logout.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: logout-redirect-set
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: logout-redirect
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: logout-redirect-set
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        command: ["/mnt/logout-redirect-set.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: logout-redirect-config
+          mountPath: /mnt
+      volumes:
+      - name: logout-redirect-config
+        configMap:
+          name: logout-redirect-config
+          defaultMode: 493
+{{- end }}

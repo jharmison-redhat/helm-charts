@@ -21,10 +21,15 @@ global:
   # empty to skip rendering the identity-provider hook Jobs, their
   # oauth-idp ServiceAccount/ClusterRole/ClusterRoleBinding, the
   # oauth-idp-config ConfigMap, and the openid-client-secret Secret.
+  # consoleHost optionally names the OpenShift web console host for the
+  # single-logout wiring (logoutRedirect below and the keycloak chart's
+  # oidcLogoutRedirect): both derive it from this value when set, else
+  # from console-openshift-console.<wildcardDomain>.
   oidc:
     realm: sso
     clientId: ocp-idp
     secret: ""
+    consoleHost: ""
 
 nameOverride: ""
 fullnameOverride: ""
@@ -40,6 +45,15 @@ oauth:
   # Name of the OpenID identity provider entry the hook Jobs manage in the
   # platform's cluster OAuth resource; all other entries there are preserved
   idpName: rhbk
+
+logoutRedirect:
+  # Front-channel single logout: on console logout the browser is sent to the Keycloak
+  # RP-initiated logout endpoint, ending the SSO session (the OAuth server cannot do this
+  # itself — documented OCP limitation). Requires the OIDC IdP (global.oidc.secret) to be
+  # set. The console host derives from global.oidc.consoleHost when set, else
+  # console-openshift-console.<global.wildcardDomain> — the same single source the keycloak
+  # chart uses for the client's post.logout.redirect.uris attribute.
+  enabled: true
 
 # Optional CA bundle; when set, this chart also renders the router-ca
 # ConfigMap in openshift-config and the OAuth identity provider references it

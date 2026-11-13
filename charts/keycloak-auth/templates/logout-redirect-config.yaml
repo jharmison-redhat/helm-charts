@@ -1,0 +1,28 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- $logout := .Values.logoutRedirect | default dict }}
+{{- /* The console logout redirect is only meaningful with an OIDC identity
+provider to log out of, so the logout-redirect-config ConfigMap is gated on
+the same conjunction as the IdP surface (logoutRedirect.enabled and
+global.oidc.secret provided), alongside the Jobs it serves */ -}}
+{{- if and (ne $secret "") $logout.enabled }}
+{{- $oidc := .Values.global.oidc | default dict }}
+{{- $consoleHost := $oidc.consoleHost
+    | default (printf "console-openshift-console.%s" .Values.global.wildcardDomain) }}
+{{- $url := printf "https://%s.%s/realms/%s/protocol/openid-connect/logout?client_id=%s&post_logout_redirect_uri=%s"
+      .Values.keycloak.name .Values.global.wildcardDomain $oidc.realm $oidc.clientId
+      (printf "https://%s" $consoleHost | urlquery) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logout-redirect-config
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+data:
+  logout-redirect-set.sh: |-
+    {{- .Files.Get "files/logout-redirect-set.sh" | nindent 4 }}
+  logout-redirect-unset.sh: |-
+    {{- .Files.Get "files/logout-redirect-unset.sh" | nindent 4 }}
+  logout-redirect-url: |-
+    {{- $url | nindent 4 }}
+{{- end }}

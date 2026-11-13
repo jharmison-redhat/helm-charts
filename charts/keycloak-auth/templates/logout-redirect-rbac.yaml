@@ -1,0 +1,48 @@
+{{- $secret := .Values.global.oidc | default dict }}
+{{- $secret = $secret.secret | default "" }}
+{{- $logout := .Values.logoutRedirect | default dict }}
+{{- /* The logout-redirect hook Jobs read and patch only the platform's
+cluster-scoped Console object; the RBAC surface is gated on the same
+conjunction as the IdP surface (logoutRedirect.enabled and global.oidc.secret
+provided), alongside the Jobs it serves. Separate capability, separate
+ServiceAccount from the oauth-idp one. */ -}}
+{{- if and (ne $secret "") $logout.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logout-redirect
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: logout-redirect
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - consoles
+  resourceNames:
+  - cluster
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: logout-redirect
+  labels:
+    {{- include "keycloak-auth.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: logout-redirect
+subjects:
+- kind: ServiceAccount
+  name: logout-redirect
+  namespace: {{ .Release.Namespace }}
+{{- end }}
