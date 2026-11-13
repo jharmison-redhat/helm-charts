@@ -7,7 +7,8 @@ null and verbatim when explicitly true or false, and client
 fullScopeAllowed is omitted when absent or null and rendered verbatim
 when explicitly true or false. It also pins the apiVersion of the
 rendered Keycloak and KeycloakRealmImport custom resources to
-k8s.keycloak.org/v2alpha1.
+k8s.keycloak.org/v2alpha1, and pins the serving-certificate Service
+that carries the service-ca annotation.
 
 Render tests run the rendered chart through ``helm template`` against a
 local stub of the postgres-cluster dependency (no registry access). No
@@ -162,6 +163,20 @@ class BaselineRenderTests(ChartFixture):
         for kind in ("Keycloak", "KeycloakRealmImport"):
             self.assertEqual(
                 kinds[kind], "k8s.keycloak.org/v2alpha1", kind)
+
+    def test_serving_cert_service_carries_annotation(self):
+        # The Service is metadata-only: the operator co-owns it (same name,
+        # <cr-name>-service) and fills spec.selector/ports, so the chart
+        # deliberately renders no spec.
+        services = [d for d in self.render_docs(self.base_realm())
+                    if d["kind"] == "Service"]
+        self.assertEqual(len(services), 1)
+        self.assertEqual(services[0]["metadata"]["name"], "keycloak-service")
+        self.assertEqual(
+            services[0]["metadata"]["annotations"][
+                "service.beta.openshift.io/serving-cert-secret-name"],
+            "keycloak-internal-tls")
+        self.assertNotIn("spec", services[0])
 
     def test_default_render_matches_contract(self):
         # No boolean field set anywhere: the eight default-true fields render

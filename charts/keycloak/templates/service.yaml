@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "keycloak.name" . }}-service
+  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  annotations:
+    # The OpenShift service-ca controller provisions the serving-certificate
+    # Secret named here, which the Keycloak CR mounts as spec.http.tlsSecret;
+    # the RHBK operator co-owns this Service and fills its spec.
+    service.beta.openshift.io/serving-cert-secret-name: {{ include "keycloak.name" . }}-internal-tls

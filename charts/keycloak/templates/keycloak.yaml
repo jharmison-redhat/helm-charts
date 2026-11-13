@@ -32,8 +32,6 @@ spec:
   http:
     httpEnabled: false
     tlsSecret: {{ include "keycloak.name" . }}-internal-tls
-    annotations:
-      service.beta.openshift.io/serving-cert-secret-name: {{ include "keycloak.name" . }}-internal-tls
   ingress:
     enabled: false
   instances: {{ .Values.replicas }}
