@@ -1,0 +1,48 @@
+{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- /* The platform Proxy object always exists on OpenShift, so the trustedCA
+reference and the user-ca-bundle trust bundle are configured through this
+hook Job instead of release-owned manifests; the Job runs after the release
+is applied and is deleted and recreated on upgrade so the immutable Job spec
+is never rejected */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trust-ca-set
+  namespace: cert-manager
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  # Outlasts the in-script Secret wait (plus headroom) so the script's own
+  # timeout diagnostic fires before the Job controller kills the pod
+  activeDeadlineSeconds: {{ add (.Values.ca.trustTimeoutSeconds | default 120) 30 }}
+  template:
+    spec:
+      serviceAccountName: trust-ca
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: trust-ca-set
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TRUST_CA_TIMEOUT
+          value: {{ .Values.ca.trustTimeoutSeconds | default 120 | quote }}
+        command: ["/mnt/trust-ca-set.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: trust-ca-config
+          mountPath: /mnt
+      volumes:
+      - name: trust-ca-config
+        configMap:
+          name: trust-ca-config
+          defaultMode: 493
+{{- end }}

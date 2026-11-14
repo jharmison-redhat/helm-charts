@@ -10,11 +10,29 @@ global:
 
 ca:
   enabled: true
-  # Seconds the trust-ca Job waits for the `cert-manager-ca` Secret to exist
-  # before failing; the Job's activeDeadlineSeconds covers this plus headroom
+  # Go duration of the self-provisioned CA certificate (the selfsigned-ca
+  # Certificate). The root is a stable, manually-managed anchor: renewal at
+  # ~2/3 of the lifetime reuses the private key (rotationPolicy is pinned to
+  # Never), and re-issuance is asynchronous — the trust bundle converges on
+  # the next hook run, not necessarily within the same upgrade. Ignored on
+  # the bring-your-own path, which trusts the given keypair as-is
+  duration: 87600h
+  # Seconds the trust-ca-set Job waits for the `cert-manager-ca` Secret to
+  # exist before failing; the Job's activeDeadlineSeconds covers this plus
+  # headroom
   trustTimeoutSeconds: 120
+  trust:
+    # Renders the whole cluster-trust surface (the trust-ca ServiceAccount
+    # and RBAC, the trust-ca-config ConfigMap, and the set/remove hook Jobs)
+    # only when this AND `ca.enabled` are true; ca-issuer issuance is
+    # unaffected. Flipping this off after an install stops rendering the
+    # pre-delete cleanup hook, so the Proxy reference and the bundle entry
+    # persist until removed manually or the chart is uninstalled with trust
+    # re-enabled (see the README's cluster-trust section)
+    enabled: true
   # Bring-your-own CA: set both to skip self-provisioning and trust the given
-  # keypair as `cert-manager-ca` instead
+  # keypair as `cert-manager-ca` instead; rendering fails when either is set
+  # while `ca.enabled` is false, or when only one of the two is set
   # tlsCrt: <PEM certificate>
   # tlsKey: <PEM key>
 

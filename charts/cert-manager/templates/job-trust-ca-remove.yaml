@@ -1,0 +1,42 @@
+{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- /* Walks back the trust integration's cluster footprint on uninstall —
+the Proxy reference (when this chart set it) and this chart's bundle entries —
+since release-owned manifests never own those objects; the Job runs before
+the release resources are deleted so the cert-manager-ca Secret it reads is
+still present */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trust-ca-remove
+  namespace: cert-manager
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      serviceAccountName: trust-ca
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: trust-ca-remove
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        command: ["/mnt/trust-ca-remove.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: trust-ca-config
+          mountPath: /mnt
+      volumes:
+      - name: trust-ca-config
+        configMap:
+          name: trust-ca-config
+          defaultMode: 493
+{{- end }}

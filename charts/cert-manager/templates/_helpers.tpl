@@ -12,6 +12,9 @@ whose values each concern governs:
 {{- define "cert-manager.validateCa" -}}
 {{- $crt := .Values.ca.tlsCrt -}}
 {{- $key := .Values.ca.tlsKey -}}
+{{- if and (or $crt $key) (not .Values.ca.enabled) -}}
+{{- fail "ca.tlsCrt/ca.tlsKey are set while ca.enabled is false — the bring-your-own keypair would be silently ignored (nothing consumes it while the CA family is disabled); set ca.enabled true to use it, or remove ca.tlsCrt/ca.tlsKey" -}}
+{{- end -}}
 {{- if or (and $crt (not $key)) (and $key (not $crt)) -}}
 {{- fail "ca.tlsCrt and ca.tlsKey must be set together — a half-supplied CA keypair would silently self-provision a different CA instead; set both to bring your own CA, or neither to self-provision" -}}
 {{- end -}}

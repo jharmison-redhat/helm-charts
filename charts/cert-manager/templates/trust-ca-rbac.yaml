@@ -1,0 +1,88 @@
+{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- /* The trust hook Jobs merge the CA into the openshift-config
+user-ca-bundle ConfigMap and patch the cluster Proxy's trustedCA reference,
+so every grant is resourceName-scoped: get on exactly the cert-manager-ca
+Secret, get/patch/delete on exactly the user-ca-bundle ConfigMap, and
+get/patch on exactly the Proxy/cluster object. Creating the bundle when
+absent cannot be resourceName-scoped — create on configmaps in
+openshift-config is the one grant broader than the hook's write surface
+(called out in the README) */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trust-ca
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: trust-ca
+  namespace: cert-manager
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  resourceNames:
+  - cert-manager-ca
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: trust-ca
+  namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: trust-ca
+subjects:
+- kind: ServiceAccount
+  name: trust-ca
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trust-ca
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  resourceNames:
+  - user-ca-bundle
+  verbs:
+  - get
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - proxies
+  resourceNames:
+  - cluster
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trust-ca
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trust-ca
+subjects:
+- kind: ServiceAccount
+  name: trust-ca
+  namespace: cert-manager
+{{- end }}

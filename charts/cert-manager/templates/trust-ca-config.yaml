@@ -1,0 +1,21 @@
+{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- /* The trust hook Jobs need their scripts and the shared libs (the
+conditional-write preamble and the PEM-trust program), so the
+trust-ca-config ConfigMap is gated alongside the Jobs and the trust-ca RBAC
+on ca.enabled and ca.trust.enabled; each Job mounts this ConfigMap and runs
+its own script from it */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trust-ca-config
+  namespace: cert-manager
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  trust-bundle.sh: |-
+    {{- .Files.Get "files/lib/trust-bundle.sh" | nindent 4 }}
+  trust-ca-set.sh: |-
+    {{- .Files.Get "files/trust-ca-set.sh" | nindent 4 }}
+  trust-ca-remove.sh: |-
+    {{- .Files.Get "files/trust-ca-remove.sh" | nindent 4 }}
+{{- end }}

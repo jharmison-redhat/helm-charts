@@ -12,29 +12,17 @@
 # clobbered.
 set -euo pipefail
 
+source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+
 APISERVER="apiservers.config.openshift.io/cluster"
 REFERENCE_FILE="${REFERENCE_FILE:-/mnt/api-reference.json}"
-REQUEST_TIMEOUT="30s"
-MAX_ATTEMPTS=5
-RETRY_SLEEP=2
 
-if ! command -v oc >/dev/null 2>&1; then
-  echo "ERROR: the oc CLI is not available in this image; cannot configure the APIServer certificate" >&2
-  exit 1
-fi
-
-if command -v jq >/dev/null 2>&1; then
-  JSON_TOOL=jq
-elif command -v python3 >/dev/null 2>&1; then
-  JSON_TOOL=python3
-else
-  echo "ERROR: neither jq nor python3 is available in this image; cannot patch the namedCertificates list" >&2
-  exit 1
-fi
+require_oc "cannot configure the APIServer certificate"
+select_json_tool "cannot patch the namedCertificates list"
 
 # Computes the namedCertificates merge patch from the live APIServer JSON
 # read from $1. Prints the patch on stdout, prints nothing when the live
-# list is exactly the expected one (no-op), and exits 3 with a diagnostic
+# list is exactly the expected one (no-op), and exits 4 with a diagnostic
 # when the live list is foreign.
 compute_patch() {
   case "$JSON_TOOL" in
@@ -56,7 +44,7 @@ compute_patch() {
                  | if length > 0 then join(", ") else "<none>" end))
              + ") — refusing to overwrite a foreign reference; remove the "
              + "existing namedCertificates entries manually, then re-run this hook")
-            | halt_error(3)
+            | halt_error(4)
           end' "$1"
       ;;
     python3)
@@ -81,7 +69,7 @@ else:
         + "configuration (names: " + shown + ") — refusing to overwrite a "
         + "foreign reference; remove the existing namedCertificates entries "
         + "manually, then re-run this hook\n")
-    sys.exit(3)
+    sys.exit(4)
 print(json.dumps({
     "metadata": {"resourceVersion": doc["metadata"]["resourceVersion"]},
     "spec": {"servingCerts": {"namedCertificates": want}},
@@ -91,56 +79,21 @@ PYEOF
   esac
 }
 
-workdir=$(mktemp -d)
-trap 'rm -rf "$workdir"' EXIT
-api_json="$workdir/apiserver.json"
-oc_err="$workdir/oc.err"
-patch_err="$workdir/patch.err"
-
-attempt=1
-while :; do
-  if ! oc get "$APISERVER" -o json --request-timeout="$REQUEST_TIMEOUT" \
-      >"$api_json" 2>"$oc_err"; then
-    if grep -q '(NotFound)' "$oc_err"; then
-      echo "ERROR: prerequisite missing: the cluster APIServer object ($APISERVER) does not exist on this cluster; this hook only applies to OpenShift clusters" >&2
-      exit 1
-    fi
-    cat "$oc_err" >&2
-    exit 1
-  fi
-
-  rc=0
-  merged=$(compute_patch "$api_json" 2>"$patch_err") || rc=$?
-  case "$rc" in
-    0) ;;
-    3) cat "$patch_err" >&2; exit 1 ;;
-    *)
-      echo "ERROR: failed to compute the namedCertificates merge patch from the live APIServer" >&2
-      cat "$patch_err" >&2
-      exit 1
-      ;;
-  esac
-  if [ -z "$merged" ]; then
-    echo "The APIServer already serves the expected certificate reference; no changes needed"
-    exit 0
-  fi
-
-  if oc patch "$APISERVER" --type=merge --patch="$merged" \
-      --request-timeout="$REQUEST_TIMEOUT" >/dev/null 2>"$oc_err"; then
+write_rc=0
+conditional_write "$APISERVER" compute_patch "namedCertificates" "APIServer" \
+  || write_rc=$?
+case $write_rc in
+  0)
     echo "API server certificate reference configured"
-    exit 0
-  fi
-
-  if ! grep -q '(Conflict)' "$oc_err"; then
-    cat "$oc_err" >&2
+    ;;
+  3)
+    echo "The APIServer already serves the expected certificate reference; no changes needed"
+    ;;
+  2)
+    echo "ERROR: prerequisite missing: the cluster APIServer object ($APISERVER) does not exist on this cluster; this hook only applies to OpenShift clusters" >&2
     exit 1
-  fi
-  if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-    echo "ERROR: the APIServer was modified concurrently on every attempt ($MAX_ATTEMPTS); giving up" >&2
-    cat "$oc_err" >&2
+    ;;
+  *)
     exit 1
-  fi
-  echo "APIServer was modified concurrently (conflict); retrying (attempt $attempt of $MAX_ATTEMPTS)" >&2
-  attempt=$((attempt + 1))
-  sleep "$RETRY_SLEEP"
-done
+    ;;
+esac
