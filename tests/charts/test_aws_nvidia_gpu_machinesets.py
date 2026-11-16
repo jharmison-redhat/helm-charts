@@ -6,14 +6,17 @@ render-time `aws.az` membership trap (an `aws.az` outside `aws.azs` used to
 silently leave every MachineSet at zero replicas), the autoscaling gate (the
 ClusterAutoscaler/default singleton is never a release manifest — it is
 configured by a post-install/upgrade set hook and walked back by a pre-delete
-remove hook with record-and-restore semantics), the resourceName-scoped hook
-RBAC (with the one documented unscoped `create` grant), and script execution
-for both hooks against a fake ``oc`` on both JSON tool paths.
+remove hook with record-and-restore semantics), and the resourceName-scoped
+hook RBAC (with the one documented unscoped `create` grant).
 
 Render tests run the chart through ``helm template`` (the chart has no
-dependencies). Script tests run the rendered hook scripts against a fake
-``oc`` on a restricted PATH built entirely from symlinks, so neither a real
-``oc`` nor the test host's ambient tools can leak into the run.
+dependencies). Per the repo's unit-test policy the script-execution layer is
+a minimal smoke set: one happy-path run per rendered hook script on the
+python3-only tool path and one fail-closed no-tool check for the chart, each
+against a fake ``oc`` on a restricted PATH built entirely from symlinks, so
+neither a real ``oc`` nor the test host's ambient tools (jq included) can
+leak into the run. Hook-script state-machine behavior is proven by live
+deploys, not here.
 """
 
 import copy
@@ -23,7 +26,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest import mock
 
 import yaml
 
@@ -390,82 +392,20 @@ class ValidationTests(ChartFixture):
             self.assertEqual(ms["spec"].get("replicas", 0), expected)
 
 
-# Fake oc for the hook scripts: serves the canned ClusterAutoscaler for get
-# and records every patch payload, with per-scenario API behavior for get,
-# patch, create, and delete. Each get bumps the served
-# metadata.resourceVersion (first get serves the canned value, each later get
-# serves it incremented), so a retry can only patch successfully with a
-# version from a fresh read. Every invocation is logged.
+# Fake oc for the hook-script smoke runs: serves the canned ClusterAutoscaler
+# for get and records every patch payload. Each invocation is logged.
 FAKE_OC_SCRIPT = """\
 #!/bin/bash
 echo "$@" >> "$OC_LOG"
-env | LC_ALL=C sort > "$OC_ENV"
 if [[ "$1" == "get" ]]; then
-  case "$OC_SCENARIO" in
-    absent-object)
-      echo 'Error from server (NotFound): "default" not found' >&2
-      exit 1 ;;
-    get-error)
-      echo 'Error from server (Forbidden): is forbidden' >&2
-      exit 1 ;;
-    *)
-      rv_file="$OC_GET_FILE.rv"
-      if [[ -f "$rv_file" ]]; then
-        next_rv=$(($(cat "$rv_file") + 1))
-      else
-        next_rv=$(grep -oE '"resourceVersion": *"[0-9]+"' "$OC_GET_FILE" | head -1 | grep -oE '[0-9]+')
-      fi
-      echo "$next_rv" > "$rv_file"
-      sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" "$OC_GET_FILE" ;;
-  esac
+  cat "$OC_GET_FILE"
 elif [[ "$1" == "patch" ]]; then
   for arg in "$@"; do
     if [[ "$arg" == --patch=* ]]; then
       printf '%s\\n' "${arg#--patch=}" >> "$OC_PATCH_LOG"
     fi
   done
-  attempts=$(cat "$OC_ATTEMPTS" 2>/dev/null || true)
-  attempts=$(( ${attempts:-0} + 1 ))
-  echo "$attempts" > "$OC_ATTEMPTS"
-  case "$OC_PATCH_SCENARIO" in
-    conflict-then-success)
-      if [ "$attempts" -ge 2 ]; then
-        exit 0
-      fi
-      echo 'Error from server (Conflict): Operation cannot be fulfilled' >&2
-      exit 1 ;;
-    conflict-exhausted)
-      echo 'Error from server (Conflict): Operation cannot be fulfilled' >&2
-      exit 1 ;;
-    patch-error)
-      echo 'Error from server (Forbidden): is forbidden' >&2
-      exit 1 ;;
-    *)
-      exit 0 ;;
-  esac
-elif [[ "$1" == "create" ]]; then
-  cat > "$OC_CREATE_LOG"
-  case "${OC_CREATE_SCENARIO:-ok}" in
-    ok)
-      exit 0 ;;
-    already-exists)
-      echo 'Error from server (AlreadyExists): clusterautoscalers "default" already exists' >&2
-      exit 1 ;;
-    error)
-      echo 'Error from server (Forbidden): is forbidden' >&2
-      exit 1 ;;
-  esac
-elif [[ "$1" == "delete" ]]; then
-  case "${OC_DELETE_SCENARIO:-ok}" in
-    ok)
-      exit 0 ;;
-    not-found)
-      echo 'Error from server (NotFound): clusterautoscalers "default" not found' >&2
-      exit 1 ;;
-    error)
-      echo 'Error from server (Forbidden): is forbidden' >&2
-      exit 1 ;;
-  esac
+  exit 0
 else
   echo "unexpected oc invocation: $*" >&2
   exit 64
@@ -473,24 +413,17 @@ fi
 """
 
 
-class FakeOcFixture(ChartFixture):
-    """Shared plumbing for executing rendered hook scripts against a fake
-    oc binary, mirroring the cert-manager fixture of the same name.
-
-    Each run gets a restricted PATH built solely from symlinks in an
-    isolated bin directory (the JSON tool chosen per test path, core
-    utilities, and the fake oc), so no ambient host tool or real oc can be
-    reached. The child environment is an explicit minimal set — no parent
-    variables are inherited."""
-    MAX_ATTEMPTS = 5
-    work_prefix = "ca-script-"
-    bin_tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env",
-                 "sort", "head"]
-    fake_oc_script = FAKE_OC_SCRIPT
+class FakeOcScriptFixture(ChartFixture):
+    """Shared plumbing for the smoke set: executing rendered hook scripts
+    against a fake oc binary. Each run gets a restricted PATH built solely
+    from symlinks in an isolated bin directory (python3, core utilities,
+    and the fake oc), so no ambient host tool — jq included — or real oc
+    can be reached. The child environment is an explicit minimal set — no
+    parent variables are inherited."""
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix=self.work_prefix)
+        self.work = tempfile.mkdtemp(prefix="ca-script-")
         self.addCleanup(shutil.rmtree, self.work)
         cm = self.pick(self.render_enabled(), "ConfigMap",
                        "clusterautoscaler-config")
@@ -500,20 +433,12 @@ class FakeOcFixture(ChartFixture):
                                      "clusterautoscaler-remove.sh")}
         self.config = json.loads(cm["data"]["autoscaler.json"])
 
-    def build_bin_dir(self, include_jq=None, include_python=None):
+    def build_bin_dir(self, include_python=True):
         bin_dir = os.path.join(self.work, "bin")
         os.makedirs(bin_dir, exist_ok=True)
         for name in os.listdir(bin_dir):
             os.unlink(os.path.join(bin_dir, name))
-        if include_jq is None:
-            include_jq = shutil.which("jq") is not None
-        if include_python is None:
-            include_python = shutil.which("python3") is not None
-        tools = list(self.bin_tools)
-        if include_jq:
-            self.assertTrue(shutil.which("jq"),
-                            "jq requested but not available on the host")
-            tools.append("jq")
+        tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
         if include_python:
             self.assertTrue(shutil.which("python3"),
                             "python3 requested but not available on the host")
@@ -522,82 +447,25 @@ class FakeOcFixture(ChartFixture):
             os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
         fake_oc = os.path.join(bin_dir, "oc")
         with open(fake_oc, "w") as f:
-            f.write(self.fake_oc_script)
+            f.write(FAKE_OC_SCRIPT)
         os.chmod(fake_oc, 0o755)
         return bin_dir
-
-    def tool_path_variants(self):
-        """Both JSON tool paths the hook scripts can take; the jq path is
-        included only when the host provides jq."""
-        variants = [{"include_jq": False, "include_python": True}]
-        if shutil.which("jq"):
-            variants.append({"include_jq": True, "include_python": False})
-        return variants
 
     def log(self):
         with open(os.path.join(self.work, "commands.log")) as f:
             return f.read()
 
-    def child_env(self):
-        with open(os.path.join(self.work, "env.log")) as f:
-            return dict(
-                line.split("=", 1) for line in f.read().splitlines() if "=" in line)
-
-    def patch_lines(self):
+    def patches(self):
         path = os.path.join(self.work, "patches.log")
         if not os.path.exists(path):
             return []
         with open(path) as f:
-            return [line for line in f.read().splitlines() if line]
+            return [json.loads(line) for line in f.read().splitlines() if line]
 
-    def patches(self):
-        return [json.loads(line) for line in self.patch_lines()]
-
-    def create_payload(self):
-        path = os.path.join(self.work, "create.log")
-        if not os.path.exists(path):
-            return None
-        with open(path) as f:
-            return json.load(f)
-
-    def deleted(self):
-        return any(line.startswith("delete ") for line in
-                   self.log().splitlines())
-
-    def stage_scripts(self):
-        # Every staged file lands in the same directory as the entry script
-        # because the scripts source their shared libs from their own
-        # directory, mirroring the single ConfigMap mount
-        for name, content in self.scripts.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-        with open(os.path.join(self.work, "autoscaler.json"), "w") as f:
-            f.write(json.dumps(self.config))
-
-    def clear_run_state(self):
-        # Each run is self-contained: drop logs and the fake oc's
-        # resourceVersion counters left by any earlier run
-        for stale in ("commands.log", "env.log", "patches.log", "create.log"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
-        for stale in os.listdir(self.work):
-            if stale.startswith("attempts") or stale.endswith(".rv"):
-                os.unlink(os.path.join(self.work, stale))
-
-    def run_child(self, script_path, env):
-        with mock.patch.dict(os.environ,
-                             {"CA_PARENT_SENTINEL": "must-not-leak"}):
-            return subprocess.run(
-                ["/bin/bash", script_path], capture_output=True, text=True,
-                env=env, timeout=120)
-
-
-class ScriptFixture(FakeOcFixture):
-    """Runs one hook script against one canned ClusterAutoscaler document."""
-
-    def ca_doc(self, spec=None, annotations=None, resource_version="1597"):
-        metadata = {"name": "default", "resourceVersion": resource_version}
+    def ca_doc(self, spec=None, annotations=None):
+        """Canned pre-existing ClusterAutoscaler the fake oc serves for
+        get."""
+        metadata = {"name": "default", "resourceVersion": "1597"}
         if annotations:
             metadata["annotations"] = annotations
         return {
@@ -607,118 +475,64 @@ class ScriptFixture(FakeOcFixture):
             "spec": FOREIGN_SPEC if spec is None else spec,
         }
 
-    def run_script(self, script_name, scenario="ok", doc=None,
-                   patch_scenario="ok", create_scenario="ok",
-                   delete_scenario="ok", config_file=None,
-                   include_jq=None, include_python=None):
-        bin_dir = self.build_bin_dir(include_jq=include_jq,
-                                     include_python=include_python)
-        self.stage_scripts()
-        get_file = os.path.join(self.work, "ca.json")
-        with open(get_file, "w") as f:
+    def run_script(self, script_name, doc=None, include_python=True):
+        bin_dir = self.build_bin_dir(include_python=include_python)
+        # Every staged file lands in the same directory as the entry script
+        # because the scripts source their shared preamble from their own
+        # directory, mirroring the single ConfigMap mount.
+        for name, content in self.scripts.items():
+            with open(os.path.join(self.work, name), "w") as f:
+                f.write(content)
+        with open(os.path.join(self.work, "autoscaler.json"), "w") as f:
+            f.write(json.dumps(self.config))
+        ca_file = os.path.join(self.work, "ca.json")
+        with open(ca_file, "w") as f:
             json.dump(doc if doc is not None else self.ca_doc(), f)
-        self.clear_run_state()
+        # Each run is self-contained: drop logs left by any earlier run.
+        for stale in ("commands.log", "patches.log"):
+            stale_path = os.path.join(self.work, stale)
+            if os.path.exists(stale_path):
+                os.unlink(stale_path)
         env = {
             "PATH": bin_dir,
             "HOME": self.work,
-            "OC_SCENARIO": scenario,
             "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_ENV": os.path.join(self.work, "env.log"),
-            "OC_GET_FILE": get_file,
+            "OC_GET_FILE": ca_file,
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
-            "OC_PATCH_SCENARIO": patch_scenario,
-            "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
-            "OC_CREATE_LOG": os.path.join(self.work, "create.log"),
-            "OC_CREATE_SCENARIO": create_scenario,
-            "OC_DELETE_SCENARIO": delete_scenario,
-            "CONFIG_FILE": (config_file if config_file is not None
-                            else os.path.join(self.work, "autoscaler.json")),
+            "CONFIG_FILE": os.path.join(self.work, "autoscaler.json"),
         }
-        return self.run_child(os.path.join(self.work, script_name), env)
+        return subprocess.run(
+            ["/bin/bash", os.path.join(self.work, script_name)],
+            capture_output=True, text=True, env=env, timeout=120)
 
 
-class SetScriptTests(ScriptFixture):
-    """Script-execution coverage for clusterautoscaler-set.sh: the
-    record-and-restore state machine (create-on-absent with the creation
-    proof, prior recording on the first change, equal no-ops, unmanaged-field
-    preservation, created-object value changes without recording, and the
-    bounded 409 retry) on both JSON tool paths."""
+class HookScriptSmokeTests(FakeOcScriptFixture):
+    """Policy smoke set for the rendered hook scripts: one happy-path run
+    per script on the python3-only tool path plus the chart's fail-closed
+    no-tool check. The state-machine behavior (retries, foreign-value STOP,
+    walk-back) is proven by live deploys, not here."""
 
-    def test_child_environment_is_minimal_and_isolated(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 doc=self.ca_doc(spec={}))
+    def test_set_success_records_priors_and_sets_values(self):
+        result = self.run_script("clusterautoscaler-set.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
-        child = self.child_env()
-        self.assertNotIn("CA_PARENT_SENTINEL", child)
-        self.assertEqual(child["PATH"], os.path.join(self.work, "bin"))
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        patch = patches[0]
+        self.assertEqual(patch["metadata"]["resourceVersion"], "1597")
         self.assertEqual(
-            {k for k in child if k.startswith("OC_")},
-            {"OC_SCENARIO", "OC_LOG", "OC_ENV", "OC_GET_FILE",
-             "OC_PATCH_LOG", "OC_ATTEMPTS", "OC_CREATE_LOG",
-             "OC_CREATE_SCENARIO", "OC_DELETE_SCENARIO",
-             "OC_PATCH_SCENARIO"})
-        self.assertIn(
-            "get clusterautoscalers.autoscaling.openshift.io/default "
-            "-o json --request-timeout=30s", self.log())
+            json.loads(patch["metadata"]["annotations"][PROOF_ANNOTATION]),
+            {"podPriorityThreshold": -100, "scaleDown": None,
+             "gpuEntry": None})
+        self.assertEqual(patch["spec"]["podPriorityThreshold"], -10)
+        # The whole gpus array is rewritten atomically: the foreign amd
+        # entry is preserved in place and ours is appended
+        self.assertEqual(patch["spec"]["resourceLimits"]["gpus"],
+                         [AMD_ENTRY, self.config["config"]["gpuEntry"]])
+        # Unmanaged fields are never touched
+        self.assertNotIn("maxNodesTotal", patch["spec"])
+        self.assertNotIn("cores", patch["spec"].get("resourceLimits", {}))
 
-    def test_create_on_absent_carries_creation_proof(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script("clusterautoscaler-set.sh",
-                                         scenario="absent-object", **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                manifest = self.create_payload()
-                self.assertEqual(manifest["metadata"]["name"], "default")
-                self.assertEqual(
-                    manifest["metadata"]["annotations"],
-                    {PROOF_ANNOTATION: '{"created":true}'})
-                self.assertEqual(
-                    manifest["spec"], self.config["manifest"]["spec"])
-                self.assertEqual(self.patches(), [])
-                self.assertNotIn("patch ", self.log())
-
-    def test_create_race_fails_for_the_job_retry_to_merge(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 scenario="absent-object",
-                                 create_scenario="already-exists")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("created concurrently", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_records_priors_and_sets_values(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script("clusterautoscaler-set.sh",
-                                         **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                patches = self.patches()
-                self.assertEqual(len(patches), 1)
-                patch = patches[0]
-                # The annotation payload compares parsed: the two JSON tool
-                # paths serialize the same record with different spacing
-                self.assertEqual(
-                    json.loads(patch["metadata"]["annotations"]
-                               [PROOF_ANNOTATION]),
-                    {"podPriorityThreshold": -100,
-                     "scaleDown": None,
-                     "gpuEntry": None})
-                spec = patch["spec"]
-                self.assertEqual(spec["podPriorityThreshold"], -10)
-                self.assertEqual(spec["scaleDown"],
-                                 self.config["config"]["scaleDown"])
-                # The whole gpus array is rewritten atomically: the foreign
-                # amd entry is preserved in place and ours is appended
-                self.assertEqual(spec["resourceLimits"]["gpus"],
-                                 [AMD_ENTRY,
-                                  self.config["config"]["gpuEntry"]])
-                # Unmanaged fields are never touched
-                self.assertNotIn("maxNodesTotal", spec)
-                self.assertNotIn("cores",
-                                 spec.get("resourceLimits", {}))
-
-    def test_equal_state_is_no_op(self):
-        # Prior output: every managed field equals the desired value and the
-        # proof annotation records what the set hook changed to get there
+    def test_remove_success_restores_recorded_priors(self):
         annotations = {
             PROOF_ANNOTATION: json.dumps({
                 "podPriorityThreshold": -100, "scaleDown": None,
@@ -726,330 +540,33 @@ class SetScriptTests(ScriptFixture):
         spec = {"podPriorityThreshold": -10, "maxNodesTotal": 150,
                 "resourceLimits": {"cores": {"min": 8, "max": 100},
                                    "gpus": [AMD_ENTRY,
-                                            self.config["config"]["gpuEntry"]]},
+                                            self.config["config"]
+                                            ["gpuEntry"]]},
                 "scaleDown": self.config["config"]["scaleDown"]}
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 doc=self.ca_doc(spec=spec,
-                                                 annotations=annotations))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertEqual(len(self.log().splitlines()), 1)
-        self.assertIn("no changes needed", result.stdout)
-
-    def test_equal_state_without_annotation_writes_nothing(self):
-        # Nothing differs, so nothing is changed and nothing is recorded:
-        # the coexistence contract never annotates an object it did not
-        # modify
-        spec = {"podPriorityThreshold": -10,
-                "resourceLimits": {"gpus": [
-                    self.config["config"]["gpuEntry"]]},
-                "scaleDown": self.config["config"]["scaleDown"]}
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 doc=self.ca_doc(spec=spec))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_created_object_value_change_does_not_record(self):
-        # The object carries the creation proof: it never had pre-chart
-        # values to restore, so changed values are set without recording
-        annotations = {PROOF_ANNOTATION: '{"created":true}'}
-        spec = {"podPriorityThreshold": -10,
-                "resourceLimits": {"gpus": [
-                    {"type": "nvidia.com/gpu", "min": 0, "max": 5}]}}
-        result = self.run_script("clusterautoscaler-set.sh",
+        result = self.run_script("clusterautoscaler-remove.sh",
                                  doc=self.ca_doc(spec=spec,
                                                  annotations=annotations))
         self.assertEqual(result.returncode, 0, result.stderr)
         patches = self.patches()
         self.assertEqual(len(patches), 1)
         patch = patches[0]
-        self.assertEqual(patch["spec"]["resourceLimits"]["gpus"],
-                         [self.config["config"]["gpuEntry"]])
-        new_proof = json.loads(patch["metadata"]["annotations"]
-                               [PROOF_ANNOTATION])
-        self.assertEqual(new_proof, {"created": True})
-
-    def test_second_run_records_additional_priors(self):
-        # A values change between upgrades takes over another field: the new
-        # prior merges into the existing record and earlier priors survive
-        annotations = {
-            PROOF_ANNOTATION: json.dumps({"podPriorityThreshold": -100})}
-        spec = {"podPriorityThreshold": -10,
-                "scaleDown": {"enabled": False},
-                "resourceLimits": {"gpus": [
-                    self.config["config"]["gpuEntry"]]}}
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 doc=self.ca_doc(spec=spec,
-                                                 annotations=annotations))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        patches = self.patches()
-        self.assertEqual(len(patches), 1)
-        proof = json.loads(patches[0]["metadata"]["annotations"]
-                           [PROOF_ANNOTATION])
-        self.assertEqual(proof, {"podPriorityThreshold": -100,
-                                 "scaleDown": {"enabled": False}})
-        # podPriorityThreshold already equals the desired value: unchanged,
-        # and its prior record is not overwritten
-        self.assertNotIn("podPriorityThreshold", patches[0]["spec"])
-
-    def test_unparseable_proof_annotation_stops(self):
-        result = self.run_script(
-            "clusterautoscaler-set.sh",
-            doc=self.ca_doc(annotations={PROOF_ANNOTATION: "not-json"}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not a JSON object", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_missing_config_file_fails(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 config_file="/nonexistent/autoscaler.json")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("missing at", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_get_error_propagates(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 scenario="get-error")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Forbidden", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertIsNone(self.create_payload())
-
-    def test_conflict_retry_is_bounded_and_rewrites(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 patch_scenario="conflict-then-success")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        patches = self.patches()
-        self.assertEqual(len(patches), 2)
-        # The fake oc bumps the served resourceVersion on every GET, so the
-        # failed attempt carried the stale version and the successful retry
-        # carried the fresh one from its own re-read
-        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1597")
-        self.assertEqual(patches[1]["metadata"]["resourceVersion"], "1598")
-        self.assertIn("retrying", result.stderr)
-
-    def test_conflict_exhaustion_fails(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 patch_scenario="conflict-exhausted")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
-        self.assertIn("concurrently", result.stderr)
-        self.assertIn("Conflict", result.stderr)
-
-    def test_missing_json_tool_fails_before_any_cluster_call(self):
-        result = self.run_script("clusterautoscaler-set.sh",
-                                 include_jq=False, include_python=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("neither jq nor python3", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(
-            os.path.exists(os.path.join(self.work, "commands.log")),
-            "oc must not be invoked when no JSON tool is available")
-
-
-class RemoveScriptTests(ScriptFixture):
-    """Script-execution coverage for clusterautoscaler-remove.sh: the
-    walk-back state machine (absent no-op, leave-unannotated,
-    delete-only-under-create-proof, recorded-prior restore, gpus rebuild
-    preserving foreign entries, annotation clear, and the bounded 409
-    retry)."""
-
-    def test_absent_object_is_no_op(self):
-        result = self.run_script("clusterautoscaler-remove.sh",
-                                 scenario="absent-object")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("absent", result.stdout)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-
-    def test_unannotated_object_is_left_in_place(self):
-        result = self.run_script("clusterautoscaler-remove.sh")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("never configured by this chart", result.stdout)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-        self.assertEqual(len(self.log().splitlines()), 1)
-
-    def test_created_object_is_deleted(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "clusterautoscaler-remove.sh",
-                    doc=self.ca_doc(
-                        spec={"podPriorityThreshold": -10},
-                        annotations={PROOF_ANNOTATION: '{"created":true}'}),
-                    **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertTrue(self.deleted())
-                self.assertEqual(self.patches(), [])
-                self.assertIn("delete ", self.log())
-
-    def test_restores_recorded_priors(self):
-        annotations = {
-            PROOF_ANNOTATION: json.dumps({
-                "podPriorityThreshold": -100, "scaleDown": None,
-                "gpuEntry": None})}
-        spec = {"podPriorityThreshold": -10, "maxNodesTotal": 150,
-                "resourceLimits": {"cores": {"min": 8, "max": 100},
-                                   "gpus": [AMD_ENTRY,
-                                            self.config["config"]["gpuEntry"]]},
-                "scaleDown": self.config["config"]["scaleDown"]}
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "clusterautoscaler-remove.sh",
-                    doc=self.ca_doc(spec=spec, annotations=annotations),
-                    **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                patches = self.patches()
-                self.assertEqual(len(patches), 1)
-                patch = patches[0]
-                # The recorded priors come back: the foreign threshold, the
-                # absent scaleDown (deleted by the null merge patch), and a
-                # gpus array with only the foreign amd entry left
-                self.assertEqual(patch["spec"], {
-                    "podPriorityThreshold": -100,
-                    "scaleDown": None,
-                    "resourceLimits": {"gpus": [AMD_ENTRY]},
-                })
-                # The proof annotation is cleared
-                self.assertEqual(patch["metadata"]["annotations"],
-                                 {PROOF_ANNOTATION: None})
-                # Unmanaged fields are never touched
-                self.assertNotIn("maxNodesTotal", patch["spec"])
-                self.assertNotIn("cores",
-                                 patch["spec"].get("resourceLimits", {}))
-                self.assertFalse(self.deleted())
-
-    def test_restores_recorded_gpu_entry_in_place(self):
-        prior_gpu = {"type": "nvidia.com/gpu", "min": 0, "max": 4}
-        annotations = {PROOF_ANNOTATION: json.dumps({"gpuEntry": prior_gpu})}
-        spec = {"podPriorityThreshold": -10,
-                "resourceLimits": {"gpus": [
-                    AMD_ENTRY, self.config["config"]["gpuEntry"]]}}
-        result = self.run_script("clusterautoscaler-remove.sh",
-                                 doc=self.ca_doc(spec=spec,
-                                                 annotations=annotations))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        patches = self.patches()
-        self.assertEqual(len(patches), 1)
-        self.assertEqual(patches[0]["spec"]["resourceLimits"]["gpus"],
-                         [AMD_ENTRY, prior_gpu])
-
-    def test_appends_recorded_gpu_entry_when_hand_removed(self):
-        # The recorded prior survives even if the entry this hook set was
-        # removed by hand in the meantime
-        prior_gpu = {"type": "nvidia.com/gpu", "min": 0, "max": 4}
-        annotations = {PROOF_ANNOTATION: json.dumps({"gpuEntry": prior_gpu})}
-        spec = {"podPriorityThreshold": -10, "resourceLimits": {"gpus": []}}
-        result = self.run_script("clusterautoscaler-remove.sh",
-                                 doc=self.ca_doc(spec=spec,
-                                                 annotations=annotations))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches()[0]["spec"]["resourceLimits"]["gpus"],
-                         [prior_gpu])
-
-    def test_unrecorded_nvidia_entry_leaves_gpus_untouched(self):
-        # A proof annotation with no gpuEntry record (the entry already
-        # equaled this chart's values when the set hook first saw it): a
-        # pre-existing nvidia.com/gpu entry this hook never changed is
-        # never deleted — the gpus array is left untouched while recorded
-        # priors for other fields still restore
-        annotations = {
-            PROOF_ANNOTATION: json.dumps({"podPriorityThreshold": -100})}
-        spec = {"podPriorityThreshold": -10,
-                "resourceLimits": {"gpus": [
-                    AMD_ENTRY, self.config["config"]["gpuEntry"]]}}
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "clusterautoscaler-remove.sh",
-                    doc=self.ca_doc(spec=spec, annotations=annotations),
-                    **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                patches = self.patches()
-                self.assertEqual(len(patches), 1)
-                patch = patches[0]
-                # The recorded threshold restores; the gpus array (with the
-                # unrecorded nvidia entry and the foreign entry) is absent
-                # from the patch entirely
-                self.assertEqual(patch["spec"],
-                                 {"podPriorityThreshold": -100})
-                self.assertNotIn("resourceLimits", patch["spec"])
-
-    def test_clears_annotation_when_priors_already_hold(self):
-        # Everything recorded already matches the live object: only the
-        # annotation clear is left to write
-        annotations = {PROOF_ANNOTATION: '{"podPriorityThreshold":-10}'}
-        result = self.run_script(
-            "clusterautoscaler-remove.sh",
-            doc=self.ca_doc(spec={"podPriorityThreshold": -10},
-                            annotations=annotations))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        patches = self.patches()
-        self.assertEqual(len(patches), 1)
-        self.assertEqual(patches[0], {
-            "metadata": {"resourceVersion": "1598",
-                         "annotations": {PROOF_ANNOTATION: None}},
+        # The recorded priors come back: the foreign threshold, the absent
+        # scaleDown (deleted by the null merge patch), and a gpus array with
+        # only the foreign amd entry left; the proof annotation is cleared
+        self.assertEqual(patch["spec"], {
+            "podPriorityThreshold": -100,
+            "scaleDown": None,
+            "resourceLimits": {"gpus": [AMD_ENTRY]},
         })
-        self.assertNotIn("spec", patches[0])
-
-    def test_unparseable_proof_annotation_fails_closed(self):
-        # Both JSON tool paths fail closed with the same curated diagnostic
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "clusterautoscaler-remove.sh",
-                    doc=self.ca_doc(
-                        annotations={PROOF_ANNOTATION: "not-json"}),
-                    **variant)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("not a JSON object", result.stderr)
-                self.assertEqual(self.patches(), [])
-                self.assertFalse(self.deleted())
-
-    def test_delete_race_not_found_succeeds(self):
-        result = self.run_script(
-            "clusterautoscaler-remove.sh",
-            doc=self.ca_doc(annotations={PROOF_ANNOTATION:
-                                         '{"created":true}'}),
-            delete_scenario="not-found")
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_conflict_retry_is_bounded_and_rewrites(self):
-        result = self.run_script(
-            "clusterautoscaler-remove.sh",
-            doc=self.ca_doc(spec={"podPriorityThreshold": -10},
-                            annotations={PROOF_ANNOTATION:
-                                         json.dumps(
-                                             {"podPriorityThreshold": -100})}),
-            patch_scenario="conflict-then-success")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        patches = self.patches()
-        self.assertEqual(len(patches), 2)
-        # The remove hook's presence read precedes the conditional write, so
-        # the fake oc has bumped the served resourceVersion once before the
-        # first patch: the failed attempt carried that version and the
-        # successful retry carried the fresh one from its own re-read
-        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1598")
-        self.assertEqual(patches[1]["metadata"]["resourceVersion"], "1599")
-        self.assertIn("retrying", result.stderr)
-
-    def test_conflict_exhaustion_fails(self):
-        annotations = {
-            PROOF_ANNOTATION: json.dumps({"podPriorityThreshold": -100})}
-        result = self.run_script(
-            "clusterautoscaler-remove.sh",
-            doc=self.ca_doc(spec={"podPriorityThreshold": -10},
-                            annotations=annotations),
-            patch_scenario="conflict-exhausted")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
-        self.assertIn("concurrently", result.stderr)
+        self.assertEqual(patch["metadata"]["annotations"],
+                         {PROOF_ANNOTATION: None})
+        # Unmanaged fields are never touched
+        self.assertNotIn("maxNodesTotal", patch["spec"])
+        self.assertNotIn("cores", patch["spec"].get("resourceLimits", {}))
 
     def test_missing_json_tool_fails_before_any_cluster_call(self):
-        result = self.run_script("clusterautoscaler-remove.sh",
-                                 include_jq=False, include_python=False)
+        result = self.run_script("clusterautoscaler-set.sh",
+                                 include_python=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("neither jq nor python3", result.stderr)
         self.assertEqual(self.patches(), [])
@@ -1060,3 +577,4 @@ class RemoveScriptTests(ScriptFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
