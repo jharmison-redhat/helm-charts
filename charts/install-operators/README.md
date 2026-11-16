@@ -16,12 +16,29 @@ OperatorGroup, etc.) including the following features:
 - Specifying an array of `approveCSVs` to enable approving updates to specific versions, but not others (so you can be
   really specific and know the versions you want are all there will ever be)
 - Picking other namespaces to install your operator in, whether using cluster-wide or namespace scopes
-- Installing an operator Subscription using a Job to apply it, to prevent GitOps from trying to own the Subscription and
-  reconciling it continuously (to enable behaviors like the `ingress` ClusterOperator's ownership of an OSSM
-  Subscription without conflicts)
+- Maintaining each operator's Subscription through hook Jobs rather than release ownership: a
+  `post-install,post-upgrade` hook converges the chart-managed fields (`source`, `sourceNamespace`, `channel`,
+  `installPlanApproval`, `startingCSV`, and the `env` list) to the configured values on every install and upgrade, and a
+  `pre-delete` hook removes the Subscription on uninstall only when the chart created it (a Subscription that
+  pre-existed is left in place). `ownSubscription: true` opts a specific operator into a release-owned Subscription
+  instead, which lets a GitOps tool own and continuously reconcile it — at the cost of those tools reporting the
+  Subscription's health and readiness as the release's, and of ordering issues when OLM-created resources (CSVs,
+  InstallPlans) are not yet established during the first sync.
+- Ensuring the operator's namespace through a `pre-install,pre-upgrade` hook rather than release ownership: an
+  explicitly-configured `namespace` that does not exist is created with the chart's provenance labels and the entry's
+  `namespaceLabels`/`namespaceAnnotations`; one that exists is merged additively with those keys only, and the hook
+  refuses to overwrite any of them with a foreign value. The hook runs over the unique namespace set of the enabled
+  entries and runs before Subscriptions apply, so the namespaces and their RBAC exist by the time the Subscriptions
+  land. Two entries sharing a namespace must declare identical `namespaceLabels`/`namespaceAnnotations` values — a
+  conflict fails the render naming both entries and the key. The shared `openshift-operators` default namespace is never
+  created or labeled by this chart. The hook's ServiceAccount, ClusterRole, ClusterRoleBinding, and script ConfigMap are
+  hooks themselves: they are created at hook weight -10 (before the weight-0 Job runs), removed after each successful
+  run, and re-created on the next install or upgrade, so nothing in the hook surface is release-tracked — the Job alone
+  is retained between a run and its retry via `before-hook-creation`.
 - Specifying an `env` array for a Subscription easily for an operator, to override default behavior.
-- Toggling any operator off entirely with `enabled: false` (default is `true` when unset), so its Namespace,
-  OperatorGroup, Subscription, and approval resources are not rendered.
+- Toggling any operator off entirely with `enabled: false` (default is `true` when unset), so its OperatorGroup,
+  Subscription, and approval resources are not rendered. A Namespace is never rendered regardless of the toggle —
+  operator namespaces are ensured by hook rather than owned by the release.
 - Manual InstallPlan approval Jobs run as Helm `post-install,post-upgrade` hooks (recreated on re-runs via
   `before-hook-creation`); under ArgoCD these map to `PostSync` and behave the same way.
 
@@ -32,7 +49,7 @@ operators:
   rhcl-operator: # pin to a very specific version, in a specific namespace, with an env var and all-namespaces RBAC
     channel: stable
     namespace: kuadrant-system
-    ownSubscription: false
+    ownSubscription: true
     installPlanApproval: Manual
     startingCSV: rhcl-operator.v1.3.4
     approveCSVs:
@@ -57,6 +74,44 @@ operators:
       targetNamespaces:
         - openshift-lws-operator
 ```
+
+(`ownSubscription: true` above opts the rhcl-operator into a release-owned Subscription; every other operator's
+Subscription is maintained by the chart's hook Jobs.)
+
+Uninstall contract
+---
+
+- **Namespaces persist.** Operator namespaces are never release manifests, so `helm uninstall` never deletes them —
+  including namespaces this chart created. Labels and annotations the hook merged into a pre-existing namespace, or
+  wrote into one it created, stay after the release is removed.
+- **Hook-created Subscriptions are removed.** The `pre-delete` hook deletes a Subscription only when it carries the
+  chart's `install-operators/proof` creation-proof annotation; a Subscription that existed before the release (or was
+  created outside it) is left in place with whatever field values the chart last converged.
+- **Release-owned Subscriptions are removed** with the release, as any release manifest is.
+
+Upgrading from 0.2.x
+---
+
+- **Namespaces are adopted, not deleted.** 0.2.x rendered each operator's Namespace as a release manifest, so a plain
+  upgrade would delete it — Helm removes old-manifest objects absent from the new manifest, and a Namespace deletion
+  cascades to everything inside it. On the upgrade path the pre-upgrade namespace hook runs before Helm's deletion pass
+  and stamps `helm.sh/resource-policy: keep` onto every managed namespace carrying the release's provenance labels
+  (`app.kubernetes.io/name: install-operators` plus a matching `app.kubernetes.io/instance`), as part of the same write
+  that merges the chart's metadata. From that point on the namespace is not release-owned, and `helm uninstall` no
+  longer removes it — the uninstall contract above applies in full.
+- **Subscriptions flip to hook ownership by default.** In 0.2.x each Subscription was a release manifest. Under the
+  0.3.0 default (`ownSubscription: false`) the Subscription is maintained by the chart's hook Jobs, so the first upgrade
+  deletes the previously release-owned Subscription along with the old manifest and the post-upgrade set hook recreates
+  it once (OLM then re-resolves the operator's CSVs from the Subscription). Set `ownSubscription: true` on an operator
+  to preserve release ownership for its Subscription instead.
+
+RBAC
+---
+
+The hook service accounts are scoped to exactly what their scripts do: `get`/`patch`/`delete` on the named Subscription
+in its namespace, and `get`/`patch` on the named Namespaces. Kubernetes RBAC cannot scope `create` by resource name, so
+creating a Subscription or Namespace requires one unscoped `create` grant per hook — the single exception to the
+name-scoping rule, and the reason the chart creates objects only when they are absent rather than re-creating them.
 
 Understanding what to put in values
 ---

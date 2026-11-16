@@ -5,6 +5,20 @@ operators: {}
 # Each operator config supports an `enabled` toggle (default: true). Set it to
 # `false` to skip rendering that operator's resources entirely.
 #
+# By default the operator's Subscription is NOT a release manifest: it is
+# created and kept up to date by hook Jobs on every install and upgrade, and
+# removed on uninstall only if the chart created it. Set `ownSubscription:
+# true` to opt into a release-owned Subscription for that operator
+# (GitOps tools can then own and continuously reconcile it — see the README
+# caveats).
+#
+# Entries with an explicit `namespace` get that namespace ensured by a
+# pre-install hook: created when absent, and when present merged additively
+# with the entry's `namespaceLabels` and `namespaceAnnotations` only. The hook
+# refuses to overwrite any of those keys with a foreign value, so keep the
+# values for a shared namespace identical across entries. Namespaces are never
+# deleted on uninstall.
+#
 # devspaces:
 #   enabled: true
 #   channel: stable

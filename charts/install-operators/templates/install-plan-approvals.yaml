@@ -2,6 +2,7 @@
 {{- if eq (include "install-operators.operatorEnabled" $config) "true" }}
 {{- $manualInstall := eq ($config.installPlanApproval | default "Automatic") "Manual" }}
 {{- $approveCSVs := $config.approveCSVs | default list }}
+{{- $opNamespace := include "install-operators.operatorNamespace" $config }}
 {{- if $manualInstall }}
 {{- if not $config.startingCSV }}
 {{- fail "Manual approvals with this chart require pinning a specific CSV with startingCSV for the operator" }}
@@ -14,7 +15,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: approve-{{ $operator }}
-  namespace: {{ $config.namespace | default "openshift-operators" }}
+  namespace: {{ $opNamespace }}
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
 ---
@@ -22,7 +23,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: approve-{{ $operator }}
-  namespace: {{ $config.namespace | default "openshift-operators" }}
+  namespace: {{ $opNamespace }}
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
 rules:
@@ -40,7 +41,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: approve-{{ $operator }}
-  namespace: {{ $config.namespace | default "openshift-operators" }}
+  namespace: {{ $opNamespace }}
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
 roleRef:
@@ -50,13 +51,13 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: approve-{{ $operator }}
-  namespace: {{ $config.namespace | default "openshift-operators" }}
+  namespace: {{ $opNamespace }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: approve-{{ $operator }}-script
-  namespace: {{ $config.namespace | default "openshift-operators" }}
+  namespace: {{ $opNamespace }}
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
 data:
@@ -67,7 +68,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: approve-{{ $operator }}
-  namespace: {{ $config.namespace | default "openshift-operators" }}
+  namespace: {{ $opNamespace }}
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
   annotations:

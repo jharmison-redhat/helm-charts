@@ -1,0 +1,128 @@
+{{- /* The operator namespaces are platform objects that frequently pre-exist
+(operator-suggested namespaces), so they are never release manifests —
+uninstall never deletes them. This pre-install/pre-upgrade hook Job creates
+absent ones and additively merges this chart's managed metadata into present
+ones, over the unique namespace set of the enabled operator entries.
+
+The Job's delivery objects (ServiceAccount, ClusterRole, ClusterRoleBinding,
+script ConfigMap) are themselves pre-install/pre-upgrade hooks at weight -10,
+so they exist before the weight-0 Job's pod is admitted, and they are cleaned
+up after each successful run and re-created before the next one — no
+release-tracked residue. before-hook-creation also removes them after a
+failed run, so the retry never hits AlreadyExists. */ -}}
+{{- $namespaces := fromJsonArray (include "install-operators.managedNamespaces" .) }}
+{{- if $namespaces }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ensure-operator-namespaces
+  labels:
+    {{- include "install-operators.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ensure-operator-namespaces
+  labels:
+    {{- include "install-operators.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    resourceNames:
+      {{- range $namespaces }}
+      - {{ .name }}
+      {{- end }}
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ensure-operator-namespaces
+  labels:
+    {{- include "install-operators.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ensure-operator-namespaces
+subjects:
+  - kind: ServiceAccount
+    name: ensure-operator-namespaces
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ensure-operator-namespaces
+  labels:
+    {{- include "install-operators.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  ensure-namespaces.sh: |-
+    {{- .Files.Get "files/ensure-namespaces.sh" | nindent 4 }}
+  namespaces.json: {{ $namespaces | toJson | quote }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ensure-operator-namespaces
+  labels:
+    {{- include "install-operators.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: ensure-operator-namespaces
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ensure-operator-namespaces
+          image: {{ .Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/mnt/ensure-namespaces.sh"]
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: ensure-operator-namespaces-script
+              mountPath: /mnt
+      volumes:
+        - name: ensure-operator-namespaces-script
+          configMap:
+            name: ensure-operator-namespaces
+            defaultMode: 493
+{{- end }}
