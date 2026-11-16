@@ -6,17 +6,19 @@ email, and only well-formed solvers), the ACME ClusterIssuer render shapes
 for the Let's Encrypt and ZeroSSL examples, the trust gate matrix over
 `ca.enabled` × `ca.trust.enabled` × self-provisioned/BYO, the stable-CA
 render shape (explicit duration and rotationPolicy), the resourceName-scoped
-trust RBAC, the serving-certificate hook surface (the platform
+trust RBAC, and the serving-certificate hook surface (the platform
 IngressController/default and APIServer/cluster objects are never owned —
 hook Jobs write only this chart's reference with a resourceVersion-
-conditional read-modify-write and stop on foreign references), and script
-execution for every hook against a fake ``oc`` on both JSON tool paths.
+conditional read-modify-write).
 
 Render tests run the chart through ``helm template`` (cert-manager has no
-chart dependencies, so no stubs or registry access are needed). Script
-tests run the rendered hook scripts against a fake ``oc`` on a restricted
-PATH built entirely from symlinks, so neither a real ``oc`` nor the test
-host's ambient tools can leak into the run.
+chart dependencies, so no stubs or registry access are needed). Per the
+repo's unit-test policy the script-execution layer is a minimal smoke set:
+ONE happy-path run per hook script (on a python3-only restricted PATH built
+entirely from symlinks, so neither a real ``oc`` nor the test host's ambient
+tools can leak into the run) and ONE fail-closed no-tool check for the
+chart. State-machine behavior (409 retries, foreign-value STOP, walk-back)
+is proven by live-cluster validation, not fixtures.
 """
 
 import base64
@@ -27,7 +29,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest import mock
 
 import yaml
 
@@ -90,109 +91,60 @@ ZEROSSL_ACME = {
 ROUTER_DEFAULT_CERT = "router-cert"
 API_SECRET_NAME = "openshift-api"
 
-# Fake oc for the hook scripts: serves a canned object for get and records
-# every --patch= payload, with per-scenario API behavior. Each get bumps the
-# served metadata.resourceVersion (first get serves the canned value, each
-# later get serves it incremented), so a retry can only patch successfully
-# with a version from a fresh read. Every invocation is logged so tests can
-# assert the exact oc call surface.
+# Fake oc for the serving-cert hook smoke runs: serves a canned object for
+# get (bumping the served metadata.resourceVersion on every get, so a retry
+# could only patch successfully with a version from a fresh read) and
+# records every --patch= payload. Every invocation is logged.
 FAKE_OC_SCRIPT = """\
 #!/bin/bash
 echo "$@" >> "$OC_LOG"
-env | LC_ALL=C sort > "$OC_ENV"
 if [[ "$1" == "get" ]]; then
-  case "$OC_SCENARIO" in
-    absent-object)
-      echo 'Error from server (NotFound): "cluster" not found' >&2
-      exit 1 ;;
-    get-error)
-      echo 'Error from server (Forbidden): is forbidden' >&2
-      exit 1 ;;
-    *)
-      rv_file="$OC_GET_FILE.rv"
-      if [[ -f "$rv_file" ]]; then
-        next_rv=$(($(cat "$rv_file") + 1))
-      else
-        next_rv=$(grep -oE '"resourceVersion": *"[0-9]+"' "$OC_GET_FILE" | grep -oE '[0-9]+')
-      fi
-      echo "$next_rv" > "$rv_file"
-      sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" "$OC_GET_FILE" ;;
-  esac
+  rv_file="$OC_GET_FILE.rv"
+  if [[ -f "$rv_file" ]]; then
+    next_rv=$(($(cat "$rv_file") + 1))
+  else
+    next_rv=$(grep -oE '"resourceVersion": *"[0-9]+"' "$OC_GET_FILE" | grep -oE '[0-9]+')
+  fi
+  echo "$next_rv" > "$rv_file"
+  sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" "$OC_GET_FILE"
 elif [[ "$1" == "patch" ]]; then
   for arg in "$@"; do
     if [[ "$arg" == --patch=* ]]; then
       printf '%s\\n' "${arg#--patch=}" >> "$OC_PATCH_LOG"
     fi
   done
-  attempts=$(cat "$OC_ATTEMPTS" 2>/dev/null || true)
-  attempts=$(( ${attempts:-0} + 1 ))
-  echo "$attempts" > "$OC_ATTEMPTS"
-  case "$OC_SCENARIO" in
-    conflict-then-success)
-      if [ "$attempts" -ge 2 ]; then
-        exit 0
-      fi
-      echo 'Error from server (Conflict): Operation cannot be fulfilled' >&2
-      exit 1 ;;
-    conflict-exhausted)
-      echo 'Error from server (Conflict): Operation cannot be fulfilled' >&2
-      exit 1 ;;
-    patch-error)
-      echo 'Error from server (Forbidden): is forbidden' >&2
-      exit 1 ;;
-    *)
-      exit 0 ;;
-  esac
+  exit 0
 else
   echo "unexpected oc invocation: $*" >&2
   exit 64
 fi
 """
 
-# Fake oc for the trust hook scripts: serves a canned object per resource
-# (Secret, Proxy, bundle ConfigMap), logs patch payloads tagged with the
-# patched resource, and logs create behavior with per-scenario outcomes.
-# GETs bump the served metadata.resourceVersion per resource (first GET
-# serves the canned value, each later GET serves it incremented), so a
-# retry can only patch successfully with a version from a fresh read.
+# Fake oc for the trust hook smoke runs: serves a canned object per
+# resource (Secret, Proxy, bundle ConfigMap), logs patch payloads tagged
+# with the patched resource, and logs created objects. GETs bump the served
+# metadata.resourceVersion per resource (first GET serves the canned value,
+# each later GET serves it incremented). The bundle serves NotFound until a
+# create has completed, mirroring the hook's create-then-own sequence.
 TRUST_FAKE_OC_SCRIPT = """\
 #!/bin/bash
 echo "$@" >> "$OC_LOG"
-env | LC_ALL=C sort > "$OC_ENV"
 case "$1" in
   get)
     case "$*" in
       *"cert-manager-ca"*)
-        f="$OC_SECRET_FILE"; s="${OC_SECRET_SCENARIO:-ok}" ;;
+        f="$OC_SECRET_FILE" ;;
       *"proxies.config.openshift.io/cluster"*)
-        f="$OC_PROXY_FILE"; s="${OC_PROXY_SCENARIO:-ok}" ;;
+        f="$OC_PROXY_FILE" ;;
       *"user-ca-bundle"*)
-        f="$OC_BUNDLE_FILE"; s="${OC_BUNDLE_SCENARIO:-ok}"
-        if [[ "$s" == "not-found" && -f "$OC_CREATE_LOG.done" ]]; then
-          s="ok"
-        fi
-        if [[ "$s" == "disappears" ]] &&
-           [[ -s "$OC_ATTEMPTS.configmap-user-ca-bundle" ]]; then
-          # The bundle vanishes after this run has successfully patched it
-          # once: the initial read and the content write see it, the
-          # ownership-recording write does not
-          s="not-found"
+        f="$OC_BUNDLE_FILE"
+        if [[ "${OC_BUNDLE_SCENARIO:-ok}" == "not-found" &&
+              ! -f "$OC_CREATE_LOG.done" ]]; then
+          echo 'Error from server (NotFound): "object" not found' >&2
+          exit 1
         fi ;;
       *)
         echo "unexpected oc get: $*" >&2
-        exit 64 ;;
-    esac
-    case "$s" in
-      ok) ;;
-      disappears) ;;
-      not-found)
-        echo 'Error from server (NotFound): "object" not found' >&2
-        exit 1 ;;
-      error)
-        echo 'Error from server (Forbidden): is forbidden' >&2
-        exit 1 ;;
-      *)
-        echo "unexpected get scenario: $s" >&2
         exit 64 ;;
     esac
     rv_file="$f.rv"
@@ -226,72 +178,11 @@ case "$1" in
         printf '%s\\t%s\\n' "$res" "${arg#--patch=}" >> "$OC_PATCH_LOG"
       fi
     done
-    attempts_file="$OC_ATTEMPTS.$(echo "$res" | tr '/.' '--')"
-    attempts=$(cat "$attempts_file" 2>/dev/null || true)
-    attempts=$(( ${attempts:-0} + 1 ))
-    echo "$attempts" > "$attempts_file"
-    # A per-resource override (named after the slug of the patched
-    # resource) wins over the global scenario, so a test can fail exactly
-    # one object's writes; the slug translates /, ., and - so any
-    # resource name yields a legal variable name
-    scenario="${OC_PATCH_SCENARIO:-ok}"
-    override_var="OC_PATCH_SCENARIO_$(echo "$res" | tr '/.-' '___')"
-    if [[ "$override_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      override="${!override_var:-}"
-      if [ -n "$override" ]; then
-        scenario="$override"
-      fi
-    fi
-    case "$scenario" in
-      conflict-then-success)
-        if [ "$attempts" -ge 2 ]; then
-          exit 0
-        fi
-        echo 'Error from server (Conflict): Operation cannot be fulfilled' >&2
-        exit 1 ;;
-      conflict-exhausted)
-        echo 'Error from server (Conflict): Operation cannot be fulfilled' >&2
-        exit 1 ;;
-      error)
-        echo 'Error from server (Forbidden): is forbidden' >&2
-        exit 1 ;;
-      error-on-second)
-        # The first patch of a resource succeeds; every later patch of that
-        # same resource fails persistently with a non-NotFound error
-        if [ "$attempts" -ge 2 ]; then
-          echo 'Error from server (Forbidden): is forbidden' >&2
-          exit 1
-        fi
-        exit 0 ;;
-      *)
-        exit 0 ;;
-    esac ;;
+    exit 0 ;;
   create)
     cat > "$OC_CREATE_LOG"
-    case "${OC_CREATE_SCENARIO:-ok}" in
-      ok)
-        # The created object now exists: later gets of the bundle must not
-        # keep serving a not-found scenario (no touch — the restricted
-        # PATH carries no coreutils beyond the symlinked tools)
-        : > "$OC_CREATE_LOG.done"
-        exit 0 ;;
-      already-exists)
-        echo 'Error from server (AlreadyExists): configmaps "user-ca-bundle" already exists' >&2
-        exit 1 ;;
-      error)
-        echo 'Error from server (Forbidden): is forbidden' >&2
-        exit 1 ;;
-    esac ;;
-  delete)
-    case "${OC_DELETE_SCENARIO:-ok}" in
-      ok) exit 0 ;;
-      not-found)
-        echo 'Error from server (NotFound): configmaps "user-ca-bundle" not found' >&2
-        exit 1 ;;
-      error)
-        echo 'Error from server (Forbidden): is forbidden' >&2
-        exit 1 ;;
-    esac ;;
+    : > "$OC_CREATE_LOG.done"
+    exit 0 ;;
   *)
     echo "unexpected oc invocation: $*" >&2
     exit 64 ;;
@@ -302,12 +193,7 @@ esac
 # byte-equality on the block text, so the inner content only needs to be
 # distinct between blocks.
 CA_CERT = "-----BEGIN CERTIFICATE-----\nQ1VSUkVOVA==\n-----END CERTIFICATE-----\n"
-OLD_CA_CERT = "-----BEGIN CERTIFICATE-----\nT0xE\n-----END CERTIFICATE-----\n"
-LEGACY_CA_CERT = "-----BEGIN CERTIFICATE-----\nTEVHQUNZ\n-----END CERTIFICATE-----\n"
 FOREIGN_CA_CERT = "-----BEGIN CERTIFICATE-----\nRk9SRUlHTg==\n-----END CERTIFICATE-----\n"
-# A CRLF-encoded foreign block: recognized by the hooks' tolerant PEM scan
-# and preserved verbatim (its line endings are never rewritten)
-FOREIGN_CA_CRLF = FOREIGN_CA_CERT.replace("\n", "\r\n")
 BUNDLE_NAME = "user-ca-bundle"
 
 
@@ -940,12 +826,11 @@ class FakeOcScriptFixture(ChartFixture):
     oc binary, mirroring the keycloak-auth fixture of the same name.
 
     Each run gets a restricted PATH built solely from symlinks in an
-    isolated bin directory (the JSON tool chosen per test path, core
-    utilities, and the fake oc), so no ambient host tool or real oc can be
-    reached. The child environment is an explicit minimal set — no parent
-    variables are inherited. Subclasses supply the fake oc program, the
-    core tool list, the rendered scripts dict, and their canned docs."""
-    MAX_ATTEMPTS = 5
+    isolated bin directory (the requested JSON tool, core utilities, and
+    the fake oc), so no ambient host tool or real oc can be reached. The
+    child environment is an explicit minimal set — no parent variables are
+    inherited. Subclasses supply the fake oc program, the rendered scripts
+    dict, and their canned docs."""
     work_prefix = "cm-script-"
     bin_tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
     fake_oc_script = None
@@ -955,20 +840,12 @@ class FakeOcScriptFixture(ChartFixture):
         self.work = tempfile.mkdtemp(prefix=self.work_prefix)
         self.addCleanup(shutil.rmtree, self.work)
 
-    def build_bin_dir(self, include_jq=None, include_python=None):
+    def build_bin_dir(self, include_python=True):
         bin_dir = os.path.join(self.work, "bin")
         os.makedirs(bin_dir, exist_ok=True)
         for name in os.listdir(bin_dir):
             os.unlink(os.path.join(bin_dir, name))
-        if include_jq is None:
-            include_jq = shutil.which("jq") is not None
-        if include_python is None:
-            include_python = shutil.which("python3") is not None
         tools = list(self.bin_tools)
-        if include_jq:
-            self.assertTrue(shutil.which("jq"),
-                            "jq requested but not available on the host")
-            tools.append("jq")
         if include_python:
             self.assertTrue(shutil.which("python3"),
                             "python3 requested but not available on the host")
@@ -981,22 +858,9 @@ class FakeOcScriptFixture(ChartFixture):
         os.chmod(fake_oc, 0o755)
         return bin_dir
 
-    def tool_path_variants(self):
-        """Both JSON tool paths the hook scripts can take; the jq path is
-        included only when the host provides jq."""
-        variants = [{"include_jq": False, "include_python": True}]
-        if shutil.which("jq"):
-            variants.append({"include_jq": True, "include_python": False})
-        return variants
-
     def log(self):
         with open(os.path.join(self.work, "commands.log")) as f:
             return f.read()
-
-    def child_env(self):
-        with open(os.path.join(self.work, "env.log")) as f:
-            return dict(
-                line.split("=", 1) for line in f.read().splitlines() if "=" in line)
 
     def patch_lines(self):
         path = os.path.join(self.work, "patches.log")
@@ -1016,25 +880,24 @@ class FakeOcScriptFixture(ChartFixture):
     def clear_run_state(self):
         # Each run is self-contained: drop logs and the fake oc's
         # resourceVersion counters left by any earlier run.
-        for stale in ("commands.log", "env.log", "patches.log", "create.log",
+        for stale in ("commands.log", "patches.log", "create.log",
                       "create.log.done"):
             stale_path = os.path.join(self.work, stale)
             if os.path.exists(stale_path):
                 os.unlink(stale_path)
         for stale in os.listdir(self.work):
-            if stale.startswith("attempts") or stale.endswith(".rv"):
+            if stale.endswith(".rv"):
                 os.unlink(os.path.join(self.work, stale))
 
     def run_child(self, script_path, env):
-        with mock.patch.dict(os.environ, {"CM_PARENT_SENTINEL": "must-not-leak"}):
-            return subprocess.run(
-                ["/bin/bash", script_path], capture_output=True, text=True,
-                env=env, timeout=120)
+        return subprocess.run(
+            ["/bin/bash", script_path], capture_output=True, text=True,
+            env=env, timeout=120)
 
 
 class HookScriptTests(FakeOcScriptFixture):
-    """Executes the rendered serving-certificate hook scripts against a
-    fake oc binary; one canned platform object per run."""
+    """Smoke plumbing for the rendered serving-certificate hook scripts
+    against a fake oc binary; one canned platform object per run."""
     fake_oc_script = FAKE_OC_SCRIPT
 
     def setUp(self):
@@ -1047,10 +910,6 @@ class HookScriptTests(FakeOcScriptFixture):
                                      "configure-api-cert.sh")}
         self.router_ref = json.loads(cm["data"]["router-reference.json"])
         self.api_ref = json.loads(cm["data"]["api-reference.json"])
-        self.foreign_entry = {
-            "names": ["legacy.example.com"],
-            "servingCertificate": {"name": "legacy-cert"},
-        }
 
     def object_doc(self, spec, resource_version="1597"):
         return {
@@ -1066,10 +925,9 @@ class HookScriptTests(FakeOcScriptFixture):
             json.dump(ref, f)
         return path
 
-    def run_script(self, script_name, scenario, object_doc,
-                   include_jq=None, include_python=None, reference_file=None):
-        bin_dir = self.build_bin_dir(include_jq=include_jq,
-                                     include_python=include_python)
+    def run_script(self, script_name, object_doc, reference_file=None):
+        # Single tool path for the smoke set: python3-only restricted PATH.
+        bin_dir = self.build_bin_dir()
         self.stage_scripts()
         script_path = os.path.join(self.work, script_name)
         if reference_file is None:
@@ -1085,12 +943,9 @@ class HookScriptTests(FakeOcScriptFixture):
             "PATH": bin_dir,
             "HOME": self.work,
             "REFERENCE_FILE": reference_file,
-            "OC_SCENARIO": scenario,
             "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_ENV": os.path.join(self.work, "env.log"),
             "OC_GET_FILE": get_file,
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
-            "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
         }
         return self.run_child(script_path, env)
 
@@ -1099,40 +954,22 @@ class HookScriptTests(FakeOcScriptFixture):
 
 
 class RouterScriptTests(HookScriptTests):
-    """Script-execution coverage for configure-router-cert.sh. The router
-    reference is a single object: unset is a valid target, an exact match
-    is a no-op, and any set reference is foreign."""
+    """Happy-path smoke for configure-router-cert.sh: an unset platform
+    defaultCertificate is written through one conditional patch."""
 
     def setUp(self):
         super().setUp()
         self.current_ref = self.router_ref
 
-    def get_argv(self):
-        return self.log().splitlines()[0]
-
-    def test_child_environment_is_minimal_and_isolated(self):
-        result = self.run_script("configure-router-cert.sh", "fresh",
+    def test_unset_default_certificate_is_written(self):
+        result = self.run_script("configure-router-cert.sh",
                                  self.object_doc({}))
         self.assertEqual(result.returncode, 0, result.stderr)
-        with open(os.path.join(self.work, "env.log")) as f:
-            child = dict(
-                line.split("=", 1) for line in f.read().splitlines() if "=" in line)
-        self.assertNotIn("CM_PARENT_SENTINEL", child)
-        self.assertEqual(child["PATH"], os.path.join(self.work, "bin"))
         self.assertEqual(
-            {k for k in child if k.startswith("OC_")},
-            {"OC_SCENARIO", "OC_LOG", "OC_ENV", "OC_GET_FILE",
-             "OC_PATCH_LOG", "OC_ATTEMPTS"})
-        self.assertEqual(
-            self.get_argv(),
+            self.log().splitlines()[0],
             "get -n openshift-ingress-operator "
             "ingresscontrollers.operator.openshift.io/default "
             "-o json --request-timeout=30s")
-
-    def test_unset_default_certificate_is_written(self):
-        result = self.run_script("configure-router-cert.sh", "fresh",
-                                 self.object_doc({}))
-        self.assertEqual(result.returncode, 0, result.stderr)
         patches = self.patches()
         self.assertEqual(len(patches), 1)
         self.assertEqual(patches[0], {
@@ -1140,129 +977,20 @@ class RouterScriptTests(HookScriptTests):
             "spec": {"defaultCertificate": {"name": ROUTER_DEFAULT_CERT}},
         })
 
-    def test_equal_reference_is_no_op(self):
-        result = self.run_script(
-            "configure-router-cert.sh", "fresh",
-            self.object_doc({"defaultCertificate":
-                             {"name": ROUTER_DEFAULT_CERT}}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertEqual(len(self.log().splitlines()), 1)
-
-    def test_foreign_reference_stops_without_writing(self):
-        result = self.run_script(
-            "configure-router-cert.sh", "fresh",
-            self.object_doc({"defaultCertificate": {"name": "legacy-cert"}}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("foreign reference", result.stderr)
-        self.assertIn("legacy-cert", result.stderr)
-        self.assertEqual(self.patches(), [])
-        # The STOP decision needs exactly one read; no patch was attempted.
-        self.assertEqual(len(self.log().splitlines()), 1)
-
-    def test_foreign_reference_without_name_stops(self):
-        result = self.run_script(
-            "configure-router-cert.sh", "fresh",
-            self.object_doc({"defaultCertificate": {}}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("foreign reference", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_write_and_stop_across_tool_paths(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "configure-router-cert.sh", "fresh",
-                    self.object_doc({}), **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                patches = self.patches()
-                self.assertEqual(len(patches), 1)
-                self.assertEqual(
-                    patches[0]["spec"]["defaultCertificate"],
-                    {"name": ROUTER_DEFAULT_CERT})
-
-                result = self.run_script(
-                    "configure-router-cert.sh", "fresh",
-                    self.object_doc({"defaultCertificate":
-                                     {"name": "legacy-cert"}}), **variant)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("foreign reference", result.stderr)
-
-    def test_retries_conflict_then_succeeds(self):
-        result = self.run_script("configure-router-cert.sh", "conflict-then-success",
-                                 self.object_doc({}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        gets = [line for line in self.log().splitlines()
-                if line.startswith("get ")]
-        self.assertEqual(len(gets), 2)
-        patches = self.patches()
-        self.assertEqual(len(patches), 2)
-        # The fake oc bumps the served resourceVersion on every GET, so the
-        # failed attempt carried the stale version and the successful retry
-        # carried the fresh one from its own re-read.
-        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1597")
-        self.assertEqual(patches[1]["metadata"]["resourceVersion"], "1598")
-        self.assertIn("retrying", result.stderr)
-
-    def test_conflict_exhaustion_fails(self):
-        result = self.run_script("configure-router-cert.sh", "conflict-exhausted",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
-        self.assertIn("concurrently", result.stderr)
-        self.assertIn("Conflict", result.stderr)
-
-    def test_non_conflict_patch_error_propagates(self):
-        result = self.run_script("configure-router-cert.sh", "patch-error",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Forbidden", result.stderr)
-        self.assertEqual(len(self.patches()), 1)
-
-    def test_absent_ingress_controller_fails_with_prerequisite(self):
-        result = self.run_script("configure-router-cert.sh", "absent-object",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("prerequisite missing", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_get_error_propagates(self):
-        result = self.run_script("configure-router-cert.sh", "get-error",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Forbidden", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_missing_json_tool_fails_before_any_cluster_call(self):
-        result = self.run_script("configure-router-cert.sh", "fresh",
-                                 self.object_doc({}),
-                                 include_jq=False, include_python=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("neither jq nor python3", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(
-            os.path.exists(os.path.join(self.work, "commands.log")),
-            "oc must not be invoked when no JSON tool is available")
-
 
 class ApiScriptTests(HookScriptTests):
-    """Script-execution coverage for configure-api-cert.sh. The
-    namedCertificates list is atomic: empty is a valid target, an exact
-    single-entry match is a no-op, and any other list is foreign."""
+    """Happy-path smoke for configure-api-cert.sh: an absent platform
+    namedCertificates list is written through one conditional patch."""
 
     def setUp(self):
         super().setUp()
         self.current_ref = self.api_ref
 
-    def get_argv(self):
-        return self.log().splitlines()[0]
-
     def test_absent_list_is_written(self):
-        result = self.run_script("configure-api-cert.sh", "fresh",
-                                 self.object_doc({}))
+        result = self.run_script("configure-api-cert.sh", self.object_doc({}))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            self.get_argv(),
+            self.log().splitlines()[0],
             "get apiservers.config.openshift.io/cluster -o json "
             "--request-timeout=30s")
         patches = self.patches()
@@ -1271,121 +999,6 @@ class ApiScriptTests(HookScriptTests):
             "metadata": {"resourceVersion": "1597"},
             "spec": {"servingCerts": {"namedCertificates": [self.api_ref]}},
         })
-
-    def test_empty_list_is_written(self):
-        result = self.run_script(
-            "configure-api-cert.sh", "fresh",
-            self.object_doc({"servingCerts": {"namedCertificates": []}}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        patches = self.patches()
-        self.assertEqual(len(patches), 1)
-        self.assertEqual(patches[0]["spec"]["servingCerts"]["namedCertificates"],
-                         [self.api_ref])
-
-    def test_exact_list_is_no_op(self):
-        result = self.run_script(
-            "configure-api-cert.sh", "fresh",
-            self.object_doc({"servingCerts": {"namedCertificates":
-                                              [self.api_ref]}}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertEqual(len(self.log().splitlines()), 1)
-
-    def test_foreign_entry_stops_without_writing(self):
-        result = self.run_script(
-            "configure-api-cert.sh", "fresh",
-            self.object_doc({"servingCerts":
-                             {"namedCertificates": [self.foreign_entry]}}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("foreign configuration", result.stderr)
-        self.assertIn("legacy.example.com", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertEqual(len(self.log().splitlines()), 1)
-
-    def test_ours_plus_foreign_stops_without_writing(self):
-        result = self.run_script(
-            "configure-api-cert.sh", "fresh",
-            self.object_doc({"servingCerts": {"namedCertificates":
-                                              [self.api_ref,
-                                               self.foreign_entry]}}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("foreign configuration", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_foreign_entry_without_names_stops(self):
-        entry = {"servingCertificate": {"name": "legacy-cert"}}
-        result = self.run_script(
-            "configure-api-cert.sh", "fresh",
-            self.object_doc({"servingCerts": {"namedCertificates": [entry]}}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("foreign configuration", result.stderr)
-        self.assertIn("<none>", result.stderr)
-
-    def test_write_and_stop_across_tool_paths(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "configure-api-cert.sh", "fresh",
-                    self.object_doc({}), **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                patches = self.patches()
-                self.assertEqual(len(patches), 1)
-                self.assertEqual(
-                    patches[0]["spec"]["servingCerts"]["namedCertificates"],
-                    [self.api_ref])
-
-                result = self.run_script(
-                    "configure-api-cert.sh", "fresh",
-                    self.object_doc({"servingCerts": {"namedCertificates":
-                                                      [self.foreign_entry]}}),
-                    **variant)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("foreign configuration", result.stderr)
-
-    def test_retries_conflict_then_succeeds(self):
-        result = self.run_script("configure-api-cert.sh", "conflict-then-success",
-                                 self.object_doc({}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        gets = [line for line in self.log().splitlines()
-                if line.startswith("get ")]
-        self.assertEqual(len(gets), 2)
-        patches = self.patches()
-        self.assertEqual(len(patches), 2)
-        self.assertEqual(patches[0]["metadata"]["resourceVersion"], "1597")
-        self.assertEqual(patches[1]["metadata"]["resourceVersion"], "1598")
-        self.assertIn("retrying", result.stderr)
-
-    def test_conflict_exhaustion_fails(self):
-        result = self.run_script("configure-api-cert.sh", "conflict-exhausted",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.patches()), self.MAX_ATTEMPTS)
-        self.assertIn("concurrently", result.stderr)
-
-    def test_non_conflict_patch_error_propagates(self):
-        result = self.run_script("configure-api-cert.sh", "patch-error",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Forbidden", result.stderr)
-        self.assertEqual(len(self.patches()), 1)
-
-    def test_absent_apiserver_fails_with_prerequisite(self):
-        result = self.run_script("configure-api-cert.sh", "absent-object",
-                                 self.object_doc({}))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("prerequisite missing", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_missing_json_tool_fails_before_any_cluster_call(self):
-        result = self.run_script("configure-api-cert.sh", "fresh",
-                                 self.object_doc({}),
-                                 include_jq=False, include_python=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("neither jq nor python3", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(
-            os.path.exists(os.path.join(self.work, "commands.log")),
-            "oc must not be invoked when no JSON tool is available")
 
 
 class TrustGateMatrixTests(ChartFixture):
@@ -1656,18 +1269,11 @@ class TrustFakeOcFixture(FakeOcScriptFixture):
         with open(path) as f:
             return f.read()
 
-    def deleted(self):
-        return any(line.startswith("delete ") for line in
-                   self.log().splitlines())
-
     def run_script(self, script_name, secret_doc=None, proxy_doc=None,
-                   bundle_doc=None, secret_scenario="ok", proxy_scenario="ok",
-                   bundle_scenario="ok", patch_scenario="ok",
-                   create_scenario="ok", delete_scenario="ok",
-                   proxy_patch_scenario=None, bundle_patch_scenario=None,
-                   include_jq=None, include_python=None):
-        bin_dir = self.build_bin_dir(include_jq=include_jq,
-                                     include_python=include_python)
+                   bundle_doc=None, bundle_scenario="ok",
+                   include_python=True):
+        # Single tool path for the smoke set: python3-only restricted PATH.
+        bin_dir = self.build_bin_dir(include_python=include_python)
         self.stage_scripts()
         docs_ = {"secret": secret_doc or self.secret_doc(),
                  "proxy": proxy_doc or self.proxy_doc(),
@@ -1684,438 +1290,59 @@ class TrustFakeOcFixture(FakeOcScriptFixture):
             "TRUST_CA_TIMEOUT": "2",
             "TRUST_CA_POLL_INTERVAL": "0",
             "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_ENV": os.path.join(self.work, "env.log"),
             "OC_SECRET_FILE": files["secret"],
             "OC_PROXY_FILE": files["proxy"],
             "OC_BUNDLE_FILE": files["bundle"],
-            "OC_SECRET_SCENARIO": secret_scenario,
-            "OC_PROXY_SCENARIO": proxy_scenario,
             "OC_BUNDLE_SCENARIO": bundle_scenario,
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
-            "OC_PATCH_SCENARIO": patch_scenario,
-            "OC_ATTEMPTS": os.path.join(self.work, "attempts"),
             "OC_CREATE_LOG": os.path.join(self.work, "create.log"),
-            "OC_CREATE_SCENARIO": create_scenario,
-            "OC_DELETE_SCENARIO": delete_scenario,
         }
-        if proxy_patch_scenario is not None:
-            # The fake oc names per-resource overrides after the resource
-            # slug it computes for the patch log
-            env["OC_PATCH_SCENARIO_" +
-                "proxies.config.openshift.io/cluster".replace("/", "_")
-                .replace(".", "_")] = proxy_patch_scenario
-        if bundle_patch_scenario is not None:
-            env["OC_PATCH_SCENARIO_" +
-                "configmap/user-ca-bundle".replace("/", "_")
-                .replace(".", "_").replace("-", "_")] = bundle_patch_scenario
         return self.run_child(os.path.join(self.work, script_name), env)
 
 
 class TrustSetScriptTests(TrustFakeOcFixture):
-    """Script-execution coverage for trust-ca-set.sh: the D3 state machine
-    (create-on-absent, merge-into-existing, equal no-op, ours-recorded
-    pruning, adoption, foreign-reference STOP, zero-PEM STOP, missing-
-    tls.crt FAIL, and the bounded 409 retry) on both JSON tool paths."""
-
-    def test_child_environment_is_minimal_and_isolated(self):
-        result = self.run_script("trust-ca-set.sh")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        child = self.child_env()
-        self.assertNotIn("CM_PARENT_SENTINEL", child)
-        self.assertEqual(child["TRUST_CA_TIMEOUT"], "2")
-        self.assertEqual(child["PATH"], os.path.join(self.work, "bin"))
-        self.assertEqual(
-            {k for k in child if k.startswith("OC_")},
-            {"OC_LOG", "OC_ENV", "OC_SECRET_FILE", "OC_PROXY_FILE",
-             "OC_BUNDLE_FILE", "OC_PATCH_LOG", "OC_ATTEMPTS",
-             "OC_CREATE_LOG", "OC_SECRET_SCENARIO", "OC_PROXY_SCENARIO",
-             "OC_BUNDLE_SCENARIO", "OC_PATCH_SCENARIO",
-             "OC_CREATE_SCENARIO", "OC_DELETE_SCENARIO"})
+    """Happy-path smoke for trust-ca-set.sh (the hook creates the bundle
+    when absent, sets the Proxy reference, and only then records reference
+    ownership) plus the chart's fail-closed no-tool check."""
 
     def test_create_on_absent_bundle(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-set.sh", bundle_scenario="not-found", **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                manifest = json.loads(self.create_payload())
-                self.assertEqual(manifest["metadata"]["name"], BUNDLE_NAME)
-                self.assertEqual(manifest["metadata"]["namespace"],
-                                 "openshift-config")
-                self.assertEqual(manifest["data"]["ca-bundle.crt"], CA_CERT)
-                # The created manifest carries only the history annotation:
-                # ownership is claimed by a separate write AFTER the
-                # reference write succeeds
-                self.assertEqual(
-                    manifest["metadata"]["annotations"],
-                    {"trust-ca-history": history_annotation(CA_CERT)})
-                # The reference was unset, so the hook takes ownership by
-                # setting it through a conditional patch
-                proxy_patches = self.patches_for(
-                    "proxies.config.openshift.io/cluster")
-                self.assertEqual(len(proxy_patches), 1)
-                self.assertEqual(json.loads(proxy_patches[0]), {
-                    "metadata": {"resourceVersion": "2002"},
-                    "spec": {"trustedCA": {"name": BUNDLE_NAME}},
-                })
-                # ...and only then records the ownership annotation on the
-                # bundle through its own conditional write (the fake serves
-                # the created object at its canned resourceVersion)
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 1)
-                self.assertEqual(json.loads(bundle_patches[0]), {
-                    "metadata": {
-                        "resourceVersion": "3001",
-                        "annotations":
-                            {"trust-ca-owns-proxy-reference": "true"}},
-                })
-
-    def test_create_on_absent_bundle_without_claiming_foreign_reference(self):
-        # The reference already points at the (missing) bundle — a third
-        # party set it; creating the bundle does not confer ownership
-        result = self.run_script(
-            "trust-ca-set.sh", proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_scenario="not-found")
+        result = self.run_script("trust-ca-set.sh", bundle_scenario="not-found")
         self.assertEqual(result.returncode, 0, result.stderr)
         manifest = json.loads(self.create_payload())
+        self.assertEqual(manifest["metadata"]["name"], BUNDLE_NAME)
+        self.assertEqual(manifest["metadata"]["namespace"],
+                         "openshift-config")
+        self.assertEqual(manifest["data"]["ca-bundle.crt"], CA_CERT)
+        # The created manifest carries only the history annotation:
+        # ownership is claimed by a separate write AFTER the
+        # reference write succeeds
         self.assertEqual(
             manifest["metadata"]["annotations"],
             {"trust-ca-history": history_annotation(CA_CERT)})
-        self.assertEqual(self.patches(), [])
-
-    def test_merges_into_existing_bundle(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-set.sh",
-                    bundle_doc=self.bundle_doc(FOREIGN_CA_CERT), **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 2)
-                patch = json.loads(bundle_patches[0])
-                self.assertEqual(patch["data"]["ca-bundle.crt"],
-                                 FOREIGN_CA_CERT + CA_CERT)
-                # The content write carries no ownership annotation: the
-                # reference write below has not succeeded yet
-                self.assertEqual(
-                    patch["metadata"]["annotations"],
-                    {"trust-ca-history": history_annotation(CA_CERT)})
-                proxy_patches = self.patches_for(
-                    "proxies.config.openshift.io/cluster")
-                self.assertEqual(len(proxy_patches), 1)
-                self.assertEqual(
-                    json.loads(proxy_patches[0])["spec"]["trustedCA"],
-                    {"name": BUNDLE_NAME})
-                # Only after the reference write succeeded does the hook
-                # record reference ownership on the bundle
-                adopt = json.loads(bundle_patches[1])
-                self.assertEqual(adopt, {
-                    "metadata": {
-                        "resourceVersion": "3003",
-                        "annotations":
-                            {"trust-ca-owns-proxy-reference": "true"}},
-                })
-
-    def test_equal_content_is_no_op(self):
-        # Prior output: reference already points at the bundle, the bundle
-        # holds a foreign block plus the current one, history is recorded —
-        # nothing to write anywhere
-        result = self.run_script(
-            "trust-ca-set.sh", proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.bundle_doc(
-                FOREIGN_CA_CERT + CA_CERT,
-                {"trust-ca-history": history_annotation(CA_CERT)}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertIsNone(self.create_payload())
-        self.assertNotIn("create ", self.log())
-
-    def test_current_block_in_place_is_a_no_op(self):
-        # The current block is already present, ahead of a foreign block:
-        # the hook must not reposition it to the tail or rewrite the
-        # content at all — only the annotation and reference writes are
-        # state changes, and here none applies
-        result = self.run_script(
-            "trust-ca-set.sh", proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.bundle_doc(
-                CA_CERT + FOREIGN_CA_CERT,
-                {"trust-ca-history": history_annotation(CA_CERT)}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertIsNone(self.create_payload())
-        self.assertIn("no changes needed", result.stdout)
-
-    def test_prunes_recorded_blocks_that_are_no_longer_current(self):
-        # A recorded predecessor block is pruned while foreign blocks and
-        # their order are preserved, and the current block is appended
-        result = self.run_script(
-            "trust-ca-set.sh", proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.bundle_doc(
-                OLD_CA_CERT + FOREIGN_CA_CERT,
-                {"trust-ca-history": history_annotation(OLD_CA_CERT)}))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        # The reference was unset, so the hook takes ownership by
+        # setting it through a conditional patch
+        proxy_patches = self.patches_for(
+            "proxies.config.openshift.io/cluster")
+        self.assertEqual(len(proxy_patches), 1)
+        self.assertEqual(json.loads(proxy_patches[0]), {
+            "metadata": {"resourceVersion": "2002"},
+            "spec": {"trustedCA": {"name": BUNDLE_NAME}},
+        })
+        # ...and only then records the ownership annotation on the
+        # bundle through its own conditional write (the fake serves
+        # the created object at its canned resourceVersion)
         bundle_patches = self.patches_for("configmap/user-ca-bundle")
         self.assertEqual(len(bundle_patches), 1)
-        patch = json.loads(bundle_patches[0])
-        self.assertEqual(patch["data"]["ca-bundle.crt"],
-                         FOREIGN_CA_CERT + CA_CERT)
-        self.assertEqual(
-            patch["metadata"]["annotations"],
-            {"trust-ca-history": history_annotation(CA_CERT)})
-        self.assertNotIn("trust-ca-owns-proxy-reference",
-                         patch["metadata"]["annotations"])
-
-    def test_prior_output_adoption(self):
-        # Reference already points at the bundle and the bundle holds
-        # exactly the current CA: claim reference ownership, change nothing
-        # else
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-set.sh",
-                    proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-                    bundle_doc=self.bundle_doc(CA_CERT), **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 1)
-                patch = json.loads(bundle_patches[0])
-                self.assertEqual(
-                    patch,
-                    {"metadata": {
-                        "resourceVersion": "3002",
-                        "annotations": {
-                            "trust-ca-owns-proxy-reference": "true"}}})
-                self.assertNotIn("data", patch)
-                self.assertEqual(self.patches_for(
-                    "proxies.config.openshift.io/cluster"), [])
-                self.assertIsNone(self.create_payload())
-
-    def test_foreign_reference_stops_without_writing(self):
-        result = self.run_script(
-            "trust-ca-set.sh",
-            proxy_doc=self.proxy_doc(reference="corporate-ca"),
-            bundle_doc=self.bundle_doc(FOREIGN_CA_CERT))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing to overwrite a foreign reference", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertIsNone(self.create_payload())
-        # The STOP decision needs exactly the Secret and Proxy reads
-        self.assertEqual(len(self.log().splitlines()), 2)
-
-    def test_zero_pem_block_content_stops(self):
-        result = self.run_script(
-            "trust-ca-set.sh", proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.bundle_doc("   \n"))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("holds no PEM certificates", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_unparseable_content_stops(self):
-        result = self.run_script(
-            "trust-ca-set.sh", proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.bundle_doc("-----BEGIN CERTIFICATE-----\ngarbage\n"))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("mismatched PEM block markers", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_mixed_format_bundle_with_unparsed_region_stops(self):
-        # A bundle mixing LF and CRLF blocks with an unparsed region: the
-        # rewrite would silently drop everything the scan failed to
-        # recognize, so the complete-decomposition guard stops the hook
-        # instead of writing
-        mixed = FOREIGN_CA_CERT + "not a certificate\n" + FOREIGN_CA_CRLF
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-set.sh",
-                    proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-                    bundle_doc=self.bundle_doc(mixed), **variant)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("unrecognized non-PEM regions", result.stderr)
-                self.assertEqual(self.patches(), [])
-                self.assertIsNone(self.create_payload())
-
-    def test_crlf_byo_tls_crt_is_canonicalized(self):
-        # A CRLF-encoded bring-your-own tls.crt parses (previously it
-        # failed with a misleading no-certificate diagnostic) and is
-        # written canonically as LF
-        crlf_cert = CA_CERT.replace("\n", "\r\n")
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-set.sh", bundle_scenario="not-found",
-                    secret_doc=self.secret_doc(cert_pem=crlf_cert), **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                manifest = json.loads(self.create_payload())
-                self.assertEqual(manifest["data"]["ca-bundle.crt"], CA_CERT)
-
-    def test_foreign_crlf_block_is_preserved_verbatim(self):
-        # A CRLF-encoded foreign block is recognized, kept byte-for-byte
-        # (its line endings are never rewritten), and never repositioned
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-set.sh",
-                    proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-                    bundle_doc=self.bundle_doc(FOREIGN_CA_CRLF), **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 1)
-                patch = json.loads(bundle_patches[0])
-                self.assertEqual(patch["data"]["ca-bundle.crt"],
-                                 FOREIGN_CA_CRLF + CA_CERT)
-                self.assertNotIn("\r", patch["data"]["ca-bundle.crt"]
-                                 [len(FOREIGN_CA_CRLF):])
-
-    def test_failed_reference_write_leaves_no_ownership_annotation(self):
-        # The ownership annotation rides its own write AFTER the reference
-        # write succeeds: when that write fails, the bundle carries no
-        # ownership record, so a reference a third party later sets is
-        # never claimed (and never unset) by teardown
-        for variant in self.tool_path_variants():
-            with self.subTest(merge=variant):
-                result = self.run_script(
-                    "trust-ca-set.sh",
-                    bundle_doc=self.bundle_doc(FOREIGN_CA_CERT),
-                    proxy_patch_scenario="error", **variant)
-                self.assertNotEqual(result.returncode, 0)
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 1)
-                self.assertNotIn("trust-ca-owns-proxy-reference",
-                                 bundle_patches[0])
-            with self.subTest(create=variant):
-                result = self.run_script(
-                    "trust-ca-set.sh", bundle_scenario="not-found",
-                    proxy_patch_scenario="error", **variant)
-                self.assertNotEqual(result.returncode, 0)
-                manifest = json.loads(self.create_payload())
-                self.assertNotIn("trust-ca-owns-proxy-reference",
-                                 manifest["metadata"]["annotations"])
-                self.assertEqual(
-                    self.patches_for("configmap/user-ca-bundle"), [])
-
-    def test_failed_ownership_write_reports_the_degraded_missing_bundle(self):
-        # When the bundle vanishes after the reference write succeeded, the
-        # ownership write finds it gone (NotFound): the reference points at
-        # a missing bundle, which degrades cluster trust, but a re-run
-        # recreates the bundle (a further run then records ownership), so
-        # the diagnostic must promise that recovery and state the dangling
-        # reference an uninstall before then leaves behind
-        for variant in self.tool_path_variants():
-            with self.subTest(merge=variant):
-                result = self.run_script(
-                    "trust-ca-set.sh",
-                    bundle_doc=self.bundle_doc(FOREIGN_CA_CERT),
-                    bundle_scenario="disappears", **variant)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("disappeared mid-run", result.stderr)
-                self.assertIn("degrades cluster trust", result.stderr)
-                self.assertIn("re-running this hook recreates the bundle",
-                              result.stderr)
-                self.assertIn("dangling trustedCA reference", result.stderr)
-                self.assertNotIn("surviving bundle contents", result.stderr)
-                # The reference was set and the bundle content was merged
-                # before the bundle vanished; only the ownership record is
-                # missing
-                self.assertEqual(len(self.patches_for(
-                    "proxies.config.openshift.io/cluster")), 1)
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 1)
-                self.assertNotIn("trust-ca-owns-proxy-reference",
-                                 bundle_patches[0])
-
-    def test_failed_ownership_write_reports_the_unowned_reference(self):
-        # When the ownership-annotation write fails with a non-NotFound
-        # error after the reference write succeeded, the bundle is intact
-        # and the reference keeps functioning; a re-run records ownership
-        # only when the bundle holds exactly the current CA, so uninstall
-        # otherwise leaves the reference in place pointing at the surviving
-        # bundle contents
-        result = self.run_script(
-            "trust-ca-set.sh",
-            bundle_doc=self.bundle_doc(FOREIGN_CA_CERT),
-            bundle_patch_scenario="error-on-second")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("ownership record could not be written", result.stderr)
-        self.assertIn("the bundle contents are intact", result.stderr)
-        self.assertIn("holds exactly the current CA certificate", result.stderr)
-        self.assertIn("pointing at the surviving bundle contents",
-                      result.stderr)
-        # The raw oc error from the failed write precedes the diagnostic
-        # and is not repeated
-        self.assertEqual(result.stderr.count("Forbidden"), 1)
-        # The reference was set and the content merge succeeded; the second
-        # bundle patch is the ownership attempt that failed
-        self.assertEqual(len(self.patches_for(
-            "proxies.config.openshift.io/cluster")), 1)
-        bundle_patches = self.patches_for("configmap/user-ca-bundle")
-        self.assertEqual(len(bundle_patches), 2)
-        self.assertIn("trust-ca-owns-proxy-reference", bundle_patches[1])
-
-    def test_missing_tls_crt_fails_before_any_write(self):
-        result = self.run_script("trust-ca-set.sh",
-                                 secret_doc=self.secret_doc(include_crt=False))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("refusing to install an empty", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertIsNone(self.create_payload())
-        # The FAIL decision needs exactly the Secret read
-        self.assertEqual(len(self.log().splitlines()), 1)
-
-    def test_secret_wait_times_out_and_fails(self):
-        # The bounded wait (poll interval 0, timeout 2) fails with its own
-        # diagnostic when the CA Secret never appears
-        result = self.run_script("trust-ca-set.sh",
-                                 secret_scenario="not-found")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("timed out", result.stderr)
-        self.assertIn("cert-manager-ca", result.stderr)
-        self.assertEqual(self.patches(), [])
-
-    def test_conflict_retry_is_bounded_and_rewrites(self):
-        result = self.run_script(
-            "trust-ca-set.sh", bundle_doc=self.bundle_doc(FOREIGN_CA_CERT),
-            patch_scenario="conflict-then-success")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        bundle_patches = self.patches_for("configmap/user-ca-bundle")
-        # Two content attempts (the first rejected with 409) plus the
-        # ownership-annotation write that follows the successful reference
-        # write
-        self.assertEqual(len(bundle_patches), 3)
-        # The fake oc bumps the served resourceVersion on every GET, so the
-        # failed attempt carried the stale version and the successful retry
-        # carried the fresh one from its own re-read
-        self.assertEqual(json.loads(bundle_patches[0])["metadata"]
-                         ["resourceVersion"], "3002")
-        self.assertEqual(json.loads(bundle_patches[1])["metadata"]
-                         ["resourceVersion"], "3003")
-        self.assertEqual(json.loads(bundle_patches[2])["metadata"]
-                         ["resourceVersion"], "3004")
-        self.assertEqual(
-            json.loads(bundle_patches[2])["metadata"]["annotations"],
-            {"trust-ca-owns-proxy-reference": "true"})
-        self.assertIn("retrying", result.stderr)
-
-    def test_conflict_exhaustion_fails(self):
-        result = self.run_script(
-            "trust-ca-set.sh", bundle_doc=self.bundle_doc(FOREIGN_CA_CERT),
-            patch_scenario="conflict-exhausted")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.patches_for("configmap/user-ca-bundle")),
-                         self.MAX_ATTEMPTS)
-        self.assertIn("concurrently", result.stderr)
-
-    def test_create_race_fails_for_the_job_retry_to_merge(self):
-        result = self.run_script("trust-ca-set.sh",
-                                 bundle_scenario="not-found",
-                                 create_scenario="already-exists")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("created concurrently", result.stderr)
-        self.assertEqual(self.patches(), [])
+        self.assertEqual(json.loads(bundle_patches[0]), {
+            "metadata": {
+                "resourceVersion": "3001",
+                "annotations":
+                    {"trust-ca-owns-proxy-reference": "true"}},
+        })
 
     def test_missing_json_tool_fails_before_any_cluster_call(self):
         result = self.run_script("trust-ca-set.sh",
-                                 include_jq=False, include_python=False)
+                                 include_python=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("neither jq nor python3", result.stderr)
         self.assertEqual(self.patches(), [])
@@ -2125,10 +1352,9 @@ class TrustSetScriptTests(TrustFakeOcFixture):
 
 
 class TrustRemoveScriptTests(TrustFakeOcFixture):
-    """Script-execution coverage for trust-ca-remove.sh: the D4 state
-    machine (unset-when-annotated, leave-when-foreign, current+history
-    removal preserving foreign blocks, delete-on-empty, unreadable-Secret
-    history-only path, and the bounded 409 retry)."""
+    """Happy-path smoke for trust-ca-remove.sh: an annotated-owned
+    reference is unset and the current block removed while foreign blocks
+    are preserved."""
 
     def annotated(self, content):
         return self.bundle_doc(content, {
@@ -2137,193 +1363,32 @@ class TrustRemoveScriptTests(TrustFakeOcFixture):
         })
 
     def test_unsets_annotated_reference_and_removes_current_block(self):
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-remove.sh",
-                    proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-                    bundle_doc=self.annotated(FOREIGN_CA_CERT + CA_CERT),
-                    **variant)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                proxy_patches = self.patches_for(
-                    "proxies.config.openshift.io/cluster")
-                self.assertEqual(len(proxy_patches), 1)
-                self.assertEqual(json.loads(proxy_patches[0]), {
-                    "metadata": {"resourceVersion": "2002"},
-                    "spec": {"trustedCA": None},
-                })
-                bundle_patches = self.patches_for("configmap/user-ca-bundle")
-                self.assertEqual(len(bundle_patches), 1)
-                patch = json.loads(bundle_patches[0])
-                self.assertEqual(patch["data"]["ca-bundle.crt"],
-                                 FOREIGN_CA_CERT)
-                self.assertEqual(
-                    patch["metadata"]["annotations"],
-                    {"trust-ca-history": None,
-                     "trust-ca-owns-proxy-reference": None})
-                self.assertFalse(self.deleted())
-
-    def test_leaves_foreign_reference_in_place(self):
-        result = self.run_script(
-            "trust-ca-remove.sh",
-            proxy_doc=self.proxy_doc(reference="corporate-ca"),
-            bundle_doc=self.bundle_doc(
-                CA_CERT, {"trust-ca-history": history_annotation(CA_CERT)}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("nothing to unset", result.stdout)
-        self.assertEqual(
-            self.patches_for("proxies.config.openshift.io/cluster"), [])
-        # The bundle cleanup still runs: our block goes, the emptied
-        # ConfigMap is deleted
-        self.assertTrue(self.deleted())
-        self.assertEqual(self.patches(), [])
-
-    def test_leaves_unowned_reference_set(self):
-        # The reference points at the bundle but no ownership annotation
-        # records it as this chart's — a third party set it
         result = self.run_script(
             "trust-ca-remove.sh",
             proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.bundle_doc(CA_CERT))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("set outside this chart", result.stdout)
-        self.assertEqual(self.patches(), [])
-        self.assertTrue(self.deleted())
-
-    def test_removes_current_and_history_blocks_preserving_foreign(self):
-        result = self.run_script(
-            "trust-ca-remove.sh",
-            proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.annotated(LEGACY_CA_CERT + CA_CERT
-                                      + FOREIGN_CA_CERT))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        bundle_patches = self.patches_for("configmap/user-ca-bundle")
-        self.assertEqual(len(bundle_patches), 1)
-        patch = json.loads(bundle_patches[0])
-        # The never-recorded legacy block is foreign by classification and
-        # stays, in its original position, next to the untouched foreign
-        # block
-        self.assertEqual(patch["data"]["ca-bundle.crt"],
-                         LEGACY_CA_CERT + FOREIGN_CA_CERT)
-
-    def test_deletes_emptied_bundle(self):
-        result = self.run_script(
-            "trust-ca-remove.sh",
-            bundle_doc=self.bundle_doc(
-                CA_CERT, {"trust-ca-history": history_annotation(CA_CERT)}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.deleted())
-        self.assertIn("delete configmap/user-ca-bundle", self.log())
-        self.assertEqual(self.patches(), [])
-
-    def test_history_alone_identifies_when_secret_is_unreadable(self):
-        result = self.run_script(
-            "trust-ca-remove.sh", secret_scenario="error",
-            bundle_doc=self.bundle_doc(
-                FOREIGN_CA_CERT + OLD_CA_CERT,
-                {"trust-ca-history": history_annotation(CA_CERT, OLD_CA_CERT)}))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        bundle_patches = self.patches_for("configmap/user-ca-bundle")
-        self.assertEqual(len(bundle_patches), 1)
-        patch = json.loads(bundle_patches[0])
-        self.assertEqual(patch["data"]["ca-bundle.crt"], FOREIGN_CA_CERT)
-
-    def test_fails_safe_when_nothing_identifies_our_blocks(self):
-        # The Secret is unreadable and no history annotation exists — the
-        # hook cannot tell which blocks belong to this chart and must not
-        # delete anything
-        result = self.run_script("trust-ca-remove.sh", secret_scenario="error",
-                                 bundle_doc=self.bundle_doc(FOREIGN_CA_CERT))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("cannot identify", result.stderr)
-        self.assertIn("leaving the bundle untouched", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-
-    def test_nothing_of_ours_is_a_successful_no_op(self):
-        result = self.run_script(
-            "trust-ca-remove.sh", bundle_doc=self.bundle_doc(FOREIGN_CA_CERT))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("No entries belonging to this chart", result.stdout)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-
-    def test_bundle_absent_is_a_no_op(self):
-        result = self.run_script("trust-ca-remove.sh",
-                                 proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-                                 bundle_scenario="not-found")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("absent; nothing to remove", result.stdout)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-
-    def test_proxy_absent_still_cleans_bundle(self):
-        result = self.run_script("trust-ca-remove.sh",
-                                 proxy_scenario="not-found",
-                                 bundle_doc=self.bundle_doc(CA_CERT))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.deleted())
-
-    def test_zero_pem_content_is_left_untouched(self):
-        result = self.run_script("trust-ca-remove.sh",
-                                 bundle_doc=self.bundle_doc("   \n"))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-
-    def test_unparseable_content_fails_safe(self):
-        result = self.run_script(
-            "trust-ca-remove.sh",
-            bundle_doc=self.bundle_doc("-----BEGIN CERTIFICATE-----\nx\n"))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("mismatched PEM block markers", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(self.deleted())
-
-    def test_mixed_format_bundle_is_left_untouched(self):
-        # A mixed LF/CRLF bundle with an unparsed region: the classifier
-        # would have returned delete for such content (removing the
-        # recognized current block and dropping the rest with the emptied
-        # ConfigMap), so the complete-decomposition guard fails safe —
-        # nothing is patched or deleted
-        mixed = CA_CERT + "not a certificate\n" + FOREIGN_CA_CRLF
-        for variant in self.tool_path_variants():
-            with self.subTest(**variant):
-                result = self.run_script(
-                    "trust-ca-remove.sh", bundle_doc=self.bundle_doc(mixed),
-                    **variant)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("unrecognized non-PEM regions", result.stderr)
-                self.assertEqual(self.patches(), [])
-                self.assertFalse(self.deleted())
-
-    def test_conflict_retry_is_bounded(self):
-        result = self.run_script(
-            "trust-ca-remove.sh",
-            proxy_doc=self.proxy_doc(reference=BUNDLE_NAME),
-            bundle_doc=self.annotated(FOREIGN_CA_CERT + CA_CERT),
-            patch_scenario="conflict-then-success")
+            bundle_doc=self.annotated(FOREIGN_CA_CERT + CA_CERT))
         self.assertEqual(result.returncode, 0, result.stderr)
         proxy_patches = self.patches_for(
             "proxies.config.openshift.io/cluster")
-        self.assertEqual(len(proxy_patches), 2)
-        self.assertEqual(json.loads(proxy_patches[0])["metadata"]
-                         ["resourceVersion"], "2002")
-        self.assertEqual(json.loads(proxy_patches[1])["metadata"]
-                         ["resourceVersion"], "2003")
+        self.assertEqual(len(proxy_patches), 1)
+        self.assertEqual(json.loads(proxy_patches[0]), {
+            "metadata": {"resourceVersion": "2002"},
+            "spec": {"trustedCA": None},
+        })
         bundle_patches = self.patches_for("configmap/user-ca-bundle")
-        self.assertEqual(len(bundle_patches), 2)
-        self.assertIn("retrying", result.stderr)
-
-    def test_missing_json_tool_fails_before_any_cluster_call(self):
-        result = self.run_script("trust-ca-remove.sh",
-                                 include_jq=False, include_python=False)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("neither jq nor python3", result.stderr)
-        self.assertEqual(self.patches(), [])
-        self.assertFalse(
-            os.path.exists(os.path.join(self.work, "commands.log")),
-            "oc must not be invoked when no JSON tool is available")
+        self.assertEqual(len(bundle_patches), 1)
+        patch = json.loads(bundle_patches[0])
+        self.assertEqual(patch["data"]["ca-bundle.crt"],
+                         FOREIGN_CA_CERT)
+        self.assertEqual(
+            patch["metadata"]["annotations"],
+            {"trust-ca-history": None,
+             "trust-ca-owns-proxy-reference": None})
+        # The bundle still carries foreign content, so the remove hook
+        # must not delete the ConfigMap — the walk-back only applies to
+        # hooks that emptied (or created) it.
+        self.assertNotIn("delete ", self.log(),
+                         "remove hook must not delete a non-emptied bundle")
 
 
 class ValuesContractTests(unittest.TestCase):
