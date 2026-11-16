@@ -27,6 +27,34 @@ Source parity is not a goal — the contract is correct behavior under normal He
   render-time validation (clear diagnostics) and documented prerequisites (operator/CRD establishment, pre-existing
   namespaces).
 
+### Platform-object ownership
+
+- Classify before porting: every object the source manifests touch is either chart-created (a new object — release
+  ownership is correct) or platform-owned (exists on every cluster, or is created and reconciled by another controller —
+  e.g. `OAuth/cluster`, `APIServer/cluster`, `IngressController/default`, `Console/cluster`, `Proxy/cluster`, cluster
+  `Nodes`, operator-created Deployments, operator-suggested or otherwise pre-existing Namespaces, and CRs the operator
+  auto-creates such as `OCSInitialization/ocsinit`).
+- Platform-owned objects are never release manifests. Partial patch-shaped YAML is not a patch in Helm's ownership
+  model: plain Helm rejects the install or upgrade unless ownership is explicitly taken, while Flux and SSA defaults
+  silently adopt the object and turn it into an uninstall deletion target — for a shared Namespace that cascades to
+  everything inside it (`helm uninstall` deletes chart-declared Namespaces; Kubernetes background propagation cascades
+  the contents).
+- Mutate platform-owned objects only through conditional-write hook Jobs following the established pattern
+  (reference implementations: `charts/keycloak-auth` OAuth IdP + logout-redirect, `charts/cert-manager` cluster trust +
+  serving certs): scripts in `files/` delivered via ConfigMap, the chart-local `files/lib/hook-preamble.sh`
+  conditional-write engine, dual jq/python3 fail-closed, read-modify-write carrying `metadata.resourceVersion` with a
+  bounded 409 retry, foreign-value STOP, by-value idempotence, and resourceName-scoped RBAC. `create` is the one grant
+  RBAC cannot scope by name — when it is unavoidable, call it out in the README.
+- Singletons created by user or platform action may already exist with foreign configuration (e.g.
+  `ClusterAutoscaler/default`) and are never release manifests when they may pre-exist: a conditional-write hook creates
+  them when absent (recording that it did) and stops loudly on foreign values when present; the pre-delete walk-back
+  follows the same proof rules as for other hook-created objects.
+- A pre-delete hook walks back only what the set hook can prove it set (ownership annotations or recorded history on the
+  mutated object), never foreign content; objects the hook created are deleted on uninstall only under the same proof.
+  Uninstall contracts (what persists, what is walked back, what degrades) are documented in the chart README.
+- Render-time validation closes the rest: invalid compositions (conflicting values, unknown options, cross-value
+  membership failures) fail the render with an actionable message rather than reaching a cluster.
+
 ## Chart dependencies — the guard that broke run 39966995703
 
 Vendored `charts/<name>/charts/*.tgz` and `Chart.lock` are **gitignored**. Any chart with a `dependencies:` block
