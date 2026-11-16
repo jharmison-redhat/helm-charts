@@ -6,7 +6,9 @@ email, and only well-formed solvers), the ACME ClusterIssuer render shapes
 for the Let's Encrypt and ZeroSSL examples, the trust gate matrix over
 `ca.enabled` × `ca.trust.enabled` × self-provisioned/BYO, the stable-CA
 render shape (explicit duration and rotationPolicy), the resourceName-scoped
-trust RBAC, and the serving-certificate hook surface (the platform
+trust RBAC, the reuse-values compatibility surface (a pre-0.2.0 release's
+values lack `ca.trust` and `ca.duration`, reproduced locally through the
+`--set x=null` delete path), and the serving-certificate hook surface (the platform
 IngressController/default and APIServer/cluster objects are never owned —
 hook Jobs write only this chart's reference with a resourceVersion-
 conditional read-modify-write).
@@ -1088,6 +1090,37 @@ class TrustGateMatrixTests(ChartFixture):
                             **self.BYO}})
                 self.assertIn("ca.tlsCrt/ca.tlsKey are set while ca.enabled "
                               "is false", stderr)
+
+
+class ReuseValuesCompatTests(ChartFixture):
+    """`helm upgrade --reuse-values` from a pre-0.2.0 release renders with
+    the old release's values, which pre-date the `ca.trust` block and
+    `ca.duration`, and chart defaults do not fill new keys under an
+    existing parent in that path. The `--set x=null` delete path
+    reproduces the same missing-key shape locally: a deleted key stays
+    absent after coalescing, exactly as it does under reuse-values."""
+
+    def render_with_set(self, *sets):
+        cmd = ["helm", "template", "test-release", self.dir,
+               "--namespace", "test-release-ns"]
+        for s in sets:
+            cmd += ["--set", s]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return result
+
+    def test_missing_trust_block_renders_full_trust_surface(self):
+        result = self.render_with_set("ca.trust=null")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        names = {d["metadata"]["name"] for d in docs(result.stdout) if d}
+        self.assertLessEqual({"trust-ca", "trust-ca-config", "trust-ca-set",
+                              "trust-ca-remove"}, names)
+
+    def test_missing_duration_falls_back_to_documented_default(self):
+        result = self.render_with_set("ca.duration=null")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cert = self.pick(self.by_kind(docs(result.stdout)),
+                         "Certificate", "selfsigned-ca")
+        self.assertEqual(cert["spec"]["duration"], "87600h")
 
 
 class TrustRenderTests(ChartFixture):

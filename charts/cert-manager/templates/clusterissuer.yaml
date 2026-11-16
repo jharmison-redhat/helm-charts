@@ -72,7 +72,7 @@ spec:
   # Explicit 10-year lifetime: without it cert-manager applies its 90-day
   # default, and an expiring self-signed root hard-fails verification in Go
   # clients
-  duration: {{ .Values.ca.duration }}
+  duration: {{ .Values.ca.duration | default "87600h" }}
   secretName: cert-manager-ca
   privateKey:
     algorithm: ECDSA

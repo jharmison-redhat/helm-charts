@@ -1,4 +1,4 @@
-{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- if and .Values.ca.enabled (dig "ca" "trust" "enabled" true .Values.AsMap) -}}
 {{- /* The trust hook Jobs merge the CA into the openshift-config
 user-ca-bundle ConfigMap and patch the cluster Proxy's trustedCA reference,
 so every grant is resourceName-scoped: get on exactly the cert-manager-ca

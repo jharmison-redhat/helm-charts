@@ -1,4 +1,4 @@
-{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- if and .Values.ca.enabled (dig "ca" "trust" "enabled" true .Values.AsMap) -}}
 {{- /* The platform Proxy object always exists on OpenShift, so the trustedCA
 reference and the user-ca-bundle trust bundle are configured through this
 hook Job instead of release-owned manifests; the Job runs after the release

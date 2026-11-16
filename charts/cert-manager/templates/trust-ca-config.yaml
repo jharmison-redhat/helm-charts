@@ -1,4 +1,4 @@
-{{- if and .Values.ca.enabled .Values.ca.trust.enabled -}}
+{{- if and .Values.ca.enabled (dig "ca" "trust" "enabled" true .Values.AsMap) -}}
 {{- /* The trust hook Jobs need their scripts and the shared libs (the
 conditional-write preamble and the PEM-trust program), so the
 trust-ca-config ConfigMap is gated alongside the Jobs and the trust-ca RBAC
