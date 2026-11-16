@@ -2,6 +2,7 @@
 {{- include "aws-nvidia-gpu-machinesets.validateRegion" . -}}
 {{- include "aws-nvidia-gpu-machinesets.validateAmi" . -}}
 {{- include "aws-nvidia-gpu-machinesets.validateAzs" . -}}
+{{- include "aws-nvidia-gpu-machinesets.validateAz" . -}}
 {{- range $az := .Values.aws.azs }}
 {{- with $ }}
 ---

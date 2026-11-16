@@ -6,6 +6,15 @@
 {{- end -}}
 {{- end -}}
 
+{{- define "aws-nvidia-gpu-machinesets.validateAz" -}}
+{{- $az := .Values.aws.az -}}
+{{- if $az -}}
+{{- if not (has $az .Values.aws.azs) -}}
+{{- fail (printf "aws.az '%s' is not a member of aws.azs %v — only the zones in aws.azs render MachineSets, so an unlisted aws.az silently leaves every MachineSet at zero replicas; set aws.az to one of the aws.azs entries or unset it to default to the last entry (%s)" $az .Values.aws.azs (last .Values.aws.azs)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "aws-nvidia-gpu-machinesets.validateInfraID" -}}
 {{- $infraID := .Values.cluster.infraID -}}
 {{- if kindIs "invalid" $infraID -}}
@@ -55,5 +64,13 @@
 {{- end -}}
 {{- if eq (len $azs) 0 -}}
 {{- fail "aws.azs must not be empty — one MachineSet is rendered per availability zone" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "aws-nvidia-gpu-machinesets.validateMaxReplicas" -}}
+{{- $maxReplicas := int .Values.autoscaling.maxReplicas -}}
+{{- $azCount := len .Values.aws.azs -}}
+{{- if lt $maxReplicas $azCount -}}
+{{- fail (printf "autoscaling.maxReplicas (%d) is lower than the number of entries in aws.azs (%d) — the MachineAutoscaler CRD enforces maxReplicas >= 1 per zone, and the exact-sum distribution would render maxReplicas: 0 zones the API server rejects; set autoscaling.maxReplicas to at least %d, or reduce aws.azs" $maxReplicas $azCount $azCount) -}}
 {{- end -}}
 {{- end -}}

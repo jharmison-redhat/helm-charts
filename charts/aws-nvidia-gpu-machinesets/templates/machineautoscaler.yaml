@@ -1,19 +1,27 @@
 {{- if .Values.autoscaling.enabled }}
 {{- include "aws-nvidia-gpu-machinesets.validateInfraID" . -}}
 {{- include "aws-nvidia-gpu-machinesets.validateAzs" . -}}
+{{- include "aws-nvidia-gpu-machinesets.validateMaxReplicas" . -}}
 {{- range $i, $az := .Values.aws.azs }}
 {{- with $ }}
 {{- $len := len .Values.aws.azs }}
+{{- /* The per-zone bounds distribute the chart-level totals exactly: the
+first `total mod zoneCount` zones take floor(total/zoneCount) + 1 and the
+rest take floor(total/zoneCount), independently for min and max — no
+truncation loss and no unconditional +1, so the MachineAutoscalers sum to
+the requested totals (which maxNodesTotal must encompass) */ -}}
+{{- $minBase := div .Values.autoscaling.minReplicas $len }}
+{{- $minRem := mod .Values.autoscaling.minReplicas $len }}
+{{- $maxBase := div .Values.autoscaling.maxReplicas $len }}
+{{- $maxRem := mod .Values.autoscaling.maxReplicas $len }}
 ---
 apiVersion: autoscaling.openshift.io/v1beta1
 kind: MachineAutoscaler
 metadata:
   name: {{ .Values.cluster.infraID }}-{{ .Values.baseName }}-{{ $az }}
 spec:
-  {{- with .Values.autoscaling }}
-  minReplicas: {{ div .minReplicas $len }}
-  maxReplicas: {{ add (div .maxReplicas $len) 1 }}
-  {{- end }}
+  minReplicas: {{ add $minBase (ternary 1 0 (lt $i $minRem)) }}
+  maxReplicas: {{ add $maxBase (ternary 1 0 (lt $i $maxRem)) }}
   scaleTargetRef:
     apiVersion: machine.openshift.io/v1beta1
     kind: MachineSet

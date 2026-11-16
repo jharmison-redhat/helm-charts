@@ -1,0 +1,39 @@
+{{- if .Values.autoscaling.enabled -}}
+{{- /* The platform ClusterAutoscaler/default singleton may pre-exist with
+foreign configuration, so it is never a release manifest: the hook Jobs need
+their scripts, the shared conditional-write preamble, and the desired managed
+fields, so the clusterautoscaler-config ConfigMap is gated alongside the Jobs
+and the clusterautoscaler RBAC on autoscaling.enabled; each Job mounts this
+ConfigMap and runs its own script from it */ -}}
+{{- $gpuEntry := dict "type" "nvidia.com/gpu"
+      "min" .Values.autoscaling.minReplicas
+      "max" .Values.autoscaling.maxReplicas }}
+{{- $config := dict "podPriorityThreshold" -10 "gpuEntry" $gpuEntry }}
+{{- $spec := dict "podPriorityThreshold" -10
+      "resourceLimits" (dict "gpus" (list $gpuEntry)) }}
+{{- with .Values.autoscaling.scaleDown }}
+{{- $_ := set $config "scaleDown" . }}
+{{- $_ := set $spec "scaleDown" . }}
+{{- end }}
+{{- $manifest := dict
+      "apiVersion" "autoscaling.openshift.io/v1"
+      "kind" "ClusterAutoscaler"
+      "metadata" (dict
+        "name" "default"
+        "annotations" (dict "aws-nvidia-gpu-machinesets/proof"
+          ((dict "created" true) | toJson)))
+      "spec" $spec }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clusterautoscaler-config
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  clusterautoscaler-set.sh: |-
+    {{- .Files.Get "files/clusterautoscaler-set.sh" | nindent 4 }}
+  clusterautoscaler-remove.sh: |-
+    {{- .Files.Get "files/clusterautoscaler-remove.sh" | nindent 4 }}
+  autoscaler.json: |-
+    {{- dict "config" $config "manifest" $manifest | toJson | nindent 4 }}
+{{- end }}

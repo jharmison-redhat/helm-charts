@@ -1,0 +1,41 @@
+{{- if .Values.autoscaling.enabled -}}
+{{- /* Walks back this chart's ClusterAutoscaler footprint on uninstall —
+the recorded pre-chart values of the fields the set hook changed, and the
+whole object when the set hook created it — since the ClusterAutoscaler/default
+singleton is never a release-owned manifest; the Job runs before the release
+resources are deleted */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: clusterautoscaler-remove
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: clusterautoscaler
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: clusterautoscaler-remove
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        command: ["/mnt/clusterautoscaler-remove.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: clusterautoscaler-config
+          mountPath: /mnt
+      volumes:
+      - name: clusterautoscaler-config
+        configMap:
+          name: clusterautoscaler-config
+          defaultMode: 493
+{{- end }}

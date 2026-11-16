@@ -1,0 +1,47 @@
+{{- if .Values.autoscaling.enabled -}}
+{{- /* The hook Jobs read, create, patch, and (under create-proof) delete the
+cluster-scoped ClusterAutoscaler/default singleton, so the write surface is
+resourceName-scoped to exactly that object. Creating the singleton when
+absent cannot be resourceName-scoped — create on clusterautoscalers is the
+one grant broader than the hook's write surface (called out in the README)
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clusterautoscaler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: clusterautoscaler
+rules:
+- apiGroups:
+  - autoscaling.openshift.io
+  resources:
+  - clusterautoscalers
+  resourceNames:
+  - default
+  verbs:
+  - get
+  - patch
+  - delete
+- apiGroups:
+  - autoscaling.openshift.io
+  resources:
+  - clusterautoscalers
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: clusterautoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: clusterautoscaler
+subjects:
+- kind: ServiceAccount
+  name: clusterautoscaler
+  namespace: {{ .Release.Namespace }}
+{{- end }}
