@@ -48,12 +48,31 @@ Source parity is not a goal — the contract is correct behavior under normal He
 - Singletons created by user or platform action may already exist with foreign configuration (e.g.
   `ClusterAutoscaler/default`) and are never release manifests when they may pre-exist: a conditional-write hook creates
   them when absent (recording that it did) and stops loudly on foreign values when present; the pre-delete walk-back
-  follows the same proof rules as for other hook-created objects.
+  follows the same proof rules as for other hook-created objects. When the requester explicitly wants coexistence with
+  an existing singleton's configuration, an explicitly-configured take-over-with-restore field surface is the sanctioned
+  variant of that foreign-STOP default: the set hook records the pre-existing values of only the fields it manages in a
+  proof annotation before changing them and never touches unmanaged fields, and the remove hook restores the recorded
+  priors — the chart README documents exactly which field surfaces use it (reference implementation:
+  `charts/aws-nvidia-gpu-machinesets` ClusterAutoscaler). The enabling values surface (for example
+  `autoscaling.enabled: true`) is itself the declaration that the chart may take over the field surfaces it manages; the
+  chart README documents those fields and how teardown restores them.
 - A pre-delete hook walks back only what the set hook can prove it set (ownership annotations or recorded history on the
   mutated object), never foreign content; objects the hook created are deleted on uninstall only under the same proof.
   Uninstall contracts (what persists, what is walked back, what degrades) are documented in the chart README.
 - Render-time validation closes the rest: invalid compositions (conflicting values, unknown options, cross-value
   membership failures) fail the render with an actionable message rather than reaching a cluster.
+
+## Testing
+
+- The unit-test layer asserts render-time contracts only: value gating, resource shapes, RBAC scoping, render-time
+  validation diagnostics, and that platform-owned objects never render as release manifests. It is not a behavioral
+  simulator.
+- Hook-script behavior is proven by real deploys on a live cluster, not by fixture simulation. Hook-carrying charts
+  carry a minimal script smoke set at unit time — one happy-path run per hook script (python3-only tool path) and one
+  fail-closed no-tool check per chart — so trivial breakage surfaces early; state-machine behavior (retries,
+  foreign-value STOP, walk-back, concurrency) is exercised in live validation before publish.
+- Do not add fixture-based behavioral simulation of cluster objects (fake-API state machines, mocked reconciliation
+  flows): the class is brittle, slow (process-spawn multiplication), and cannot prove what a live deploy proves.
 
 ## Chart dependencies — the guard that broke run 39966995703
 
@@ -82,6 +101,9 @@ SemVer bump per functional change, `version:` and `appVersion` in lockstep. A ch
 tag is absent from ghcr; a bump whose publish failed is retried by the next push that touches `charts/**` (or a manual
 dispatch). `workflow_dispatch` publishes missing tags only and there is no force/republish input. Use stacked commits
 with dedicated push points: a publish bump must land together with any dependent's pin bump in the same push.
+- No chart version publishes — whether a fresh chart import or a version bump — until a real deploy on a live cluster
+  validates the changed chart. Local commits land without the gate; the push that publishes versions happens only after
+  live validation of every changed chart's affected surface. CI (lint/render/unit tests) is not substitute proof.
 
 ## Verification commands
 
