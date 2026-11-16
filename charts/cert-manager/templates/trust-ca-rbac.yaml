@@ -76,7 +76,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: trust-ca
+  name: cert-manager-trust-ca
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

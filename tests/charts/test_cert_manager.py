@@ -344,7 +344,8 @@ class CAFamilyTests(ChartFixture):
             "kind": "ServiceAccount",
             "metadata": {"name": "trust-ca", "namespace": "cert-manager"},
         })
-        binding = self.pick(by_kind, "ClusterRoleBinding", "trust-ca")
+        binding = self.pick(by_kind, "ClusterRoleBinding",
+                            "cert-manager-trust-ca")
         self.assertEqual(binding["roleRef"], {
             "apiGroup": "rbac.authorization.k8s.io",
             "kind": "ClusterRole",
@@ -414,7 +415,7 @@ class CAFamilyTests(ChartFixture):
             ["trust-ca"])
         self.assertEqual(
             [b["metadata"]["name"] for b in by_kind.get("ClusterRoleBinding", [])],
-            ["trust-ca"])
+            ["cert-manager-trust-ca"])
         self.assertEqual(
             [s["metadata"]["name"] for s in by_kind.get("ServiceAccount", [])],
             ["trust-ca"])
@@ -658,11 +659,11 @@ class ServingCertHookTests(ChartFixture):
         jobs = [j["metadata"]["name"] for j in by_kind.get("Job", [])]
         self.assertIn("configure-router-certificate", jobs)
         self.assertNotIn("configure-api-certificate", jobs)
-        # The trust-ca ClusterRoleBinding renders alongside (the CA family is
+        # The trust ClusterRoleBinding renders alongside (the CA family is
         # enabled by default); the API-mode grants stay off
         self.assertEqual(
             [b["metadata"]["name"] for b in by_kind.get("ClusterRoleBinding", [])],
-            ["trust-ca"])
+            ["cert-manager-trust-ca"])
         cm = self.pick(by_kind, "ConfigMap", "serving-certs-config")
         self.assertIn("configure-router-cert.sh", cm["data"])
         self.assertIn("router-reference.json", cm["data"])
@@ -1187,13 +1188,29 @@ class TrustRenderTests(ChartFixture):
                 "verbs": ["get", "patch"],
             },
         ])
-        cluster_binding = self.pick(by_kind, "ClusterRoleBinding", "trust-ca")
+        cluster_binding = self.pick(by_kind, "ClusterRoleBinding",
+                                    "cert-manager-trust-ca")
         self.assertEqual(cluster_binding["roleRef"]["name"], "trust-ca")
         self.assertEqual(cluster_binding["subjects"], [{
             "kind": "ServiceAccount",
             "name": "trust-ca",
             "namespace": "cert-manager",
         }])
+
+    def test_cluster_role_binding_avoids_the_0_1_0_name(self):
+        # 0.1.0 shipped a ClusterRoleBinding named trust-ca with roleRef
+        # cluster-admin, and roleRef is immutable — the binding must keep
+        # the collision name out of the render so the legacy object falls
+        # out of the release as a removed manifest on upgrade.
+        by_kind = self.by_kind(self.render())
+        binding = self.pick(by_kind, "ClusterRoleBinding",
+                            "cert-manager-trust-ca")
+        self.assertNotEqual(binding["metadata"]["name"], "trust-ca")
+        self.assertEqual(binding["roleRef"], {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "trust-ca",
+        })
 
     def test_trust_configmap_delivers_scripts_and_libs(self):
         cm = self.pick(self.by_kind(self.render()),

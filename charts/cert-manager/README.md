@@ -32,8 +32,8 @@ objects target it:
 - the `selfsigned-ca` Certificate, which creates the `cert-manager-ca` Secret on the self-provisioned path
 - the ACME credential Secrets from `secrets` entries under each `acme` provider (ClusterIssuer account keys and ACME
   credentials resolve in this cluster-resource namespace)
-- the `trust-ca` ServiceAccount, Role/RoleBinding, ClusterRole/ClusterRoleBinding, `trust-ca-config` ConfigMap, and
-  the `trust-ca-set`/`trust-ca-remove` hook Jobs (when `ca.trust.enabled`)
+- the `trust-ca` ServiceAccount, Role/RoleBinding, ClusterRole/ClusterRoleBinding `cert-manager-trust-ca`,
+  `trust-ca-config` ConfigMap, and the `trust-ca-set`/`trust-ca-remove` hook Jobs (when `ca.trust.enabled`)
 - the `serving-certs` ServiceAccount and the certificate hook Jobs (when a platform certificate is managed)
 
 Operator configuration
@@ -161,7 +161,8 @@ oc edit configmap user-ca-bundle -n openshift-config   # remove this chart's blo
 
 **RBAC scope, honestly stated.** The trust surface runs as the `trust-ca` ServiceAccount with resourceName-scoped
 grants: get on exactly the `cert-manager-ca` Secret, get/patch/delete on exactly the `user-ca-bundle` ConfigMap, and
-get/patch on exactly the Proxy `cluster` object. One grant is broader than that surface: **create on configmaps in
+get/patch on exactly the Proxy `cluster` object. The grants are bound through the `cert-manager-trust-ca`
+ClusterRoleBinding. One grant is broader than that surface: **create on configmaps in
 `openshift-config` is unscoped**, because RBAC cannot resourceName-scope create and the hook must create the bundle
 when it is absent. A `user-ca-bundle` ConfigMap created by something else (the same name-collision caveat class as the
 router-ca one) is merged into, never replaced; a foreign *reference* is never overwritten. The CA Secret itself
