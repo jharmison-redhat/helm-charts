@@ -39,3 +39,25 @@ hostPath disks (with monDataDirHostPath when disks are the only capacity).
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{/*
+Validates the disks entries' shape: every entry must be a mapping carrying
+a non-empty node name, and each node may appear at most once (duplicates
+would patch the same Node twice in the label hook and scope RBAC to it
+twice). Invoked from the StorageCluster template beside validateModes as
+part of the chart's render gate; it no-ops on an empty disks list.
+*/}}
+{{- define "odf.validateDisks" -}}
+{{- $names := list -}}
+{{- range $i, $entry := .Values.disks -}}
+{{- $node := "" -}}
+{{- if kindIs "map" $entry -}}
+{{- $node = trim (toString (index $entry "node" | default "")) -}}
+{{- end -}}
+{{- if eq $node "" -}}
+{{- fail (printf "disks entry %d carries no node name — each disks entry must be a mapping with a node field naming an existing cluster node (for example disks: [{node: worker-1}])" (add1 $i)) -}}
+{{- else if has $node $names -}}
+{{- fail (printf "node %s appears more than once in disks — remove the duplicate entry" $node) -}}
+{{- end -}}
+{{- $names = append $names $node -}}
+{{- end -}}
+{{- end -}}

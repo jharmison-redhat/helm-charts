@@ -1,4 +1,5 @@
 {{- include "odf.validateModes" . -}}
+{{- include "odf.validateDisks" . }}
 ---
 apiVersion: ocs.openshift.io/v1
 kind: StorageCluster
@@ -11,6 +12,7 @@ spec:
       schedule: '@weekly'
     kms: {}
   externalStorage: {}
+  enableCephTools: {{ .Values.enableCephTools }}
   {{- with .Values.monDataDirHostPath }}
   monDataDirHostPath: {{ quote . }}
   {{- end }}

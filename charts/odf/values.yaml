@@ -6,14 +6,20 @@
 #   Ceph key must be empty or false.
 # - full Ceph+MCGW: Ceph capacity from storageDeviceSets, or disks with
 #   monDataDirHostPath set.
+# enableCephTools lands on the StorageCluster's spec.enableCephTools (the
+# Ceph toolbox); the operator-managed OCSInitialization CR is never rendered
+# or patched by this chart.
 enableCephTools: true
 createStorageSystem: false
 storageDeviceSets: []
 # REQUIRED in full Ceph+MCGW mode when disks is the only capacity source —
 # host path on the labeled nodes for Ceph monitor data.
 monDataDirHostPath: ""
-# Nodes to label for ODF storage ({node: <name>} entries); each entry must pair
-# with monDataDirHostPath when no storageDeviceSets are configured.
+# Nodes to label for ODF storage ({node: <name>} entries); each entry must
+# pair with monDataDirHostPath when no storageDeviceSets are configured.
+# Applied by hook Jobs on the pre-existing Nodes (never release-owned Node
+# manifests); see the README's "Storage-node labeling" for the write and
+# teardown contracts.
 disks: []
 enableConsolePlugin: true
 resources: {}

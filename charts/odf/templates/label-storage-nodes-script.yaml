@@ -1,0 +1,18 @@
+{{- if .Values.disks }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: label-storage-nodes
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  label-storage-nodes-set.sh: |-
+    {{- .Files.Get "files/label-storage-nodes-set.sh" | nindent 4 }}
+  label-storage-nodes-remove.sh: |-
+    {{- .Files.Get "files/label-storage-nodes-remove.sh" | nindent 4 }}
+  nodes.txt: |
+    {{- range .Values.disks }}
+    {{ .node }}
+    {{- end }}
+{{- end }}

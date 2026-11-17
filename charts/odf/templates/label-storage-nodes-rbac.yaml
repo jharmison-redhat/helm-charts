@@ -1,0 +1,41 @@
+{{- if .Values.disks }}
+{{- /* Nodes are cluster-scoped, so the grants live in a ClusterRole; every
+grant is resourceName-scoped to the nodes named in the disks values. The
+ServiceAccount and hook Jobs land in the release namespace; only the
+ClusterRoleBinding subject needs to name it explicitly. */ -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: label-storage-nodes
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: label-storage-nodes
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    resourceNames:
+      {{- range .Values.disks }}
+      - {{ .node }}
+      {{- end }}
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: label-storage-nodes
+subjects:
+- kind: ServiceAccount
+  name: label-storage-nodes
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: label-storage-nodes
+{{- end }}

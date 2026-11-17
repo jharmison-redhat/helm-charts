@@ -2,8 +2,8 @@ odf
 ===
 
 A chart to deploy OpenShift Data Foundation: it renders the `StorageCluster` operand (named `ocs-storagecluster` — a
-fixed singleton name, one per cluster) along with the optional `StorageSystem`, `OCSInitialization`, Ceph/NooBaa
-visibility RBAC, console-plugin enablement, and storage-node labeling. The `odf-operator` itself is NOT installed by
+fixed singleton name, one per cluster) along with the optional `StorageSystem`, Ceph/NooBaa visibility RBAC,
+console-plugin enablement, and storage-node labeling applied by hook Jobs. The `odf-operator` itself is NOT installed by
 this chart — see Prerequisites.
 
 Configuration modes
@@ -84,13 +84,43 @@ storageDeviceSets:
 Ceph monitors require `monDataDirHostPath` when storage comes from labeled hostPath nodes; the `disks` entries label
 those nodes (`cluster.ocs.openshift.io/openshift-storage: ""`). Device sets need no node labeling.
 
-Live-validation caveat (standalone tiering)
--------------------------------------------
+Storage-node labeling
+---------------------
 
-In standalone MCGW mode the NooBaa default backing store has no Ceph objectstore to fall back on, and the tiering
-behavior (whether a usable default backing store materializes without cloud credentials) is being validated live on a
-test cluster. OBC provisioning may require an explicit `BackingStore`/`BucketClass` — do not assume the default
-`openshift-storage.noobaa.io` storage class provisions buckets in this mode until the live validation completes.
+Nodes pre-exist on the cluster (they may register late, e.g. freshly provisioned machines joining after the release was
+applied), so the chart never renders Node manifests. Instead, when `disks` is non-empty, a post-install/post-upgrade
+hook Job (`label-storage-nodes-set`) waits up to 300 seconds for every named Node to register, then sets the label
+`cluster.ocs.openshift.io/openshift-storage: ""` on it, and a pre-delete hook Job (`label-storage-nodes-remove`) walks
+the labels back on uninstall:
+
+- The set hook labels a node only when the label is absent, recording a per-node proof annotation (`odf/label-proof`)
+  when it does. A node already carrying the empty label value is a no-op. A node carrying a non-empty value on that
+  label — a value this chart did not set — stops the hook loudly, naming the node and value, instead of overwriting it.
+- The remove hook strips the label only where the proof annotation records that this chart set it, clearing the proof
+  annotation with it. Foreign labels (including pre-existing empty values and non-empty values that overwrote this
+  chart's label) are never touched. Nodes that no longer exist are skipped.
+- The remove hook targets only the nodes named in the current `disks` list. A node dropped from `disks` in an earlier
+  revision keeps its label and its `odf/label-proof` annotation indefinitely — remove them manually. The removal targets
+  are the configured node names because discovering chart-labeled nodes across the cluster would require cluster-wide
+  list permission the chart deliberately does not hold.
+- This surface **adopts and labels pre-existing nodes**. For dedicated storage provisioned via MachineSets, the label
+  belongs in the MachineSet template instead — adjusting a MachineSet does not relabel already-provisioned nodes, and
+  MachineSet-managed labeling keeps the label in the same lifecycle as the machines.
+
+Uninstall contract: the labels of the nodes named in the current `disks` list are walked back only under proof (above);
+a node dropped from `disks` in an earlier revision keeps its label and proof annotation indefinitely, and emptying
+`disks` removes the hook surface entirely so nothing walks back (remove any residual labels manually). The walk-back
+targets are the configured node names because discovering chart-labeled nodes would require cluster-wide list permission
+the chart deliberately does not hold. The `OCSInitialization` CR is never touched (see Prerequisites); the release-owned
+`StorageCluster`/`StorageSystem` and the console-plugin surface are removed with the release.
+
+Standalone tiering limitations
+------------------------------
+
+In standalone MCGW mode the NooBaa default backing store has no Ceph objectstore to fall back on, and a usable default
+backing store is not expected to materialize without cloud credentials in this mode. OBC provisioning may require an
+explicit `BackingStore`/`BucketClass` — the default `openshift-storage.noobaa.io` storage class does not reliably
+provision buckets in this mode without one.
 
 Prerequisites
 -------------
@@ -117,6 +147,10 @@ The `openshift-storage` namespace must also exist before this chart is deployed 
 does not render it. Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of
 this chart.
 
+The operator auto-creates and manages the `OCSInitialization` CR (`ocsinit`, in the operator's namespace) — the chart
+never renders, patches, or deletes it. The Ceph toolbox toggle (`enableCephTools`) is applied to the release-owned
+`StorageCluster`'s `spec.enableCephTools` field, which the operator reconciles.
+
 Install
 -------
 
@@ -129,16 +163,33 @@ Supply the mode-specific values with `-f` — one of the example files above (st
 render fails with a mode-naming diagnostic when the values combination is incoherent. Install the release into
 `openshift-storage` — the console-plugin ClusterRoleBinding references the operator's ServiceAccount there.
 
+Upgrading from 0.1.x
+--------------------
+
+Chart 0.1.x rendered one partial Node manifest per `disks` entry and an `OCSInitialization` release manifest. The first
+upgrade to 0.2.0 removes those release-owned objects: Helm deletes the Node objects the 0.1.x release owns (the nodes
+re-register from their running machines, and the set hook re-labels them within its wait window), and the operator
+recreates the `OCSInitialization` CR automatically.
+
+Plan a maintenance window for that first upgrade: while a Node object is deleted and re-registers, pods bound to it are
+eligible for garbage collection and can be deleted and rescheduled mid-window. If the deployment tooling honors
+`helm.sh/resource-policy: keep` for upgrade-removed resources, pre-annotating the existing Nodes avoids their deletion
+entirely.
+
+A 0.1.x release with a non-empty `disks` list could only exist through GitOps/SSA ownership adoption — a plain
+`helm install` fails on the pre-existing Node objects — so the churn primarily affects GitOps-managed installs.
+
 Values
 ------
 
 Real defaults live in `values.yaml`. Notable keys:
 
-- `enableCephTools` — renders an `OCSInitialization` enabling Ceph tooling (default `true`; must be `false` in
-  standalone MCGW mode)
+- `enableCephTools` — sets the `StorageCluster`'s `spec.enableCephTools` (the Ceph toolbox; default `true`; must be
+  `false` in standalone MCGW mode)
 - `createStorageSystem` — renders the `StorageSystem` CR (default `false`)
 - `storageDeviceSets` — Ceph OSD device sets passed through to the `StorageCluster`
-- `disks` — storage nodes to label for ODF (`{node: <name>}` entries)
+- `disks` — storage nodes to label for ODF (`{node: <name>}` entries), applied by hook Jobs per the Storage-node
+  labeling section
 - `monDataDirHostPath` — host path for Ceph monitor data on labeled nodes (required in full Ceph+MCGW mode when `disks`
   is the only capacity source)
 - `enableConsolePlugin` — runs a Job enabling the `odf-console` plugin

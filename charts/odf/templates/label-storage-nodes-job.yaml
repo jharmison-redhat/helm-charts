@@ -1,0 +1,71 @@
+{{- if .Values.disks }}
+{{- /* Nodes pre-exist on the cluster (they may register late), so the
+storage label is applied by these hook Jobs instead of release-owned Node
+manifests; the Jobs are deleted and recreated on upgrade so the immutable
+Job spec is never rejected. The remove hook walks back only what the set
+hook proved it set. */ -}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: label-storage-nodes-set
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  # Bounds the whole hook run. Hooks rerun idempotently (before-hook-creation
+  # plus the script's by-value writes), so a deadline kill is safe, but the
+  # margin after the script's 300s shared node-wait is not guaranteed for
+  # very large node counts.
+  activeDeadlineSeconds: 420
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: label-storage-nodes
+          image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
+          env:
+            - name: NODE_WAIT_TIMEOUT
+              value: "300"
+          command: ["/bin/bash"]
+          args:
+            - /app/label-storage-nodes-set.sh
+          volumeMounts:
+            - name: label-storage-nodes
+              mountPath: /app
+      volumes:
+        - name: label-storage-nodes
+          configMap:
+            name: label-storage-nodes
+            defaultMode: 493
+      serviceAccountName: label-storage-nodes
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: label-storage-nodes-remove
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: label-storage-nodes
+          image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
+          command: ["/bin/bash"]
+          args:
+            - /app/label-storage-nodes-remove.sh
+          volumeMounts:
+            - name: label-storage-nodes
+              mountPath: /app
+      volumes:
+        - name: label-storage-nodes
+          configMap:
+            name: label-storage-nodes
+            defaultMode: 493
+      serviceAccountName: label-storage-nodes
+{{- end }}
