@@ -4,7 +4,7 @@
 # after the operators are installed:
 #
 #   helm upgrade --install install-operators charts/install-operators \
-#       --values examples/maas-umbrella/operator-values.yaml
+#       --values examples/maas-umbrella/operator-values.yaml -n install-operators --create-namespace
 #   # wait for the operator deployments to be ready, then:
 #   helm dependency build examples/maas-umbrella
 #   helm upgrade --install maas-umbrella examples/maas-umbrella -n keycloak

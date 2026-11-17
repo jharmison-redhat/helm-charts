@@ -19,7 +19,7 @@ The operand charts require the following before the operand install:
   `ca-issuer`) exists before installing with `oc get clusterissuer ca-issuer`; a fresh cluster must create one, for
   example via this repository's cert-manager chart or an existing platform issuer. Keycloak itself uses the OpenShift
   service CA and needs no cert-manager.
-- Namespace `keycloak` exists. The operator install creates it.
+- Namespace `keycloak` is ensured by the operator install: the `install-operators` chart creates it by hook when absent.
 
 Two-install flow
 ---
@@ -35,8 +35,13 @@ its operand CR in one release. Deployment therefore uses two installs:
 
    ```
    helm upgrade --install install-operators charts/install-operators \
-       --values examples/maas-umbrella/operator-values.yaml
+       --values examples/maas-umbrella/operator-values.yaml -n install-operators --create-namespace
    ```
+
+   The release namespace `install-operators` is dedicated to this release: it hosts the chart's subscription-management
+   and namespace-ensure hook Jobs (the InstallPlan approval Job for the Manual-approval `rhcl-operator` entry runs in
+   each operator namespace). Entries that declare a `namespace` pin it explicitly; CloudNativePG declares none and uses
+   the chart's `openshift-operators` default.
 
 2. **Operand install** — this umbrella chart, which deploys `keycloak` (with its `postgres-cluster` dependency) and
    `keycloak-auth`:
@@ -47,7 +52,7 @@ its operand CR in one release. Deployment therefore uses two installs:
    ```
 
    The operand release namespace must be `keycloak`: the RHBK OperatorGroup created by the operator install watches that
-   namespace only, and `install-operators` creates the namespace. The keycloak chart defaults every resource to the
+   namespace only, and the operator install ensures the namespace. The keycloak chart defaults every resource to the
    release namespace, so with the release in `keycloak` the Keycloak CR, the KeycloakRealmImport, the postgres Cluster
    and its secrets all co-locate inside the operator's watch scope; a release in any other namespace leaves the custom
    resources unwatched.

@@ -12,6 +12,9 @@ The CloudNativePG operator is NOT installed by this chart. It must already be in
 it renders the `Cluster` custom resource directly, and a plain `helm install` fails on the missing CRD otherwise. Use
 the `install-operators` chart for the operator install.
 
+The release namespace is free (the `namespace` value defaults to the release namespace); co-locate the cluster with the
+workload that consumes it — the umbrella example installs it into `keycloak`.
+
 Usage
 -----
 

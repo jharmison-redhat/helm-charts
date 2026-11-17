@@ -28,6 +28,12 @@ The chart performs the following:
 The restart Job runs as a `post-install,post-upgrade` Helm hook (recreated on re-runs via `before-hook-creation`), so it
 re-runs on upgrades the way the source GitOps sync-wave behavior did.
 
+The release namespace is free — all resources, including the restart hook Job, live in the `kuadrant.namespace` operand
+namespace (default `kuadrant-system`). Co-locating the release
+(`helm install <name> charts/kuadrant -n kuadrant-system`) is tidy; the operand namespace must admit the root-running
+restart Job. With default values the chart does not render the operand namespace — the `install-operators` ensure hook
+creates it — and a pre-existing one must not enforce restricted Pod Security Admission.
+
 Values
 ------
 

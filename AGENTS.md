@@ -39,12 +39,12 @@ Source parity is not a goal — the contract is correct behavior under normal He
   silently adopt the object and turn it into an uninstall deletion target — for a shared Namespace that cascades to
   everything inside it (`helm uninstall` deletes chart-declared Namespaces; Kubernetes background propagation cascades
   the contents).
-- Mutate platform-owned objects only through conditional-write hook Jobs following the established pattern
-  (reference implementations: `charts/keycloak-auth` OAuth IdP + logout-redirect, `charts/cert-manager` cluster trust +
-  serving certs): scripts in `files/` delivered via ConfigMap, the chart-local `files/lib/hook-preamble.sh`
-  conditional-write engine, dual jq/python3 fail-closed, read-modify-write carrying `metadata.resourceVersion` with a
-  bounded 409 retry, foreign-value STOP, by-value idempotence, and resourceName-scoped RBAC. `create` is the one grant
-  RBAC cannot scope by name — when it is unavoidable, call it out in the README.
+- Mutate platform-owned objects only through conditional-write hook Jobs following the established pattern (reference
+  implementations: `charts/keycloak-auth` OAuth IdP + logout-redirect, `charts/cert-manager` cluster trust + serving
+  certs): scripts in `files/` delivered via ConfigMap, the chart-local `files/lib/hook-preamble.sh` conditional-write
+  engine, dual jq/python3 fail-closed, read-modify-write carrying `metadata.resourceVersion` with a bounded 409 retry,
+  foreign-value STOP, by-value idempotence, and resourceName-scoped RBAC. `create` is the one grant RBAC cannot scope by
+  name — when it is unavoidable, call it out in the README.
 - Singletons created by user or platform action may already exist with foreign configuration (e.g.
   `ClusterAutoscaler/default`) and are never release manifests when they may pre-exist: a conditional-write hook creates
   them when absent (recording that it did) and stops loudly on foreign values when present; the pre-delete walk-back
@@ -61,6 +61,19 @@ Source parity is not a goal — the contract is correct behavior under normal He
   Uninstall contracts (what persists, what is walked back, what degrades) are documented in the chart README.
 - Render-time validation closes the rest: invalid compositions (conflicting values, unknown options, cross-value
   membership failures) fail the render with an actionable message rather than reaching a cluster.
+
+### Release namespace guidance
+
+- Every chart whose placement matters documents its recommended release namespace in the chart README with an install
+  command, and states the mechanics that force the choice: objects that only function in a specific namespace (operator
+  watch scopes, secrets referenced by name, operator-watched custom resources), hook Jobs that run in the release
+  namespace, and the uninstall contract for the namespace (chart-created namespaces are never release-owned; uninstall
+  never removes them).
+- Hook Jobs run with the charts' shared tools image, which runs as root: a release namespace enforcing restricted Pod
+  Security Admission rejects the hook pods, so recommendations avoid hardened namespaces (the `default` namespace on
+  common clusters enforces restricted).
+- When the release namespace is genuinely free, the README says so; when hooks are hardcoded to a fixed object
+  namespace, the PSA constraint transfers there and the README says where.
 
 ## Testing
 
@@ -101,6 +114,7 @@ SemVer bump per functional change, `version:` and `appVersion` in lockstep. A ch
 tag is absent from ghcr; a bump whose publish failed is retried by the next push that touches `charts/**` (or a manual
 dispatch). `workflow_dispatch` publishes missing tags only and there is no force/republish input. Use stacked commits
 with dedicated push points: a publish bump must land together with any dependent's pin bump in the same push.
+
 - No chart version publishes — whether a fresh chart import or a version bump — until a real deploy on a live cluster
   validates the changed chart. Local commits land without the gate; the push that publishes versions happens only after
   live validation of every changed chart's affected surface. CI (lint/render/unit tests) is not substitute proof.

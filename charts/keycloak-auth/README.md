@@ -13,6 +13,10 @@ values once under `global.oidc` — both charts read `global.oidc.{realm,clientI
 Standalone consumers set `global.oidc.*` directly: `realm` must match a keycloak chart `realms` map key and `clientId`
 must match a client name within it, and `keycloak.name` must match the Keycloak CR name.
 
+Install with `-n keycloak` (co-located with the Keycloak stack, matching the `examples/maas-umbrella` composition) or
+any namespace that does not enforce restricted Pod Security Admission — the OAuth hook Jobs run in the release namespace
+with a root-running tools image, which namespaces enforcing restricted Pod Security Admission reject.
+
 Usage
 -----
 

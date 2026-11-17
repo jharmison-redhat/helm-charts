@@ -78,6 +78,21 @@ operators:
 (`ownSubscription: true` above opts the rhcl-operator into a release-owned Subscription; every other operator's
 Subscription is maintained by the chart's hook Jobs.)
 
+Release namespace
+---
+
+The release namespace hosts the subscription-management and namespace-ensure hook Jobs: the operator namespaces are
+ensured by hook, never release-owned, and uninstall never removes them. When `installPlanApproval: Manual` or
+`approveCSVs` are set, the InstallPlan approval Job renders in each operator namespace instead, running the same
+root-running tools image — those namespaces are created fresh by the ensure hook, so they admit it. Co-locating the
+release with an operators' namespace suits single-namespace topologies (for example
+`helm install <name> charts/install-operators -n openshift-storage`); otherwise use any namespace that exists at install
+time and does not enforce restricted Pod Security Admission, which the hook Jobs' root-running tools image trips in
+hardened namespaces (e.g. `default`). Installing into a namespace created by `--create-namespace` or pre-created
+manually takes the ensure hook's merge path: the chart's labels land, and the chart's creation-proof annotation exists
+only on namespaces the hook creates itself (informational only). Pin `operatorGroup.targetNamespaces` on real installs —
+the rendered default (no targets) is an OLM global OperatorGroup, which conflicts with an existing global group.
+
 Uninstall contract
 ---
 
@@ -314,5 +329,7 @@ operators:
         - open-cluster-management
 ```
 
-In the future, if we wanted to approve a pending upgrade to v2.17.1, we would just add it to the `approveCSVs` array and
-run a `helm upgrade`.
+With `installPlanApproval: Manual`, OLM resolves newer versions against the Subscription but leaves their InstallPlans
+pending until approved. To approve an upgrade to a specific version (for example v2.17.1), add it to the `approveCSVs`
+array and run a `helm upgrade` — the post-upgrade approval hook re-runs and approves the pending InstallPlan once its
+CSV is listed.

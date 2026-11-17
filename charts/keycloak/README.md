@@ -9,6 +9,12 @@ installed before this chart is deployed — it renders the `Keycloak` and `Keycl
 and a plain `helm install` fails on the missing CRDs otherwise. Use the `install-operators` chart for the operator
 install (see the `examples/maas-umbrella` README for the full two-install flow).
 
+Keycloak resources must land in the `keycloak` namespace: the RHBK OperatorGroup created by the operator install watches
+that namespace only, so resources in any other namespace fall outside the operator's watch scope and are silently
+ignored. The simple path is to install with `helm install <name> charts/keycloak -n keycloak`; equivalently, set the
+chart's `namespace` value to `keycloak` from any release namespace. The namespace comes into existence through the
+operator install (the `install-operators` chart ensures it).
+
 The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
 (`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres` (which moves the values
 key — see below), and condition-gated. Run `helm dependency build` before installing, or set `postgres.enabled: false`

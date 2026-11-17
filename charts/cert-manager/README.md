@@ -36,6 +36,13 @@ objects target it:
   `trust-ca-config` ConfigMap, and the `trust-ca-set`/`trust-ca-remove` hook Jobs (when `ca.trust.enabled`)
 - the `serving-certs` ServiceAccount and the certificate hook Jobs (when a platform certificate is managed)
 
+The release namespace hosts the platform-certificate hook Jobs (`job-configure-api-certificate` and
+`job-configure-router-certificate` render without a `namespace` and run in the release namespace), so it must admit the
+root-running tools image — avoid a namespace enforcing restricted Pod Security Admission. The trust hooks
+(`job-trust-ca-set`/`job-trust-ca-remove`) pin `namespace: cert-manager`, which the operator install creates fresh. The
+namespace is therefore the only placement with a chart-owned object-namespace requirement, and
+`helm install <name> charts/cert-manager -n cert-manager` satisfies both hook families at once.
+
 Operator configuration
 ----------------------
 
@@ -80,76 +87,75 @@ Cluster trust
 -------------
 
 When `ca.enabled` and `ca.trust.enabled` are both true, the chart integrates the CA family with cluster trust: a
-`trust-ca-set` hook Job (post-install,post-upgrade) propagates the CA certificate from the `cert-manager-ca` Secret
-into the `openshift-config/user-ca-bundle` ConfigMap and points the cluster Proxy's `spec.trustedCA` at it, so
-in-cluster clients trust certificates issued by `ca-issuer` (or by the bring-your-own CA). The Job waits up to
+`trust-ca-set` hook Job (post-install,post-upgrade) propagates the CA certificate from the `cert-manager-ca` Secret into
+the `openshift-config/user-ca-bundle` ConfigMap and points the cluster Proxy's `spec.trustedCA` at it, so in-cluster
+clients trust certificates issued by `ca-issuer` (or by the bring-your-own CA). The Job waits up to
 `ca.trustTimeoutSeconds` (default 120) for the `cert-manager-ca` Secret to exist before failing, and it fails — never
 installs an empty bundle — when the Secret carries no certificate: an empty referenced bundle degrades the Proxy (the
-Cluster Network Operator keeps the last-good merged bundle and reports an `InvalidProxyConfig` /
-`ProxyCAMergeFailure` condition instead of trusting nothing).
+Cluster Network Operator keeps the last-good merged bundle and reports an `InvalidProxyConfig` / `ProxyCAMergeFailure`
+condition instead of trusting nothing).
 
-Both objects are user-owned cluster inputs the release never owns blindly: it never modifies content it did not
-install, and on uninstall it deletes the bundle ConfigMap only once removing this chart's entries has emptied it. Both
-are modified under the same rules as every other platform write in this chart: read-modify-write merge patches carrying
-the live `metadata.resourceVersion`, with a concurrent modification rejected with HTTP 409 and retried (5 attempts, 2s
+Both objects are user-owned cluster inputs the release never owns blindly: it never modifies content it did not install,
+and on uninstall it deletes the bundle ConfigMap only once removing this chart's entries has emptied it. Both are
+modified under the same rules as every other platform write in this chart: read-modify-write merge patches carrying the
+live `metadata.resourceVersion`, with a concurrent modification rejected with HTTP 409 and retried (5 attempts, 2s
 apart).
 
-**The bundle is merged, never replaced.** The hook classifies every PEM block in the existing bundle: a block belongs
-to this chart when it byte-equals the Secret's current `tls.crt`, or when its base64 payload is listed in the
+**The bundle is merged, never replaced.** The hook classifies every PEM block in the existing bundle: a block belongs to
+this chart when it byte-equals the Secret's current `tls.crt`, or when its base64 payload is listed in the
 `trust-ca-history` annotation on the bundle — an annotation that is replaced, not appended to, on every hook run with
 the payload that run installed (payloads rather than hashes, because `jq` has no hash function and the mechanics must
 run under either `jq` or `python3`). The hook maintains exactly one of its own entries: the previously recorded block
 that is no longer current is pruned, so repeated CA replacements do not accumulate. Foreign blocks are never removed or
 reordered, and content the hook cannot fully parse as PEM certificates plus whitespace (mismatched PEM markers,
-unrecognized non-PEM regions, or non-empty content holding zero PEM blocks such as whitespace) stops the hook instead
-of being modified.
+unrecognized non-PEM regions, or non-empty content holding zero PEM blocks such as whitespace) stops the hook instead of
+being modified.
 
-**Foreign references stop the hook.** When the Proxy's `spec.trustedCA` already names any other ConfigMap, the set
-hook refuses to overwrite it — point `trustedCA` at `user-ca-bundle` or unset it manually, then re-run. When it
-already names `user-ca-bundle` and the bundle holds exactly the current CA certificate, the hook recognizes its own
-prior output and records the `trust-ca-owns-proxy-reference` annotation on the bundle. That annotation marks that
-this chart set the reference, and it is written only on a transition into owning it — and only after the reference
-write itself has succeeded, so a failed reference write never leaves an ownership record behind: a reference a third
-party set is never claimed, even when the hook creates or heals the bundle underneath it — teardown leaves such a
-reference in place.
+**Foreign references stop the hook.** When the Proxy's `spec.trustedCA` already names any other ConfigMap, the set hook
+refuses to overwrite it — point `trustedCA` at `user-ca-bundle` or unset it manually, then re-run. When it already names
+`user-ca-bundle` and the bundle holds exactly the current CA certificate, the hook recognizes its own prior output and
+records the `trust-ca-owns-proxy-reference` annotation on the bundle. That annotation marks that this chart set the
+reference, and it is written only on a transition into owning it — and only after the reference write itself has
+succeeded, so a failed reference write never leaves an ownership record behind: a reference a third party set is never
+claimed, even when the hook creates or heals the bundle underneath it — teardown leaves such a reference in place.
 
 **The CA is a stable, manually-managed root.** The `selfsigned-ca` Certificate pins `duration: 87600h` (`ca.duration`)
 and `privateKey.rotationPolicy: Never`, killing cert-manager's 90-day/key-rotating defaults: the anchor is valid ten
 years, and renewal at ~2/3 of the lifetime reuses the private key, so the CA's identity never churns. The hook
-propagates whatever the Secret currently holds on every run — that is propagation, not rotation. Changing
-`ca.duration` (or swapping the BYO keypair) triggers an asynchronous re-issuance by cert-manager; the bundle converges
-on the *next* hook run (a later upgrade or the re-created Job), not necessarily within the same upgrade, and until
-then the previous anchor stays valid and trusted.
+propagates whatever the Secret currently holds on every run — that is propagation, not rotation. Changing `ca.duration`
+(or swapping the BYO keypair) triggers an asynchronous re-issuance by cert-manager; the bundle converges on the _next_
+hook run (a later upgrade or the re-created Job), not necessarily within the same upgrade, and until then the previous
+anchor stays valid and trusted.
 
 **Legacy blocks from pre-0.2.0 installs are not auto-removed.** Releases older than 0.2.0 wrote the bundle with a
-key-rotating 90-day CA and kept no history annotation, so the block they installed is indistinguishable from a
-foreign one. It remains in the bundle as an inert entry (verifiers skip expired root candidates; chains verify through
-the live anchor) until a one-time manual prune — edit `openshift-config/user-ca-bundle` and delete the expired
-`selfsigned-ca` block by hand.
+key-rotating 90-day CA and kept no history annotation, so the block they installed is indistinguishable from a foreign
+one. It remains in the bundle as an inert entry (verifiers skip expired root candidates; chains verify through the live
+anchor) until a one-time manual prune — edit `openshift-config/user-ca-bundle` and delete the expired `selfsigned-ca`
+block by hand.
 
 **Teardown walks the footprint back.** A `trust-ca-remove` Job (pre-delete) unsets the Proxy reference — but only when
 the ownership annotation records that this chart set it — then removes the blocks the Secret's current certificate and
-the history annotation identify, and deletes the `user-ca-bundle` ConfigMap only when nothing remains in it (a
-non-empty bundle is written back, since the referenced ConfigMap must never be emptied). Deleting the emptied bundle
-while a third party still holds the reference returns the cluster to its prior (degraded) condition — the same state it
-was in before this chart was installed, which is the expected outcome of the walk-back, not a defect. When the Secret
-is unreadable and no history annotation exists, nothing can be identified and the hook fails safe with a diagnostic
-instead of deleting anything. **Uninstall residue is expected in one case**: when the legacy (pre-0.2.0) path ran on
-the live cluster, the reference is un-annotated and the legacy block is un-recorded, so uninstall leaves the Proxy
-reference set and the legacy block in place until the manual prune above — that is the documented behavior, not a bug.
-**A second residue arises when the write recording `trust-ca-owns-proxy-reference` fails after the set hook has already
-pointed `spec.trustedCA` at the bundle, and its shape depends on why the write failed.** If the bundle ConfigMap itself
-vanished mid-run, the reference is set but points at a missing ConfigMap, which degrades cluster trust (the Proxy
-references a nonexistent `trustedCA` bundle) — that case is recoverable by re-running the hook, which recreates the
-bundle with the current CA, with a further run then recording ownership; uninstalling before that leaves a dangling
-reference. For any other ownership-write failure the bundle is intact and the reference keeps functioning — a later run
-re-records ownership only when the bundle holds exactly the current CA at its start (a merged bundle holding foreign
-blocks never qualifies), so uninstall otherwise leaves the reference in place, pointing at the surviving bundle
-contents; the manual cleanup is unsetting `spec.trustedCA` on the Proxy.
+the history annotation identify, and deletes the `user-ca-bundle` ConfigMap only when nothing remains in it (a non-empty
+bundle is written back, since the referenced ConfigMap must never be emptied). Deleting the emptied bundle while a third
+party still holds the reference returns the cluster to its prior (degraded) condition — the same state it was in before
+this chart was installed, which is the expected outcome of the walk-back, not a defect. When the Secret is unreadable
+and no history annotation exists, nothing can be identified and the hook fails safe with a diagnostic instead of
+deleting anything. **Uninstall residue is expected in one case**: when the legacy (pre-0.2.0) path ran on the live
+cluster, the reference is un-annotated and the legacy block is un-recorded, so uninstall leaves the Proxy reference set
+and the legacy block in place until the manual prune above — that is the documented behavior, not a bug. **A second
+residue arises when the write recording `trust-ca-owns-proxy-reference` fails after the set hook has already pointed
+`spec.trustedCA` at the bundle, and its shape depends on why the write failed.** If the bundle ConfigMap itself vanished
+mid-run, the reference is set but points at a missing ConfigMap, which degrades cluster trust (the Proxy references a
+nonexistent `trustedCA` bundle) — that case is recoverable by re-running the hook, which recreates the bundle with the
+current CA, with a further run then recording ownership; uninstalling before that leaves a dangling reference. For any
+other ownership-write failure the bundle is intact and the reference keeps functioning — a later run re-records
+ownership only when the bundle holds exactly the current CA at its start (a merged bundle holding foreign blocks never
+qualifies), so uninstall otherwise leaves the reference in place, pointing at the surviving bundle contents; the manual
+cleanup is unsetting `spec.trustedCA` on the Proxy.
 
 **The trust gate is independent of issuance.** Setting `ca.trust.enabled: false` (with `ca.enabled: true`) renders the
-issuance objects — the CA family, `ca-issuer`, and the `cert-manager-ca` Secret — and nothing of the trust surface:
-no ServiceAccount, RBAC, ConfigMap, or hook Jobs. Because Helm runs pre-delete hooks only on uninstall, flipping
+issuance objects — the CA family, `ca-issuer`, and the `cert-manager-ca` Secret — and nothing of the trust surface: no
+ServiceAccount, RBAC, ConfigMap, or hook Jobs. Because Helm runs pre-delete hooks only on uninstall, flipping
 `ca.trust.enabled` off after an install stops rendering the cleanup hook too: the Proxy reference and the bundle entry
 persist until removed manually, or until the chart is uninstalled with trust re-enabled (which renders the walk-back
 hook again). The manual cleanup one-liner:
@@ -162,12 +168,12 @@ oc edit configmap user-ca-bundle -n openshift-config   # remove this chart's blo
 **RBAC scope, honestly stated.** The trust surface runs as the `trust-ca` ServiceAccount with resourceName-scoped
 grants: get on exactly the `cert-manager-ca` Secret, get/patch/delete on exactly the `user-ca-bundle` ConfigMap, and
 get/patch on exactly the Proxy `cluster` object. The grants are bound through the `cert-manager-trust-ca`
-ClusterRoleBinding. One grant is broader than that surface: **create on configmaps in
-`openshift-config` is unscoped**, because RBAC cannot resourceName-scope create and the hook must create the bundle
-when it is absent. A `user-ca-bundle` ConfigMap created by something else (the same name-collision caveat class as the
-router-ca one) is merged into, never replaced; a foreign *reference* is never overwritten. The CA Secret itself
-persists across uninstall — the owner-reference override described under "Teardown and persistence" applies chart-wide
-— so a CA that outlives its chart keeps signing for anything that still trusts it.
+ClusterRoleBinding. One grant is broader than that surface: **create on configmaps in `openshift-config` is unscoped**,
+because RBAC cannot resourceName-scope create and the hook must create the bundle when it is absent. A `user-ca-bundle`
+ConfigMap created by something else (the same name-collision caveat class as the router-ca one) is merged into, never
+replaced; a foreign _reference_ is never overwritten. The CA Secret itself persists across uninstall — the
+owner-reference override described under "Teardown and persistence" applies chart-wide — so a CA that outlives its chart
+keeps signing for anything that still trusts it.
 
 DNS01 for private names
 -----------------------
