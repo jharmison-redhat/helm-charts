@@ -1,0 +1,86 @@
+{{- if eq (include "openshift-ai.replicaSurface.enabled" .) "true" }}
+{{- include "openshift-ai.replicaSurface.config.validated" . -}}
+{{- $fullname := include "openshift-ai.replicaSurface.fullname" . }}
+{{- $deadline := add (dig "waitTimeoutSeconds" 240 .Values.replicas) 30 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-set
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
+  annotations:
+    # Recreated on every install/upgrade so the immutable Job spec is never
+    # rejected; the supporting resources are ordinary release manifests.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $deadline }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.replicaSurface.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: enforce-replicas
+          image: {{ .Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/enforce-replicas.sh"]
+          env:
+            - name: REPLICAS_WAIT_TIMEOUT
+              value: {{ dig "waitTimeoutSeconds" 240 .Values.replicas | quote }}
+            # A fresh install must not silently skip enforcement: the set
+            # hook waits for the operator-created Deployments and fails on
+            # timeout.
+            - name: REPLICAS_WAIT_FOR_MISSING
+              value: "true"
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-restore
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  # The restore has no wait phase — only bounded get/patch round-trips per
+  # Deployment — so a fixed deadline sits far above the expected few-second
+  # run while still terminating a wedged pod.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.replicaSurface.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: restore-replicas
+          image: {{ .Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/restore-replicas.sh"]
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493
+{{- end }}

@@ -172,6 +172,109 @@ integer. Shared by the bootstrap Jobs' wait values.
 {{- end -}}
 
 {{/*
+Release-qualified name of the replica-management surface's resources
+(ClusterRole / ClusterRoleBinding / ServiceAccount / ConfigMap / hook Jobs /
+CronJob). Collision-resistant across release namespaces, mirroring the
+MaasTenantConfig hook naming.
+*/}}
+{{- define "openshift-ai.replicaSurface.fullname" -}}
+{{- $base := printf "%s-replicas" .Release.Name -}}
+{{- $hash := sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 8 -}}
+{{- printf "%s-%s" (trimSuffix "-" ($base | trunc 54)) $hash -}}
+{{- end -}}
+
+{{/*
+Chart labels for the replica-management resources.
+*/}}
+{{- define "openshift-ai.replicaSurface.labels" -}}
+app.kubernetes.io/name: openshift-ai
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+Resolves the replica-management surface's gate: it renders when at least one
+component is managed (a non-null count), OR when asCronJob is not a boolean
+or is explicitly false — either enters the templates so the validation can
+fail loudly on the invalid or nothing-to-ship composition instead of
+silently rendering nothing.
+*/}}
+{{- define "openshift-ai.replicaSurface.enabled" -}}
+{{- $r := .Values.replicas | default dict -}}
+{{- $managed := false -}}
+{{- range $c := list "dashboard" "operator" -}}
+{{- if not (kindIs "invalid" (dig $c nil $r)) -}}{{- $managed = true -}}{{- end -}}
+{{- end -}}
+{{- $asCronJob := dig "asCronJob" true $r -}}
+{{- if or $managed (not (kindIs "bool" $asCronJob)) (eq $asCronJob false) -}}true{{- end -}}
+{{- end -}}
+
+{{/*
+Validates the replicas block: managed counts must be nonnegative integers
+(explicit 0 is managed — presence-aware, not falsey), asCronJob must be a
+boolean, the schedule must be a non-empty string when the CronJob mode is
+selected, the wait timeout must bound a Job deadline, and the partial-manifests
+mode must have something to ship.
+*/}}
+{{- define "openshift-ai.replicaSurface.config.validated" -}}
+{{- $r := .Values.replicas | default dict -}}
+{{- if not (kindIs "map" $r) -}}
+{{- fail (printf "replicas must be a map (got %s)" (kindOf $r)) -}}
+{{- end -}}
+{{- $asCronJob := dig "asCronJob" true $r -}}
+{{- if not (kindIs "bool" $asCronJob) -}}
+{{- fail (printf "replicas.asCronJob must be a boolean (got %s)" (kindOf $asCronJob)) -}}
+{{- end -}}
+{{- $managed := false -}}
+{{- range $c := list "dashboard" "operator" -}}
+{{- $v := dig $c nil $r -}}
+{{- if not (kindIs "invalid" $v) -}}
+{{- $managed = true -}}
+{{- if not (or (kindIs "int" $v) (kindIs "int64" $v) (and (kindIs "float64" $v) (eq $v (mulf (floor $v) 1.0)))) -}}
+{{- fail (printf "replicas.%s must be an integer or null (got %s)" $c (kindOf $v)) -}}
+{{- end -}}
+{{- if lt (int $v) 0 -}}
+{{- fail (printf "replicas.%s must be nonnegative (got %v)" $c $v) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $asCronJob -}}
+{{- $sched := dig "schedule" "*/15 * * * *" $r -}}
+{{- if not (kindIs "string" $sched) -}}
+{{- fail (printf "replicas.schedule must be a cron schedule string (got %s)" (kindOf $sched)) -}}
+{{- end -}}
+{{- if eq (trim $sched) "" -}}
+{{- fail "replicas.schedule must be a non-empty cron schedule string" -}}
+{{- end -}}
+{{- end -}}
+{{- $wait := include "openshift-ai.waitSeconds.validated" (dict "field" "replicas.waitTimeoutSeconds" "value" (dig "waitTimeoutSeconds" 240 $r)) -}}
+{{- if and (not $asCronJob) (not $managed) -}}
+{{- fail "replicas.asCronJob: false with no managed components has nothing to ship — set replicas.dashboard or replicas.operator to a count, or remove the replicas.asCronJob override to use the CronJob drift-corrector" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The managed-component lines of components.txt ("<namespace> <name> <count>"),
+newline-separated without a trailing newline. The component→Deployment
+mapping is fixed: the rhods-dashboard lives in the product applications
+namespace and the rhods-operator in the operator namespace.
+*/}}
+{{- define "openshift-ai.replicaSurface.components" -}}
+{{- $r := .Values.replicas | default dict -}}
+{{- $targets := dict
+      "dashboard" "redhat-ods-applications rhods-dashboard"
+      "operator" "redhat-ods-operator rhods-operator" -}}
+{{- $lines := list -}}
+{{- range $c := list "dashboard" "operator" -}}
+{{- $v := dig $c nil $r -}}
+{{- if not (kindIs "invalid" $v) -}}
+{{- $lines = append $lines (printf "%s %v" (get $targets $c) $v) -}}
+{{- end -}}
+{{- end -}}
+{{- join "\n" $lines -}}
+{{- end -}}
+
+{{/*
 Validates a gateway's replicas override: null omits the patch field; explicit
 values must be nonnegative integers.
 */}}

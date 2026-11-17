@@ -62,6 +62,9 @@ The chart performs the following:
   evalhub-tenant subtree (gated by `evalhub.create` AND `evalhub.tenant.create`)
 - Renders the maas-db bootstrap plumbing: ServiceAccount, RoleBinding, script ConfigMap, and the bootstrap Job in
   `maasDb.namespace` (gated by the `modelsAsAService == Managed` gate AND `maasDb.create` or `maasDb.secretName`)
+- Optionally manages the replica counts of the rhods-operator-created `rhods-dashboard`/`rhods-operator` Deployments
+  (gated by non-null `replicas.<component>` counts) through a conditional-write hook pair plus a durability layer — see
+  the "Replica management" section below; the Deployments themselves are never chart-owned
 
 The maas-db bootstrap Job runs as a `post-install,post-upgrade` Helm hook (recreated on re-runs via
 `before-hook-creation`), so it re-runs on upgrades the way the source GitOps PostSync hook did.
@@ -85,6 +88,84 @@ Every Job running on the configured cluster-local `openshift/tools:latest` image
 bootstrap, maas-tenant-config, and EvalHub credential Jobs) requires Bash plus OpenShift `oc` and the standard utilities
 the scripts use (`base64`, `date`, `sleep`, `mktemp`). The EvalHub credential Job additionally requires
 `oc set data --from-file`; the maas-db bootstrap Job requires `oc create --dry-run=client`/`apply` support.
+
+Replica management
+------------------
+
+The chart can enforce the replica counts of the two rhods-operator-created Deployments — `rhods-dashboard` in
+`redhat-ods-applications` and `rhods-operator` in `redhat-ods-operator` — via the `replicas` values block:
+
+```yaml
+replicas:
+  dashboard: null # null hands off; an explicit count (including 0) is enforced
+  operator: null
+  asCronJob: true # true: CronJob drift-corrector (default); false: partial manifests (Argo path)
+  schedule: "*/15 * * * *"
+  waitTimeoutSeconds: 240
+```
+
+Set-once enforcement (conditional-write hook pair). With at least one non-null count, a `post-install,post-upgrade` hook
+Job waits a bounded time (`replicas.waitTimeoutSeconds`, `activeDeadlineSeconds` = wait + 30) for each managed
+Deployment — the Deployments are operator-created operands that do not exist until the rhods-operator reconciles the
+`DataScienceCluster` — then read-modify-writes `spec.replicas` to the configured count, carrying the live
+`metadata.resourceVersion` with a bounded 409 retry. The first write records the Deployment's pre-existing count in a
+proof annotation (`openshift-ai/replicas-prior`) on the Deployment itself; the recorded prior is never re-baselined
+while the annotation survives, and writes are by-value idempotent. The operator's own reconciles and a CronJob
+correction from this chart do not re-record (a restore always goes to the first recorded prior). A `pre-delete` hook
+restores the recorded priors and clears the annotations: a prior recorded as `unset` (the Deployment carried no
+`spec.replicas` field when the chart first managed it) removes the field again. Deployments without the proof annotation
+are never touched, and the Deployments themselves are never release manifests — uninstall never deletes them. Removing a
+count from management (`dashboard: 1` → `dashboard: null`) does not restore its prior: only uninstall walks the recorded
+values back, so un-manage a component deliberately (restore the count manually first, or accept the persisted override).
+
+First-install timing: setting counts on the first install of this chart is representable but racy — the hook waits only
+`replicas.waitTimeoutSeconds` (default 240s, `activeDeadlineSeconds` wait + 30) for the operator to deploy the operands,
+and a fresh `DataScienceCluster` reconcile can exceed that, failing the install. Prefer installing without managed
+counts first and adding them on a follow-up upgrade, or raise both `waitTimeoutSeconds` and the Helm `--timeout`.
+
+Durability modes (`replicas.asCronJob`). The operator's live-replicas-wins merge means in-place reconciles preserve an
+externally patched replica count, but anything that RECREATES a Deployment — OLM CSV bumps recreating operands at
+manifest defaults (dashboard 2, operator 3), Argo adoption churn — reverts the count until something re-asserts it. Two
+enforcement mechanisms exist for the configured counts:
+
+- `asCronJob: true` (default): the chart renders a release-owned CronJob drift-corrector (release namespace,
+  `concurrencyPolicy: Forbid`, `replicas.schedule` controls the interval) that runs the same enforcement script on a
+  schedule. A recreate reverts the count and loses the proof annotation; the next scheduled run re-baselines the
+  recreated Deployment's count as the new recorded prior and re-asserts the configured count, so a revert is corrected
+  within one interval. The CronJob is an ordinary release manifest any GitOps tool can own and watch. Schedule runs skip
+  Deployments that do not exist (a removed or not-yet-reconciled component) instead of failing every interval.
+- `asCronJob: false`: the chart ships literal patch-shaped Deployment manifests (`metadata.annotations` +
+  `spec.replicas` only) carrying `argocd.argoproj.io/sync-options: ServerSideApply=true` pre-set for ArgoCD adoption,
+  for consumers whose GitOps manages the Deployments directly. This mode is hazardous under plain Helm and Flux, and the
+  chart only renders it when at least one count is managed (the nothing-to-ship composition fails at render). Hazards,
+  documented deliberately because the mode is opt-in:
+  - Under plain Helm, installing a partial Deployment manifest ADOPTS the pre-existing operator-created Deployment into
+    the release — ownership of the whole object, not just the patched field. `helm uninstall` then deletes the entire
+    Deployment (and its rollout cascades), not just the replica override. The manifests therefore carry
+    `helm.sh/resource-policy: keep`, which makes Helm skip deletion of the object on uninstall and on value removal —
+    the object survives for Argo (or the operator's recreate) to own. Residual Helm ownership labels on the kept object
+    are harmless but visible.
+  - Flux/SSA does not adopt whole objects the way Helm does, but it also cannot own a single field of an object it does
+    not fully manage; manage these manifests through Argo or not at all.
+  - The hook pair renders and runs at install/upgrade in both modes — the `asCronJob` choice selects the durability
+    layer, not whether the hooks exist. The partial manifests ADD the Argo/SSA path on top of the hooks, and both write
+    the same field: under plain Helm, the set hook and a partial manifest patch one Deployment in turn (the hooks win on
+    their schedule). When no GitOps tool manages the Deployments, the CronJob mode is the alternative durability layer —
+    it re-asserts the counts on a schedule without rendering release-owned Deployment manifests.
+  - Uninstall in this mode does not restore the recorded priors unless the `pre-delete` hook runs (it does — the hook
+    pair still renders in this mode) — but the kept Deployment persists with whatever count it had at uninstall.
+
+Reconcile-fight caveats. The rhods-operator's deploy action merges live `spec.replicas` into its desired state, so
+in-place reconciles preserve an externally patched count ("live always wins") — EXCEPT for Deployments annotated
+`opendatahub.io/managed-by-odh-operator: "true"`, for which the preservation branch is skipped. Whether a given RHOAI
+release annotates the dashboard that way is release-specific; verify against the live Deployments before trusting either
+durability mode on a real cluster. Recreate events (OLM CSV bumps, operator upgrades) revert counts to manifest defaults
+regardless of that annotation — this is the observed behavior the durability layer exists to correct.
+
+Uninstall contract. The Deployments are never chart-owned in either mode: with the CronJob mode, uninstall runs the
+`pre-delete` restore hook (recorded priors restored under proof, annotations cleared, CronJob and hook plumbing removed)
+and nothing else touches the Deployments; with the partial-manifests mode, `helm.sh/resource-policy: keep` leaves the
+patched Deployments in place after the same restore.
 
 Gateway classes
 ---------------
@@ -222,7 +303,11 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   Queue-type profile (`type: Queue`) must set `kueue.localQueueName` naming an existing LocalQueue in the profile's
   namespace (default: `redhat-ods-applications`); rendering fails otherwise, since a missing LocalQueue reference
   produces a non-functional profile that stalls workloads inadmissible
-- `dashboardReplicas` / `operatorReplicas` — set-on-upgrade knobs: override the replica counts of the
-  `rhods-dashboard`/`rhods-operator` Deployments. Must NOT be set on first install — the Deployments do not exist until
-  the rhods-operator creates the operands, and a partial manifest would render an invalid Deployment. Leave unset (null)
-  until after the operator has deployed.
+- `replicas` — replica management for the `rhods-dashboard`/`rhods-operator` Deployments (all components default `null`
+  = hands-off): per-component counts (`dashboard`/`operator` — explicit 0 is managed, presence-aware), `asCronJob`
+  (default `true`: CronJob drift-corrector; `false`: patch-shaped partial Deployment manifests with server-side-apply
+  annotations for the Argo path — README-documented hazards, fails at render with no managed counts), `schedule`
+  (default `*/15 * * * *`), and `waitTimeoutSeconds` (default 240; the set Job's `activeDeadlineSeconds` is this + 30;
+  must be a positive integer, validated at render time). Requires the rhods-operator to be installed first — the managed
+  Deployments do not exist before it deploys the operands. See the "Replica management" section above for the full
+  enforcement, durability, and uninstall contract

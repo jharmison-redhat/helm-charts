@@ -59,13 +59,32 @@ enableUserTelemetry: false
 kedaMetricsReader:
   create: false
 
-# Set-on-upgrade knobs: override the replica counts of the rhods-dashboard /
-# rhods-operator Deployments. Must NOT be set on first install — the
-# Deployments do not exist until the rhods-operator creates them, and a
-# partial manifest would render an invalid Deployment. Leave unset (null)
-# until after the operator has deployed the operands.
-dashboardReplicas: null
-operatorReplicas: null
+# Replica management for the rhods-operator-created Deployments (the
+# rhods-dashboard in redhat-ods-applications and the rhods-operator in
+# redhat-ods-operator). The Deployments are never chart-owned: managed counts
+# are enforced by a conditional-write hook pair (set on install/upgrade,
+# restore on uninstall), with the pre-existing count recorded in a proof
+# annotation on each Deployment. Requires the rhods-operator to be installed
+# first — the Deployments do not exist before it deploys the operands.
+replicas:
+  # Per-component managed count. null hands the component's replica count off
+  # (nothing is enforced or recorded); an explicit count (including 0) is
+  # enforced. Removing a count does not restore the recorded prior — only
+  # uninstall walks it back
+  dashboard: null
+  operator: null
+  # Enforcement mechanism for managed counts: true (default) re-asserts them
+  # from the chart's CronJob drift-corrector on the schedule below; false
+  # ships patch-shaped partial Deployment manifests instead, carrying
+  # server-side-apply annotations pre-set for ArgoCD adoption (README-
+  # documented hazards). Must be false only with at least one managed count
+  asCronJob: true
+  # CronJob drift-corrector schedule (only when asCronJob is true)
+  schedule: "*/15 * * * *"
+  # Bounded wall-clock wait (seconds) for each managed Deployment to appear
+  # before the set hook fails; the Job's activeDeadlineSeconds is this + 30.
+  # Must be a positive integer (validated at render time)
+  waitTimeoutSeconds: 240
 
 dataScienceCluster:
   create: true

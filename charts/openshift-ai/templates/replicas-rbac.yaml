@@ -1,0 +1,54 @@
+{{- if eq (include "openshift-ai.replicaSurface.enabled" .) "true" }}
+{{- include "openshift-ai.replicaSurface.config.validated" . -}}
+{{- $fullname := include "openshift-ai.replicaSurface.fullname" . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
+rules:
+  # get/patch only, resource-name-scoped to the managed Deployments. The
+  # cluster scope of the permission covers the two product namespaces the
+  # Deployments live in (a Role in redhat-ods-applications cannot be used
+  # because that namespace does not exist until the operator creates it —
+  # the same first-install-independence boundary as the MaasTenantConfig
+  # hook's ClusterRole).
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    resourceNames:
+      {{- range list "dashboard" "operator" }}
+      {{- if not (kindIs "invalid" (dig . nil $.Values.replicas)) }}
+      - rhods-{{ . }}
+      {{- end }}
+      {{- end }}
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullname }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

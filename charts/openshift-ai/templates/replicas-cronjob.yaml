@@ -1,0 +1,48 @@
+{{- if eq (include "openshift-ai.replicaSurface.enabled" .) "true" }}
+{{- include "openshift-ai.replicaSurface.config.validated" . -}}
+{{- if dig "asCronJob" true .Values.replicas }}
+{{- $fullname := include "openshift-ai.replicaSurface.fullname" . }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
+spec:
+  schedule: {{ dig "schedule" "*/15 * * * *" .Values.replicas | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "openshift-ai.replicaSurface.labels" . | nindent 12 }}
+        spec:
+          serviceAccountName: {{ $fullname }}
+          restartPolicy: Never
+          containers:
+            - name: enforce-replicas
+              image: {{ .Values.global.toolsImage }}
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "/config/enforce-replicas.sh"]
+              env:
+                # Schedule runs skip Deployments that do not exist (a removed
+                # or not-yet-reconciled component) instead of failing every
+                # interval; the next run re-checks.
+                - name: REPLICAS_WAIT_FOR_MISSING
+                  value: "false"
+              volumeMounts:
+                - name: config
+                  mountPath: /config
+          volumes:
+            - name: config
+              configMap:
+                name: {{ $fullname }}
+                defaultMode: 493
+{{- end }}
+{{- end }}

@@ -1,0 +1,30 @@
+{{- if eq (include "openshift-ai.replicaSurface.enabled" .) "true" }}
+{{- include "openshift-ai.replicaSurface.config.validated" . -}}
+{{- if not (dig "asCronJob" true .Values.replicas) }}
+{{- /* GitOps durability mode: literal patch-shaped Deployment manifests
+carrying server-side-apply annotations pre-set for ArgoCD adoption. The
+resource-policy keep annotation is the uninstall mitigation — plain Helm
+otherwise deletes the whole (operator-created, Argo-adopted) Deployment on
+uninstall or on removing the value. */ -}}
+{{- range $c := list "dashboard" "operator" }}
+{{- $count := dig $c nil $.Values.replicas }}
+{{- if not (kindIs "invalid" $count) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rhods-{{ $c }}
+  namespace: {{ get (dict "dashboard" "redhat-ods-applications" "operator" "redhat-ods-operator") $c }}
+  annotations:
+    argocd.argoproj.io/sync-options: ServerSideApply=true
+    {{- /* Uninstall mitigation: plain Helm deletes a release-owned object on
+    uninstall (and on value removal), which would delete the whole
+    operator-created Deployment this partial manifest patched. keep leaves
+    the object in place for Argo (or the operator's recreate) to own. */}}
+    helm.sh/resource-policy: keep
+spec:
+  replicas: {{ $count }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
