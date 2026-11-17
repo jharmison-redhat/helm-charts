@@ -4,6 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: label-storage-nodes
+  namespace: openshift-storage
 data:
   hook-preamble.sh: |-
     {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}

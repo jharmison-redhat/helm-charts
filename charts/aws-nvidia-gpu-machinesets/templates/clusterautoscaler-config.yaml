@@ -26,6 +26,7 @@ ConfigMap and runs its own script from it */ -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  namespace: openshift-machine-api
   name: clusterautoscaler-config
 data:
   hook-preamble.sh: |-

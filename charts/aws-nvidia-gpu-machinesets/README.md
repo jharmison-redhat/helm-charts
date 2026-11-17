@@ -41,10 +41,12 @@ helm install <name> charts/aws-nvidia-gpu-machinesets -n openshift-machine-api \
   --set aws.ami=<ami-id>
 ```
 
-The MachineSet and MachineAutoscaler templates carry no namespace — they install into the target namespace, which must
-be `openshift-machine-api` because the referenced credentials and user-data secrets live there. The hook Jobs, their
-ConfigMap, and their ServiceAccount install into the release namespace too; the ClusterAutoscaler they configure is
-cluster-scoped.
+The release namespace is free — every namespaced object this chart renders pins `namespace: openshift-machine-api`
+outright: the MachineSets and MachineAutoscalers must live there because the referenced credentials and user-data
+secrets the installer created live there, and the hook Jobs, their ConfigMap, and their ServiceAccount pin it too (the
+ClusterRole/ClusterRoleBinding are cluster-scoped, as is the ClusterAutoscaler the hook pair configures). Any release
+namespace works; `openshift-machine-api` itself is a natural choice and pre-exists on every cluster (it is not
+Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use).
 
 Replica semantics
 -----------------

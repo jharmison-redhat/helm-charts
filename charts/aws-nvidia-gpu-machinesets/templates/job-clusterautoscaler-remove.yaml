@@ -7,6 +7,7 @@ resources are deleted */ -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
+  namespace: openshift-machine-api
   name: clusterautoscaler-remove
   annotations:
     helm.sh/hook: pre-delete

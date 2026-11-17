@@ -2,8 +2,8 @@
 covers the umbrella-level wiring contract: the keycloak subchart reads
 `realms` from the umbrella's top-level values (a `realms` block nested under
 another subchart's key renders nothing), the ocp-idp client disables direct
-access grants, and the keycloak subchart's resources land in the release
-namespace so they co-locate inside the RHBK OperatorGroup's watch scope.
+access grants, and the keycloak subchart pins namespace keycloak on every
+resource so they co-locate inside the RHBK OperatorGroup's watch scope.
 
 Render tests copy the umbrella and the real keycloak chart into a temp dir,
 stub the three subchart dependencies locally (postgres-cluster nested inside
@@ -86,10 +86,10 @@ class UmbrellaFixture(unittest.TestCase):
         if result.returncode != 0:
             raise AssertionError("%s failed: %s" % (cmd[0], result.stderr))
 
-    def render(self):
+    def render(self, namespace=RELEASE_NS):
         result = subprocess.run(
             ["helm", "template", "maas-umbrella", self.umbrella,
-             "--namespace", RELEASE_NS],
+             "--namespace", namespace],
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return docs(result.stdout)
@@ -116,14 +116,20 @@ class RealmCompositionTests(UmbrellaFixture):
         self.assertIs(client["directAccessGrantsEnabled"], False)
 
 
-class ReleaseNamespaceTests(UmbrellaFixture):
-    def test_keycloak_resources_co_locate_in_the_release_namespace(self):
-        rendered = [d for d in self.render()
+class KeycloakNamespacePinningTests(UmbrellaFixture):
+    def test_keycloak_resources_pin_the_keycloak_namespace(self):
+        # The keycloak subchart pins namespace keycloak on every
+        # Keycloak, KeycloakRealmImport, and Route it renders, so they
+        # co-locate inside the RHBK OperatorGroup's watch scope whatever
+        # namespace the umbrella release installs into — proven by
+        # rendering the umbrella into a deliberately foreign release
+        # namespace
+        rendered = [d for d in self.render(namespace="foreign-ns")
                     if d["kind"] in ("Keycloak", "KeycloakRealmImport",
                                      "Route")]
         self.assertEqual(
             {d["kind"] for d in rendered},
             {"Keycloak", "KeycloakRealmImport", "Route"})
         for d in rendered:
-            self.assertEqual(d["metadata"]["namespace"], RELEASE_NS,
+            self.assertEqual(d["metadata"]["namespace"], "keycloak",
                              (d["kind"], d["metadata"]["name"]))

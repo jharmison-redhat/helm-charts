@@ -1,13 +1,14 @@
 {{- if .Values.disks }}
 {{- /* Nodes are cluster-scoped, so the grants live in a ClusterRole; every
 grant is resourceName-scoped to the nodes named in the disks values. The
-ServiceAccount and hook Jobs land in the release namespace; only the
-ClusterRoleBinding subject needs to name it explicitly. */ -}}
+ServiceAccount, hook Jobs, and ConfigMap pin openshift-storage — the release
+namespace carries no chart objects. */ -}}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: label-storage-nodes
+  namespace: openshift-storage
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -33,7 +34,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name: label-storage-nodes
-  namespace: {{ .Release.Namespace }}
+  namespace: openshift-storage
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

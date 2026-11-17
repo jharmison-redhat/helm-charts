@@ -9,6 +9,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: label-storage-nodes-set
+  namespace: openshift-storage
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-delete-policy: before-hook-creation
@@ -45,6 +46,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: label-storage-nodes-remove
+  namespace: openshift-storage
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-delete-policy: before-hook-creation

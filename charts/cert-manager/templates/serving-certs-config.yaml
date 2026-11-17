@@ -11,6 +11,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: serving-certs-config
+  namespace: cert-manager
 data:
   hook-preamble.sh: |-
     {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}

@@ -725,16 +725,19 @@ class ServingCertHookTests(ChartFixture):
                                   "defaultMode": 493},
                 }])
 
-    def test_service_account_renders_once_for_both_modes(self):
+    def test_serving_surface_pins_cert_manager(self):
+        # The release namespace is free: the hook Jobs, their ConfigMap,
+        # and the ServiceAccount pin cert-manager regardless of where the
+        # release installs (the fixture renders into test-release-ns)
         by_kind = self.managed_render(modes=("api", "router"))
-        sas = [s["metadata"]["name"] for s in by_kind["ServiceAccount"]]
-        self.assertEqual(sas.count("serving-certs"), 1)
         for job_name in ("configure-router-certificate",
                          "configure-api-certificate"):
             job = self.pick(by_kind, "Job", job_name)
-            self.assertNotIn("namespace", job["metadata"])
+            self.assertEqual(job["metadata"]["namespace"], "cert-manager")
         sa = self.pick(by_kind, "ServiceAccount", "serving-certs")
-        self.assertNotIn("namespace", sa["metadata"])
+        self.assertEqual(sa["metadata"]["namespace"], "cert-manager")
+        cm = self.pick(by_kind, "ConfigMap", "serving-certs-config")
+        self.assertEqual(cm["metadata"]["namespace"], "cert-manager")
 
     def test_router_grants_are_resource_scoped_in_ingress_operator_ns(self):
         by_kind = self.managed_render(modes=("router",))
@@ -758,7 +761,7 @@ class ServingCertHookTests(ChartFixture):
         self.assertEqual(binding["subjects"], [{
             "kind": "ServiceAccount",
             "name": "serving-certs",
-            "namespace": "test-release-ns",
+            "namespace": "cert-manager",
         }])
 
     def test_api_grants_are_cluster_scoped_and_resource_named(self):
@@ -779,7 +782,7 @@ class ServingCertHookTests(ChartFixture):
         self.assertEqual(binding["subjects"], [{
             "kind": "ServiceAccount",
             "name": "serving-certs",
-            "namespace": "test-release-ns",
+            "namespace": "cert-manager",
         }])
 
     def test_reference_files_follow_values(self):

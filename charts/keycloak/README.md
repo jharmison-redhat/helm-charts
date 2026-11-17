@@ -11,9 +11,9 @@ install (see the `examples/maas-umbrella` README for the full two-install flow).
 
 Keycloak resources must land in the `keycloak` namespace: the RHBK OperatorGroup created by the operator install watches
 that namespace only, so resources in any other namespace fall outside the operator's watch scope and are silently
-ignored. The simple path is to install with `helm install <name> charts/keycloak -n keycloak`; equivalently, set the
-chart's `namespace` value to `keycloak` from any release namespace. The namespace comes into existence through the
-operator install (the `install-operators` chart ensures it).
+ignored. The release namespace is free — every template pins `namespace: keycloak` outright, so any release namespace
+works, and `helm install <name> charts/keycloak -n keycloak` remains the natural choice. The namespace comes into
+existence through the operator install (the `install-operators` chart ensures it).
 
 The chart declares an OCI dependency on the published `postgres-cluster` chart of this repository
 (`oci://ghcr.io/jharmison-redhat/helm-charts`), pinned `>=0.1.0 <0.2.0`, aliased to `postgres` (which moves the values
@@ -88,13 +88,14 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   secret). Setting `realm` to a name with no matching `realms` entry makes the issuer point at a realm that was never
   imported (no fail-fast). The optional `consoleHost` override names the OpenShift web console host for the
   single-logout wiring (default: derived — see Single logout below)
-- `namespace` — namespace for the Keycloak resources (empty by default, meaning the release namespace)
 - `replicas` — number of Keycloak instances (default: `1`)
 - `emailDomain` — domain used for realm-user email defaults (default: `example.com`)
 - `postgres` — the backing PostgreSQL `Cluster` via the postgres-cluster dependency (aliased to `postgres`, enabled by
-  default; named `keycloak-postgres` via `fullnameOverride`, 1 instance, 2Gi storage, modest resource requests/limits).
-  The cluster uses the CloudNativePG default bootstrap — see the `keycloak.pg.fullname` helper in
-  `templates/_helpers.tpl` for the naming convention the `db` block defaults rely on
+  default; named `keycloak-postgres` via `fullnameOverride`, pinned to `keycloak` via `postgres.namespace`, 1 instance,
+  2Gi storage, modest resource requests/limits — the pin is render-enforced: any other value fails the render, because
+  the Keycloak CR pins `keycloak` and the `db` host defaults to same-namespace short-name DNS). The cluster uses the
+  CloudNativePG default bootstrap — see the `keycloak.pg.fullname` helper in `templates/_helpers.tpl` for the naming
+  convention the `db` block defaults rely on
 - `db.host` / `db.database` / `db.credentialsSecret` — external database overrides used when the `postgres` dependency
   is disabled (all three are then required; by default they derive from the dependency's cluster)
 - `realms` — map of realm definitions (see the commented example for clients, roles, users, groups, and representative

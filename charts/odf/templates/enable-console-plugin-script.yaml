@@ -4,6 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: enable-odf-console-plugin
+  namespace: openshift-storage
 {{- /*
 The blank-line replace reproduces AsConfig's blank-line indentation so the
 rendered data stays byte-identical to the previous glob-based rendering.

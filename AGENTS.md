@@ -74,6 +74,9 @@ Source parity is not a goal — the contract is correct behavior under normal He
   common clusters enforces restricted).
 - When the release namespace is genuinely free, the README says so; when hooks are hardcoded to a fixed object
   namespace, the PSA constraint transfers there and the README says where.
+- When a chart has a canonical object namespace (operator watch scopes, platform namespaces its objects require), the
+  templates pin it outright — the release namespace carries no chart objects, and the README says the release namespace
+  is free.
 
 ## Testing
 

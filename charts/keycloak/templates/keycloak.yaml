@@ -5,13 +5,18 @@
 {{- if or (not $db.host) (not $db.database) (not $db.credentialsSecret) }}
 {{- fail "postgres-cluster dependency is disabled or its values block is absent: provide postgres values so the cluster name is stable, or set db.host, db.database and db.credentialsSecret overrides for an external database" }}
 {{- end }}
+{{- else }}
+{{- $pgNamespace := $pg.namespace | default .Release.Namespace }}
+{{- if ne $pgNamespace "keycloak" }}
+{{- fail (printf "postgres.namespace must stay 'keycloak' (got %q): the Keycloak CR pins the keycloak namespace and the db host defaults to the same-namespace short-name DNS (%s-rw), so a Cluster in any other namespace would silently break the database connection — set postgres.namespace: 'keycloak' (the default) or, for a database elsewhere, disable the postgres dependency and supply db.host/db.database/db.credentialsSecret overrides" $pgNamespace (include "keycloak.pg.fullname" .)) }}
+{{- end }}
 {{- end }}
 {{- $cluster := include "keycloak.pg.fullname" . }}
 apiVersion: k8s.keycloak.org/v2alpha1
 kind: Keycloak
 metadata:
   name: {{ include "keycloak.name" . }}
-  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  namespace: keycloak
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:

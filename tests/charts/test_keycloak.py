@@ -76,6 +76,19 @@ class ChartFixture(unittest.TestCase):
         """Renders a single-realm values set; returns all rendered docs."""
         return self.render_values({"realms": {"test": realm}})
 
+    def render_failure(self, values):
+        """Renders values expected to trip validation; returns stderr."""
+        self.stub_dependency()
+        result = subprocess.run(
+            ["helm", "template", "test-release", self.dir,
+             "--namespace", "test-release-ns",
+             "--values", self.values_file(values)],
+            capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0,
+                            "expected a validation failure, but rendering "
+                            "succeeded")
+        return result.stderr
+
     def render_realm(self, realm):
         """Renders a single-realm values set; returns the realm spec of the
         rendered KeycloakRealmImport."""
@@ -196,6 +209,13 @@ class BaselineRenderTests(ChartFixture):
             "keycloak-internal-tls")
         self.assertNotIn("spec", services[0])
 
+    def test_every_object_pins_the_keycloak_namespace(self):
+        # The RHBK OperatorGroup watches the keycloak namespace only, so
+        # every template pins it outright — the release namespace is free
+        # (the fixture renders into test-release-ns)
+        for d in self.render_docs(self.base_realm()):
+            self.assertEqual(d["metadata"]["namespace"], "keycloak", d)
+
     def test_default_render_matches_contract(self):
         # No boolean field set anywhere: the eight default-true fields render
         # true and fullScopeAllowed is absent.
@@ -204,6 +224,27 @@ class BaselineRenderTests(ChartFixture):
             self.assertIs(self.get_field(rendered, scope, field), True,
                           (scope, field))
         self.assertNotIn("fullScopeAllowed", rendered["clients"][0])
+
+
+class PostgresNamespaceGuardTests(ChartFixture):
+    """The postgres namespace pin is render-enforced: the Keycloak CR pins
+    the keycloak namespace and the db host defaults to same-namespace
+    short-name DNS, so a Cluster anywhere else silently breaks the database
+    connection — the render fails instead."""
+
+    def test_foreign_postgres_namespace_fails_render(self):
+        stderr = self.render_failure(
+            {"postgres": {"enabled": True, "namespace": "database"}})
+        self.assertIn("postgres.namespace must stay 'keycloak'", stderr)
+        self.assertIn('(got "database")', stderr)
+
+    def test_cleared_postgres_namespace_falls_back_to_release_ns(self):
+        # An explicitly empty namespace makes the subchart use the release
+        # namespace, so it only co-locates when the release installs into
+        # keycloak — a foreign release namespace fails the render the same
+        # way an explicitly foreign pin does
+        stderr = self.render_failure({"postgres": {"namespace": ""}})
+        self.assertIn("postgres.namespace must stay 'keycloak'", stderr)
 
 
 class LogoutRedirectTests(ChartFixture):

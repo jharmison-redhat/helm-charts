@@ -7,6 +7,7 @@ immutable Job spec is never rejected */ -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
+  namespace: openshift-machine-api
   name: clusterautoscaler-set
   annotations:
     helm.sh/hook: post-install,post-upgrade

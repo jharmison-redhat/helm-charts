@@ -92,7 +92,7 @@ class ChartFixture(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
-    def render_raw(self, values=None):
+    def render_raw(self, values=None, namespace="openshift-machine-api"):
         merged = copy.deepcopy(BASE_VALUES)
         if values is not None:
             for key, val in values.items():
@@ -101,12 +101,12 @@ class ChartFixture(unittest.TestCase):
                 else:
                     merged[key] = val
         cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", "openshift-machine-api",
+               "--namespace", namespace,
                "--values", self.values_file(merged)]
         return subprocess.run(cmd, capture_output=True, text=True)
 
-    def render(self, values=None):
-        result = self.render_raw(values)
+    def render(self, values=None, namespace="openshift-machine-api"):
+        result = self.render_raw(values, namespace=namespace)
         self.assertEqual(result.returncode, 0, result.stderr)
         return [d for d in docs(result.stdout) if d is not None]
 
@@ -130,8 +130,9 @@ class ChartFixture(unittest.TestCase):
         assert len(matches) == 1, (kind, name, by_kind.get(kind))
         return matches[0]
 
-    def render_enabled(self, **kwargs):
-        return self.by_kind(self.render(autoscaler_values(**kwargs)))
+    def render_enabled(self, namespace="openshift-machine-api", **kwargs):
+        return self.by_kind(
+            self.render(autoscaler_values(**kwargs), namespace=namespace))
 
 
 class GatingTests(ChartFixture):
@@ -202,12 +203,31 @@ class GatingTests(ChartFixture):
                               "defaultMode": 493},
             }])
 
-    def test_service_account_renders_without_namespace(self):
-        # The hook surface installs into the release namespace
-        # (openshift-machine-api), which the release supplies
-        sa = self.pick(self.render_enabled(), "ServiceAccount",
-                       "clusterautoscaler")
-        self.assertNotIn("namespace", sa["metadata"])
+    def test_every_object_pins_openshift_machine_api(self):
+        # The release namespace is free: every namespaced chart object pins
+        # openshift-machine-api outright, regardless of where the release
+        # installs — proven by rendering into a deliberately foreign release
+        # namespace. The ClusterRole/ClusterRoleBinding are cluster-scoped
+        # and carry no namespace; the binding's subject still pins the
+        # canonical namespace for its ServiceAccount.
+        by_kind = self.render_enabled(namespace="foreign-ns")
+        expected = {
+            "MachineSet": by_kind["MachineSet"],
+            "MachineAutoscaler": by_kind["MachineAutoscaler"],
+            "Job": by_kind["Job"],
+            "ServiceAccount": by_kind["ServiceAccount"],
+            "ConfigMap": by_kind["ConfigMap"],
+        }
+        for kind, docs in expected.items():
+            for doc in docs:
+                self.assertEqual(doc["metadata"]["namespace"],
+                                 "openshift-machine-api", (kind, doc))
+        binding = self.pick(by_kind, "ClusterRoleBinding", "clusterautoscaler")
+        self.assertEqual(binding["subjects"], [{
+            "kind": "ServiceAccount",
+            "name": "clusterautoscaler",
+            "namespace": "openshift-machine-api",
+        }])
 
     def test_rbac_is_resource_name_scoped(self):
         by_kind = self.render_enabled()

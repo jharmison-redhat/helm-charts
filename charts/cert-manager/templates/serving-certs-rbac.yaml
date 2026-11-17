@@ -6,6 +6,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: serving-certs
+  namespace: cert-manager
 {{- if .Values.certificates.router.managed }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -36,7 +37,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: serving-certs
-  namespace: {{ .Release.Namespace }}
+  namespace: cert-manager
 {{- end }}
 {{- if .Values.certificates.api.managed }}
 ---
@@ -66,6 +67,6 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: serving-certs
-  namespace: {{ .Release.Namespace }}
+  namespace: cert-manager
 {{- end }}
 {{- end }}

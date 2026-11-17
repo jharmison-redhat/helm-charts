@@ -32,9 +32,6 @@ oidcLogoutRedirect:
 nameOverride: ""
 fullnameOverride: ""
 
-# Namespace for the Keycloak resources; empty means the release namespace
-namespace: ""
-
 replicas: 1
 
 # Domain used for realm-user email defaults (userN@<emailDomain>)
@@ -48,9 +45,13 @@ emailDomain: example.com
 # PostgreSQL Cluster backing the Keycloak instance, deployed through the
 # postgres-cluster chart dependency (aliased to `postgres`, which moves the
 # values key). With the dependency disabled, the `db` block below overrides
-# the external database connection.
+# the external database connection. The namespace pin keeps the Cluster
+# co-located with the Keycloak CR (which the RHBK operator watches only in
+# `keycloak`) and reachable through the db block's same-namespace
+# short-name service DNS, whatever the release namespace is.
 postgres:
   enabled: true
+  namespace: keycloak
   fullnameOverride: keycloak-postgres
   instances: 1
   storage:

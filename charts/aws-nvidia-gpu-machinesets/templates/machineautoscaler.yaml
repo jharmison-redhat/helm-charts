@@ -18,6 +18,7 @@ the requested totals (which maxNodesTotal must encompass) */ -}}
 apiVersion: autoscaling.openshift.io/v1beta1
 kind: MachineAutoscaler
 metadata:
+  namespace: openshift-machine-api
   name: {{ .Values.cluster.infraID }}-{{ .Values.baseName }}-{{ $az }}
 spec:
   minReplicas: {{ add $minBase (ternary 1 0 (lt $i $minRem)) }}

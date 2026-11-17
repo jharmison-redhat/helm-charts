@@ -8,6 +8,7 @@ one grant broader than the hook's write surface (called out in the README)
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  namespace: openshift-machine-api
   name: clusterautoscaler
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -43,5 +44,5 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: clusterautoscaler
-  namespace: {{ .Release.Namespace }}
+  namespace: openshift-machine-api
 {{- end }}

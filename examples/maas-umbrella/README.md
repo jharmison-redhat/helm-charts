@@ -51,11 +51,11 @@ its operand CR in one release. Deployment therefore uses two installs:
    helm upgrade --install maas-umbrella examples/maas-umbrella -n keycloak
    ```
 
-   The operand release namespace must be `keycloak`: the RHBK OperatorGroup created by the operator install watches that
-   namespace only, and the operator install ensures the namespace. The keycloak chart defaults every resource to the
-   release namespace, so with the release in `keycloak` the Keycloak CR, the KeycloakRealmImport, the postgres Cluster
-   and its secrets all co-locate inside the operator's watch scope; a release in any other namespace leaves the custom
-   resources unwatched.
+   The RHBK OperatorGroup created by the operator install watches the `keycloak` namespace only, and the operator
+   install ensures the namespace. The keycloak chart pins `namespace: keycloak` on every resource it renders, so the
+   Keycloak CR, the KeycloakRealmImport, the postgres Cluster and its secrets all co-locate inside the operator's watch
+   scope whatever the release namespace is — the operand release namespace is free (installing into `keycloak` remains
+   the natural choice).
 
    Create `redhat-ai-gateway-infra` before this install: the maas-db Cluster and bootstrap Job render there, and neither
    this chart nor the `postgres-cluster` dependency renders a Namespace. The `maasTenantConfig` hook Job runs in the

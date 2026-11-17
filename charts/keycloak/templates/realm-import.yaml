@@ -4,7 +4,7 @@ apiVersion: k8s.keycloak.org/v2alpha1
 kind: KeycloakRealmImport
 metadata:
   name: {{ $name }}
-  namespace: {{ $.Values.namespace | default $.Release.Namespace }}
+  namespace: keycloak
   labels:
     {{- include "keycloak.labels" $ | nindent 4 }}
 spec:

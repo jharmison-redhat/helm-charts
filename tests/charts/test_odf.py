@@ -116,17 +116,18 @@ class ChartFixture(unittest.TestCase):
         self.addCleanup(os.unlink, path)
         return path
 
-    def render_raw(self, values=None):
+    def render_raw(self, values=None, namespace="openshift-storage"):
         cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", "openshift-storage"]
+               "--namespace", namespace]
         if values is not None:
             cmd += ["--values", self.values_file(values)]
         result = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
-    def render(self, values=None):
-        return [d for d in docs(self.render_raw(values)) if d is not None]
+    def render(self, values=None, namespace="openshift-storage"):
+        return [d for d in docs(self.render_raw(values, namespace=namespace))
+                if d is not None]
 
     def render_failure(self, values):
         cmd = ["helm", "template", "test-release", self.dir,
@@ -296,6 +297,36 @@ class NodeLabelHookSurfaceTests(ChartFixture):
             self.assertIn("set -euo pipefail", data[key])
             self.assertIn(LABEL_KEY, data[key])
         self.assertEqual(data["nodes.txt"].split(), ["worker-1"])
+
+
+class NamespacePinningTests(ChartFixture):
+    """The release namespace is free: every chart object pins
+    openshift-storage outright, regardless of where the release installs —
+    proven by rendering into a deliberately foreign release namespace."""
+
+    def test_every_object_pins_openshift_storage(self):
+        values = {"enableConsolePlugin": True, "createStorageSystem": True,
+                  **DISKS_VALUES}
+        by_kind = self.by_kind(self.render(values, namespace="foreign-ns"))
+        for kind in ("StorageCluster", "Job",
+                     "ServiceAccount", "ConfigMap"):
+            for doc in by_kind.get(kind, []):
+                self.assertEqual(doc["metadata"]["namespace"],
+                                 "openshift-storage", (kind, doc))
+        cluster = self.pick(by_kind, "StorageCluster", "ocs-storagecluster")
+        self.assertEqual(cluster["metadata"]["namespace"], "openshift-storage")
+        system = self.pick(by_kind, "StorageSystem",
+                           "ocs-storagecluster-storagesystem")
+        # Both the object's placement and its cross-reference to the
+        # StorageCluster pin the canonical namespace
+        self.assertEqual(system["spec"]["namespace"], "openshift-storage")
+        binding = self.pick(by_kind, "ClusterRoleBinding",
+                            "label-storage-nodes")
+        self.assertEqual(binding["subjects"], [{
+            "kind": "ServiceAccount",
+            "name": "label-storage-nodes",
+            "namespace": "openshift-storage",
+        }])
 
 
 class DisksValidationTests(ChartFixture):

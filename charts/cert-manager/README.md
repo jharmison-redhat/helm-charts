@@ -34,14 +34,16 @@ objects target it:
   credentials resolve in this cluster-resource namespace)
 - the `trust-ca` ServiceAccount, Role/RoleBinding, ClusterRole/ClusterRoleBinding `cert-manager-trust-ca`,
   `trust-ca-config` ConfigMap, and the `trust-ca-set`/`trust-ca-remove` hook Jobs (when `ca.trust.enabled`)
-- the `serving-certs` ServiceAccount and the certificate hook Jobs (when a platform certificate is managed)
+- the `serving-certs` ServiceAccount, its `serving-certs-config` ConfigMap, and the certificate hook Jobs (when a
+  platform certificate is managed)
 
-The release namespace hosts the platform-certificate hook Jobs (`job-configure-api-certificate` and
-`job-configure-router-certificate` render without a `namespace` and run in the release namespace), so it must admit the
-root-running tools image — avoid a namespace enforcing restricted Pod Security Admission. The trust hooks
-(`job-trust-ca-set`/`job-trust-ca-remove`) pin `namespace: cert-manager`, which the operator install creates fresh. The
-namespace is therefore the only placement with a chart-owned object-namespace requirement, and
-`helm install <name> charts/cert-manager -n cert-manager` satisfies both hook families at once.
+The release namespace is free — every namespaced object this chart renders pins its namespace outright: objects that
+belong with the operator pin `namespace: cert-manager`, while the platform serving Certificates pin `openshift-config`
+and `openshift-ingress` and their Role/RoleBinding pair pins `openshift-ingress-operator`, where the platform expects
+them (the CertManager configuration CR, the ClusterIssuers, and the ClusterRoles/ClusterRoleBindings are cluster-scoped
+and carry no namespace). Any release namespace works. `cert-manager` itself is a natural choice and pre-exists through
+the operator install; it is not Pod-Security-Admission restricted, so it admits the root-running tools image the hook
+Jobs use.
 
 Operator configuration
 ----------------------

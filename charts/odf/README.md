@@ -160,8 +160,12 @@ helm install <name> charts/odf -n openshift-storage \
 ```
 
 Supply the mode-specific values with `-f` — one of the example files above (standalone MCGW or full Ceph+MCGW); the
-render fails with a mode-naming diagnostic when the values combination is incoherent. Install the release into
-`openshift-storage` — the console-plugin ClusterRoleBinding references the operator's ServiceAccount there.
+render fails with a mode-naming diagnostic when the values combination is incoherent. The release namespace is free —
+every namespaced object this chart renders pins `namespace: openshift-storage` outright (the StorageCluster is the
+namespaced anchor that must live there, and the hook Jobs, their ConfigMaps, and their ServiceAccounts pin it too;
+the StorageSystem and the ClusterRole/ClusterRoleBindings are cluster-scoped and carry no namespace), so any release
+namespace works. `openshift-storage` itself is a natural choice and pre-exists through the operator install; it
+is not Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use.
 
 Upgrading from 0.1.x
 --------------------

@@ -2,7 +2,7 @@ kind: Route
 apiVersion: route.openshift.io/v1
 metadata:
   name: {{ include "keycloak.name" . }}
-  namespace: {{ .Values.namespace | default .Release.Namespace }}
+  namespace: keycloak
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
