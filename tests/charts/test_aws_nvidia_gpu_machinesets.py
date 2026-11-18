@@ -22,12 +22,9 @@ deploys, not here.
 import copy
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 import unittest
 
-import yaml
+import support
 
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts",
@@ -74,25 +71,14 @@ def autoscaler_values(min_replicas=None, max_replicas=None, **extra):
     return values
 
 
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "ca-test-"
+    values_prefix = "ca-values-"
+    # Every chart object pins openshift-machine-api, so renders default there
+    release_namespace = "openshift-machine-api"
 
-
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="ca-test-")
-        shutil.copytree(CHART, self.dir, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-        self.addCleanup(shutil.rmtree, self.dir)
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="ca-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
-
-    def render_raw(self, values=None, namespace="openshift-machine-api"):
+    def render_raw(self, values=None, namespace=None):
         merged = copy.deepcopy(BASE_VALUES)
         if values is not None:
             for key, val in values.items():
@@ -100,37 +86,9 @@ class ChartFixture(unittest.TestCase):
                     merged[key].update(val)
                 else:
                     merged[key] = val
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", namespace,
-               "--values", self.values_file(merged)]
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return self.helm_template(merged, namespace)
 
-    def render(self, values=None, namespace="openshift-machine-api"):
-        result = self.render_raw(values, namespace=namespace)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return [d for d in docs(result.stdout) if d is not None]
-
-    def render_failure(self, values):
-        """Renders values expected to trip validation and returns stderr."""
-        result = self.render_raw(values)
-        self.assertNotEqual(result.returncode, 0,
-                            "expected a validation failure, but rendering "
-                            "succeeded")
-        return result.stderr
-
-    def by_kind(self, rendered):
-        by_kind = {}
-        for d in rendered:
-            by_kind.setdefault(d["kind"], []).append(d)
-        return by_kind
-
-    @staticmethod
-    def pick(by_kind, kind, name):
-        matches = [d for d in by_kind[kind] if d["metadata"]["name"] == name]
-        assert len(matches) == 1, (kind, name, by_kind.get(kind))
-        return matches[0]
-
-    def render_enabled(self, namespace="openshift-machine-api", **kwargs):
+    def render_enabled(self, namespace=None, **kwargs):
         return self.by_kind(
             self.render(autoscaler_values(**kwargs), namespace=namespace))
 
@@ -433,18 +391,16 @@ fi
 """
 
 
-class FakeOcScriptFixture(ChartFixture):
-    """Shared plumbing for the smoke set: executing rendered hook scripts
-    against a fake oc binary. Each run gets a restricted PATH built solely
-    from symlinks in an isolated bin directory (python3, core utilities,
-    and the fake oc), so no ambient host tool — jq included — or real oc
-    can be reached. The child environment is an explicit minimal set — no
-    parent variables are inherited."""
+class FakeOcScriptFixture(ChartFixture, support.FakeOcScriptFixture):
+    """Restricted-PATH harness for the hook-script smoke set; the canned oc
+    program is this module's FAKE_OC_SCRIPT (plain get — the smoke set
+    makes one conditional write per run, so no resourceVersion bumping)."""
+
+    work_prefix = "ca-script-"
+    fake_oc_script = FAKE_OC_SCRIPT
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="ca-script-")
-        self.addCleanup(shutil.rmtree, self.work)
         cm = self.pick(self.render_enabled(), "ConfigMap",
                        "clusterautoscaler-config")
         self.scripts = {name: cm["data"][name]
@@ -452,35 +408,6 @@ class FakeOcScriptFixture(ChartFixture):
                                      "clusterautoscaler-set.sh",
                                      "clusterautoscaler-remove.sh")}
         self.config = json.loads(cm["data"]["autoscaler.json"])
-
-    def build_bin_dir(self, include_python=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
-        if include_python:
-            self.assertTrue(shutil.which("python3"),
-                            "python3 requested but not available on the host")
-            tools.append("python3")
-        for tool in tools:
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        fake_oc = os.path.join(bin_dir, "oc")
-        with open(fake_oc, "w") as f:
-            f.write(FAKE_OC_SCRIPT)
-        os.chmod(fake_oc, 0o755)
-        return bin_dir
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def patches(self):
-        path = os.path.join(self.work, "patches.log")
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return [json.loads(line) for line in f.read().splitlines() if line]
 
     def ca_doc(self, spec=None, annotations=None):
         """Canned pre-existing ClusterAutoscaler the fake oc serves for
@@ -497,22 +424,13 @@ class FakeOcScriptFixture(ChartFixture):
 
     def run_script(self, script_name, doc=None, include_python=True):
         bin_dir = self.build_bin_dir(include_python=include_python)
-        # Every staged file lands in the same directory as the entry script
-        # because the scripts source their shared preamble from their own
-        # directory, mirroring the single ConfigMap mount.
-        for name, content in self.scripts.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
+        self.stage_scripts()
         with open(os.path.join(self.work, "autoscaler.json"), "w") as f:
             f.write(json.dumps(self.config))
         ca_file = os.path.join(self.work, "ca.json")
         with open(ca_file, "w") as f:
             json.dump(doc if doc is not None else self.ca_doc(), f)
-        # Each run is self-contained: drop logs left by any earlier run.
-        for stale in ("commands.log", "patches.log"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
+        self.clear_run_state()
         env = {
             "PATH": bin_dir,
             "HOME": self.work,
@@ -521,9 +439,7 @@ class FakeOcScriptFixture(ChartFixture):
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
             "CONFIG_FILE": os.path.join(self.work, "autoscaler.json"),
         }
-        return subprocess.run(
-            ["/bin/bash", os.path.join(self.work, script_name)],
-            capture_output=True, text=True, env=env, timeout=120)
+        return self.run_child(os.path.join(self.work, script_name), env)
 
 
 class HookScriptSmokeTests(FakeOcScriptFixture):

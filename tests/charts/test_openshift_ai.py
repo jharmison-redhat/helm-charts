@@ -24,12 +24,11 @@ import unittest
 
 import yaml
 
+from support import docs
+import support
+
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts", "openshift-ai"))
-
-
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
 
 
 class _StrictLoader(yaml.SafeLoader):
@@ -65,57 +64,22 @@ class StrictYamlTests(unittest.TestCase):
         self.assertEqual(strict_docs("a: 1\nb:\n  c: 2"), [{"a": 1, "b": {"c": 2}}])
 
 
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="oa-test-")
-        shutil.copytree(
-            CHART, self.dir, dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns("charts", "Chart.lock"))
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "oa-test-"
+    values_prefix = "oa-values-"
 
-    def tearDown(self):
-        shutil.rmtree(self.dir)
-
-    def stub_dependency(self):
-        dep = os.path.join(self.dir, "charts", "postgres-cluster")
-        os.makedirs(dep, exist_ok=True)
-        with open(os.path.join(dep, "Chart.yaml"), "w") as f:
-            f.write("apiVersion: v2\nname: postgres-cluster\nversion: 0.1.0\n")
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="oa-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
-
-    def render(self, values=None, expect_failure=False, namespace="test-release-ns"):
+    def render(self, values=None, expect_failure=False,
+               namespace="test-release-ns"):
         """Renders the chart with the stub dependency; returns the docs, or
-        the CalledProcessError when the render is expected to fail."""
+        the failed result when the render is expected to fail."""
         self.stub_dependency()
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", namespace]
-        if values is not None:
-            cmd += ["--values", self.values_file(values)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = self.helm_template(values, namespace)
         if expect_failure:
             self.assertNotEqual(result.returncode, 0)
             return result
         self.assertEqual(result.returncode, 0, result.stderr)
         return list(docs(result.stdout))
-
-    @staticmethod
-    def by_kind(docs):
-        by_kind = {}
-        for d in docs:
-            by_kind.setdefault(d["kind"], []).append(d)
-        return by_kind
-
-    @staticmethod
-    def pick(by_kind, kind, name):
-        """Selects the doc of kind with metadata.name; asserts uniqueness."""
-        matches = [d for d in by_kind[kind] if d["metadata"]["name"] == name]
-        assert len(matches) == 1, (kind, name, [d["metadata"].get("name") for d in by_kind[kind]])
-        return matches[0]
 
     @staticmethod
     def docs_named(by_kind, kind, fragment):
@@ -1327,18 +1291,22 @@ class ReplicaSurfaceTests(_ReplicasValuesMixin, ChartFixture):
                          "*/5 * * * *")
 
 
-class _ReplicasScriptFixture(_ReplicasValuesMixin, ChartFixture):
-    """Shared plumbing for executing the rendered replicas hook scripts
-    against a fake oc binary: a restricted PATH built solely from symlinks
-    in an isolated bin directory (python3 as the single JSON tool, core
-    utilities, and the fake oc), the scripts staged in one directory (they
-    source the shared preamble from their own directory, mirroring the
-    single ConfigMap mount), and an explicit minimal child environment."""
+class _ReplicasScriptFixture(_ReplicasValuesMixin, ChartFixture,
+                             support.FakeOcScriptFixture):
+    """Executes the rendered replicas hook scripts against a fake oc binary
+    (this module's FAKE_OC_REPLICAS): a restricted PATH built solely from
+    symlinks in an isolated bin directory (python3 as the single JSON tool,
+    core utilities, and the fake oc), the scripts staged in one directory
+    (they source the shared preamble from their own directory, mirroring
+    the single ConfigMap mount), and an explicit minimal child
+    environment."""
+
+    work_prefix = "oa-replicas-"
+    bin_tools = ["mktemp", "grep", "sleep", "rm", "cat", "date"]
+    fake_oc_script = FAKE_OC_REPLICAS
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="oa-replicas-")
-        self.addCleanup(shutil.rmtree, self.work)
         self.deployment_file = os.path.join(self.work, "deployment.json")
         self.patch_log = os.path.join(self.work, "patches.log")
         for stale in (self.deployment_file, self.patch_log,
@@ -1351,24 +1319,7 @@ class _ReplicasScriptFixture(_ReplicasValuesMixin, ChartFixture):
         cms = [d for d in by_kind["ConfigMap"]
                if (d.get("data") or {}).get("components.txt") is not None]
         self.assertEqual(len(cms), 1)
-        for name, content in cms[0]["data"].items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-
-    def build_bin_dir(self, include_oc=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        for tool in ("mktemp", "grep", "sleep", "rm", "cat", "date",
-                     "python3"):
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        if include_oc:
-            fake_oc = os.path.join(bin_dir, "oc")
-            with open(fake_oc, "w") as f:
-                f.write(FAKE_OC_REPLICAS)
-            os.chmod(fake_oc, 0o755)
-        return bin_dir
+        super().stage_scripts(cms[0]["data"])
 
     def run_script(self, script_name, deployment_json):
         bin_dir = self.build_bin_dir()
@@ -1390,16 +1341,6 @@ class _ReplicasScriptFixture(_ReplicasValuesMixin, ChartFixture):
         return subprocess.run(
             ["/bin/bash", os.path.join(self.work, script_name)],
             capture_output=True, text=True, env=env, timeout=60)
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def patches(self):
-        if not os.path.exists(self.patch_log):
-            return []
-        with open(self.patch_log) as f:
-            return [json.loads(line) for line in f.read().splitlines() if line]
 
     @staticmethod
     def deployment_doc(replicas, annotations=None, rv="42"):
@@ -1533,19 +1474,22 @@ exit 64
 """
 
 
-class _OperandScriptFixture(ChartFixture):
-    """Executes the rendered operand hook scripts against a fake oc binary:
-    the family's script ConfigMap staged into one directory (scripts and
-    JSON payloads side by side, mirroring the single ConfigMap mount), a
-    restricted PATH (python3 as the single JSON tool, core utilities, the
-    fake oc), and per-test object JSON files the fake oc serves."""
+class _OperandScriptFixture(ChartFixture, support.FakeOcScriptFixture):
+    """Executes the rendered operand hook scripts against a fake oc binary
+    (this module's FAKE_OC_OPERAND): the family's script ConfigMap staged
+    into one directory (scripts and JSON payloads side by side, mirroring
+    the single ConfigMap mount), a restricted PATH (python3 as the single
+    JSON tool, core utilities, the fake oc), and per-test object JSON files
+    the fake oc serves."""
+
+    work_prefix = "oa-operand-"
+    bin_tools = ["mktemp", "grep", "sleep", "rm", "cat", "date"]
+    fake_oc_script = FAKE_OC_OPERAND
 
     FAMILY_FRAGMENT = ""  # the ConfigMap-name fragment of the family under test
 
     def setUp(self):
         super().setUp()
-        self.work = tempfile.mkdtemp(prefix="oa-operand-")
-        self.addCleanup(shutil.rmtree, self.work)
         self.object_file = os.path.join(self.work, "object.json")
         self.auth_file = os.path.join(self.work, "auth.json")
         self.dsci_file = os.path.join(self.work, "dsci.json")
@@ -1558,25 +1502,8 @@ class _OperandScriptFixture(ChartFixture):
                if self.FAMILY_FRAGMENT in d["metadata"]["name"]
                and "hook-preamble.sh" in (d.get("data") or {})]
         self.assertEqual(len(cms), 1, self.FAMILY_FRAGMENT)
-        for name, content in cms[0]["data"].items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
+        self.stage_scripts(cms[0]["data"])
         return cms[0]["metadata"]["name"]
-
-    def build_bin_dir(self, include_oc=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        for tool in ("mktemp", "grep", "sleep", "rm", "cat", "date",
-                     "python3"):
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        if include_oc:
-            fake_oc = os.path.join(bin_dir, "oc")
-            with open(fake_oc, "w") as f:
-                f.write(FAKE_OC_OPERAND)
-            os.chmod(fake_oc, 0o755)
-        return bin_dir
 
     def run_script(self, script_name, env_extra, absent=False):
         env = {
@@ -1597,16 +1524,6 @@ class _OperandScriptFixture(ChartFixture):
         return subprocess.run(
             ["/bin/bash", os.path.join(self.work, script_name)],
             capture_output=True, text=True, env=env, timeout=60)
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def patches(self):
-        if not os.path.exists(self.patch_log):
-            return []
-        with open(self.patch_log) as f:
-            return [json.loads(line) for line in f.read().splitlines() if line]
 
     def captured_create(self):
         with open(self.create_capture) as f:

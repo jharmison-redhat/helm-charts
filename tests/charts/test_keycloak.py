@@ -20,12 +20,8 @@ real API or network is contacted.
 """
 
 import os
-import shutil
-import subprocess
-import tempfile
-import unittest
 
-import yaml
+import support
 
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts", "keycloak"))
@@ -34,60 +30,22 @@ CLIENT = "test-client"
 USER = "alice"
 
 
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "kc-test-"
+    values_prefix = "kc-values-"
 
-
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="kc-test-")
-        shutil.copytree(
-            CHART, self.dir, dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-
-    def tearDown(self):
-        shutil.rmtree(self.dir)
-
-    def stub_dependency(self):
-        dep = os.path.join(self.dir, "charts", "postgres-cluster")
-        os.makedirs(dep, exist_ok=True)
-        with open(os.path.join(dep, "Chart.yaml"), "w") as f:
-            f.write("apiVersion: v2\nname: postgres-cluster\nversion: 0.1.0\n")
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="kc-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
+    def helm_template(self, values=None, namespace=None):
+        self.stub_dependency()
+        return super().helm_template(values, namespace)
 
     def render_values(self, values):
         """Renders arbitrary values; returns all rendered docs."""
-        self.stub_dependency()
-        result = subprocess.run(
-            ["helm", "template", "test-release", self.dir,
-             "--namespace", "test-release-ns",
-             "--values", self.values_file(values)],
-            capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return docs(result.stdout)
+        return self.render(values)
 
     def render_docs(self, realm):
         """Renders a single-realm values set; returns all rendered docs."""
-        return self.render_values({"realms": {"test": realm}})
-
-    def render_failure(self, values):
-        """Renders values expected to trip validation; returns stderr."""
-        self.stub_dependency()
-        result = subprocess.run(
-            ["helm", "template", "test-release", self.dir,
-             "--namespace", "test-release-ns",
-             "--values", self.values_file(values)],
-            capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0,
-                            "expected a validation failure, but rendering "
-                            "succeeded")
-        return result.stderr
+        return self.render({"realms": {"test": realm}})
 
     def render_realm(self, realm):
         """Renders a single-realm values set; returns the realm spec of the

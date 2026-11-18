@@ -7,12 +7,13 @@ Helm charts collection published as OCI charts from `charts/` (one chart per dir
 operand umbrella. CI lives in `.github/workflows/` and is split across two workflows with native-Python helpers:
 `.github/workflows/chart_ci.py` (dependency resolution + lint/render, shared by both workflows),
 `.github/workflows/chart_versions.py` (registry-tag publish gate), and `.github/workflows/chart_metadata.py` (shared
-safe-YAML metadata validation); `.github/workflows/requirements.txt` pins PyYAML and the unit-test suites are
-`.github/workflows/test_chart_helpers.py` (workflow helpers) and `tests/charts/test_openshift_ai.py` (openshift-ai chart
-render tests, discovered from `tests/charts`). `lint-chart.yml` runs on pull requests touching the charts and examples
-it validates (`charts/**`, `examples/**`) plus the helpers, test suites (`tests/charts/**`), and requirements it runs,
-plus manual dispatch, and lints every chart and the umbrella against locally resolved sub-charts; `publish-chart.yml`
-remains push-to-main and publishes only charts whose `version:` has no registry tag yet.
+safe-YAML metadata validation); `.github/workflows/requirements.txt` pins PyYAML. The unit-test suites are
+`.github/workflows/test_chart_helpers.py` (workflow helpers) and every `tests/charts/test_*.py` (chart render tests,
+discovered from `tests/charts`, sharing the fixtures in `tests/charts/support.py`). `lint-chart.yml` runs on pull
+requests touching the charts and examples it validates (`charts/**`, `examples/**`) plus the helpers, test suites
+(`tests/charts/**`), and requirements it runs, plus manual dispatch, and lints every chart and the umbrella against
+locally resolved sub-charts; `publish-chart.yml` remains push-to-main and publishes only charts whose `version:` has no
+registry tag yet.
 
 ## Porting discipline
 
@@ -77,6 +78,19 @@ Source parity is not a goal — the contract is correct behavior under normal He
 - When a chart has a canonical object namespace (operator watch scopes, platform namespaces its objects require), the
   templates pin it outright — the release namespace carries no chart objects, and the README says the release namespace
   is free.
+
+### Hook-surface layout
+
+- New hook surfaces follow their chart's existing pattern, not a repo-wide uniform one — the charts intentionally
+  differ: install-operators bundles each surface's objects into shared weighted-delivery renders, odf names each
+  surface's Job, RBAC, and script `<surface>-{job,rbac,script}.yaml` while cert-manager names the Job first
+  (`job-<surface>.yaml`) with `<surface>-{config,rbac}.yaml` siblings, and openshift-ai groups per-feature script
+  families. The rule is chart-local consistency.
+- Scripts live under `files/` or `files/<family>/`, with `files/lib/` holding the shared hook preamble plus each
+  chart's shared helper modules (cert-manager's `trust-bundle.sh`, keycloak-auth's `logout-redirect.sh`,
+  openshift-ai's `set/delete-chart-created-cr.sh`). A ConfigMap that globs (e.g. openshift-ai's maas-db `files/*`
+  glob) must not be able to absorb sibling families' scripts — the no-root-level-script-leakage invariant is guarded
+  by a unit test (`test_maas_db_glob_cannot_absorb_tenant_script`).
 
 ## Testing
 

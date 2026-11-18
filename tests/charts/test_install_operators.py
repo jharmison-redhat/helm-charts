@@ -27,12 +27,12 @@ concurrency races) is proven by live-cluster deploys, not fixtures.
 
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 import unittest
 
 import yaml
+
+from support import docs
+import support
 
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts",
@@ -49,56 +49,10 @@ HOOK_OPERATOR = {
 }
 
 
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
-
-
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="io-test-")
-        shutil.copytree(CHART, self.dir, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-        self.addCleanup(shutil.rmtree, self.dir)
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="io-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
-
-    def render_raw(self, values=None):
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", "test-release-ns"]
-        if values is not None:
-            cmd += ["--values", self.values_file(values)]
-        return subprocess.run(cmd, capture_output=True, text=True)
-
-    def render(self, values=None):
-        result = self.render_raw(values)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return [d for d in docs(result.stdout) if d is not None]
-
-    def render_failure(self, values=None):
-        result = self.render_raw(values)
-        self.assertNotEqual(result.returncode, 0)
-        return result.stderr
-
-    @staticmethod
-    def by_kind(rendered):
-        by_kind = {}
-        for d in rendered:
-            by_kind.setdefault(d["kind"], []).append(d)
-        return by_kind
-
-    @staticmethod
-    def pick(by_kind, kind, name, namespace=None):
-        matches = [d for d in by_kind[kind]
-                   if d["metadata"]["name"] == name
-                   and (namespace is None
-                        or d["metadata"].get("namespace") == namespace)]
-        assert len(matches) == 1, (kind, name, namespace, by_kind)
-        return matches[0]
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "io-test-"
+    values_prefix = "io-values-"
 
     @staticmethod
     def hook_operator(**overrides):
@@ -669,47 +623,14 @@ fi
 """
 
 
-class FakeOcScriptFixture(ChartFixture):
-    """Shared plumbing for executing rendered hook scripts against a fake
-    oc binary. Each run gets a restricted PATH built solely from symlinks
-    in an isolated bin directory (the requested JSON tool, core utilities,
-    and the fake oc), so no ambient host tool or real oc can be reached.
-    The child environment is an explicit minimal set — no parent variables
-    are inherited."""
+class FakeOcScriptFixture(ChartFixture, support.FakeOcScriptFixture):
+    """Restricted-PATH harness for the install-operators hook scripts; the
+    canned oc program (NotFound switch, rv-bumping get, patch capture,
+    create-from-stdin capture, silent delete) is this module's
+    FAKE_OC_SCRIPT."""
 
-    def setUp(self):
-        super().setUp()
-        self.work = tempfile.mkdtemp(prefix="io-script-")
-        self.addCleanup(shutil.rmtree, self.work)
-
-    def build_bin_dir(self, include_python=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
-        if include_python:
-            self.assertTrue(shutil.which("python3"),
-                            "python3 requested but not available on the host")
-            tools.append("python3")
-        for tool in tools:
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        fake_oc = os.path.join(bin_dir, "oc")
-        with open(fake_oc, "w") as f:
-            f.write(FAKE_OC_SCRIPT)
-        os.chmod(fake_oc, 0o755)
-        return bin_dir
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read().splitlines()
-
-    def patches(self):
-        path = os.path.join(self.work, "patches.log")
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return [json.loads(line) for line in f.read().splitlines() if line]
+    work_prefix = "io-script-"
+    fake_oc_script = FAKE_OC_SCRIPT
 
     def created(self):
         path = os.path.join(self.work, "created.json")
@@ -717,11 +638,6 @@ class FakeOcScriptFixture(ChartFixture):
             return None
         with open(path) as f:
             return json.load(f)
-
-    def run_child(self, script_path, env):
-        return subprocess.run(
-            ["/bin/bash", script_path], capture_output=True, text=True,
-            env=env, timeout=120)
 
     def render_config(self, values):
         return self.pick(self.by_kind(self.render(values)), "ConfigMap",
@@ -731,27 +647,16 @@ class FakeOcScriptFixture(ChartFixture):
                    include_python=True, extra_env=None):
         # Single tool path for the smoke set: python3-only restricted PATH.
         bin_dir = self.build_bin_dir(include_python=include_python)
-        # Every staged file lands in the same directory as the entry script
-        # because the scripts source their shared preamble from their own
-        # directory, mirroring the single ConfigMap mount.
-        for name, content in scripts.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-        # Each run is self-contained: drop logs and the fake oc's
-        # resourceVersion counter left by any earlier run.
-        for stale in ("commands.log", "patches.log", "created.json",
-                      self.get_file + ".rv"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
+        self.stage_scripts(scripts)
+        self.clear_run_state("created.json")
         if canned_doc is not None:
-            with open(os.path.join(self.work, self.get_file), "w") as f:
+            with open(os.path.join(self.work, self.get_file_name), "w") as f:
                 json.dump(canned_doc, f)
         env = {
             "PATH": bin_dir,
             "HOME": self.work,
             "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_GET_FILE": os.path.join(self.work, self.get_file),
+            "OC_GET_FILE": os.path.join(self.work, self.get_file_name),
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
             "OC_CREATE_FILE": os.path.join(self.work, "created.json"),
         }
@@ -764,7 +669,7 @@ class EnsureNamespacesScriptTests(FakeOcScriptFixture):
     """Smoke run for the rendered namespace-ensure hook script: the
     happy-path create of an absent namespace."""
 
-    get_file = "namespace.json"
+    get_file_name = "namespace.json"
 
     def setUp(self):
         super().setUp()
@@ -785,10 +690,10 @@ class EnsureNamespacesScriptTests(FakeOcScriptFixture):
                                  extra_env={"OC_NOT_FOUND": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            self.log()[0],
+            self.log_lines()[0],
             "get namespace/test-operators -o json --request-timeout=30s")
         self.assertTrue(any(line.startswith("create ")
-                            for line in self.log()),
+                            for line in self.log_lines()),
                         self.log())
         manifest = self.created()
         self.assertEqual(manifest["apiVersion"], "v1")
@@ -867,7 +772,7 @@ class SubscriptionScriptTests(FakeOcScriptFixture):
     converging an existing Subscription by value, and the remove hook
     deleting a proof-annotated Subscription."""
 
-    get_file = "live-subscription.json"
+    get_file_name = "live-subscription.json"
 
     def setUp(self):
         super().setUp()
@@ -911,7 +816,7 @@ class SubscriptionScriptTests(FakeOcScriptFixture):
                                  canned_doc=self.canned_subscription())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            self.log()[0],
+            self.log_lines()[0],
             "get -n test-operators subscriptions.operators.coreos.com/"
             "test-operator -o json --request-timeout=30s")
         patches = self.patches()
@@ -934,7 +839,7 @@ class SubscriptionScriptTests(FakeOcScriptFixture):
         self.assertTrue(
             any(line.startswith("delete ") and
                 "subscriptions.operators.coreos.com/test-operator" in line
-                for line in self.log()), self.log())
+                for line in self.log_lines()), self.log())
 
 
 if __name__ == "__main__":
