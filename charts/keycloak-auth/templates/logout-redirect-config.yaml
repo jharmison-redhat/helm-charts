@@ -21,6 +21,8 @@ metadata:
 data:
   hook-preamble.sh: |-
     {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  logout-redirect.sh: |-
+    {{- .Files.Get "files/lib/logout-redirect.sh" | nindent 4 }}
   logout-redirect-set.sh: |-
     {{- .Files.Get "files/logout-redirect-set.sh" | nindent 4 }}
   logout-redirect-unset.sh: |-

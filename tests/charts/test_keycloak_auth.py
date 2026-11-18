@@ -7,8 +7,9 @@ and remove only this chart's named entry with a resourceVersion-conditional
 read-modify-write), the console logout-redirect surface (hook Jobs set and
 unset spec.authentication.logoutRedirect on the platform Console object with
 the same conditional-write discipline, gated on logoutRedirect.enabled and
-global.oidc.secret), and the umbrella example's explicit safe override,
-dependency pin, and metadata coherence.
+global.oidc.secret), and the chart's default-off values and version/appVersion
+lockstep (the umbrella example's composition checks live in
+test_maas_umbrella).
 
 Render tests run the chart through ``helm template`` (keycloak-auth has
 no chart dependencies, so no stubs or registry access are needed). Per the
@@ -23,17 +24,14 @@ walk-back) is proven by live-cluster validation, not fixtures.
 import base64
 import json
 import os
-import shutil
-import subprocess
-import tempfile
 import unittest
 
 import yaml
 
+import support
+
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts", "keycloak-auth"))
-UMBRELLA = os.path.abspath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "examples", "maas-umbrella"))
 
 # Fake oc for the hook-script smoke runs: serves a canned OAuth/Console
 # object for get and records every --patch= payload. Each get bumps the
@@ -67,48 +65,16 @@ fi
 """
 
 
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "ka-test-"
+    values_prefix = "ka-values-"
 
-
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="ka-test-")
-        shutil.copytree(CHART, self.dir, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-        self.addCleanup(shutil.rmtree, self.dir)
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="ka-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
-
-    def render_raw(self, values=None):
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", "test-release-ns"]
-        if values is not None:
-            cmd += ["--values", self.values_file(values)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+    def render_stdout(self, values=None):
+        """Asserts success and returns the raw rendered stream."""
+        result = self.helm_template(values)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
-
-    def render(self, values=None):
-        return [d for d in docs(self.render_raw(values)) if d is not None]
-
-    @staticmethod
-    def by_kind(docs):
-        by_kind = {}
-        for d in docs:
-            by_kind.setdefault(d["kind"], []).append(d)
-        return by_kind
-
-    @staticmethod
-    def pick(by_kind, kind, name):
-        matches = [d for d in by_kind[kind] if d["metadata"]["name"] == name]
-        assert len(matches) == 1, (kind, name, by_kind[kind])
-        return matches[0]
 
     @staticmethod
     def configured_values(remove=False, ingressCA=None):
@@ -253,7 +219,8 @@ class OAuthNeverOwnedTests(ChartFixture):
         by_kind = self.by_kind(self.render())
         for kind in ("Job", "ServiceAccount", "ClusterRole", "ConfigMap"):
             self.assertNotIn(kind, by_kind)
-        names = {d["metadata"]["name"] for docs in by_kind.values() for d in docs}
+        names = {d["metadata"]["name"]
+                 for kind_docs in by_kind.values() for d in kind_docs}
         for name in ("oauth-idp-upsert", "oauth-idp-remove",
                      "oauth-idp", "oauth-idp-config"):
             self.assertNotIn(name, names)
@@ -442,98 +409,20 @@ class PayloadHygieneTests(ChartFixture):
         secret_b64 = base64.b64encode(b"test-client-secret").decode()
         for values in (self.configured_values(),
                        self.configured_values(remove=True, ingressCA="CA")):
-            raw = self.render_raw(values)
+            raw = self.render_stdout(values)
             self.assertNotIn("test-client-secret", raw)
             self.assertEqual(raw.count(secret_b64), 1,
                              "the secret's encoded value must appear exactly "
                              "once, in the openid-client-secret Secret")
 
 
-class FakeOcScriptFixture(ChartFixture):
-    """Shared plumbing for executing rendered hook scripts against a fake
-    oc binary. Each run gets a restricted PATH built solely from symlinks
-    in an isolated bin directory (the requested JSON tool, core utilities,
-    and the fake oc), so no ambient host tool or real oc can be reached.
-    The child environment is an explicit minimal set — no parent variables
-    are inherited."""
+class FakeOcScriptFixture(ChartFixture, support.FakeOcScriptFixture):
+    """Restricted-PATH harness for the keycloak-auth hook scripts; the
+    canned oc program (rv-bumping get, --patch= capture) is this module's
+    FAKE_OC_SCRIPT."""
 
-    def setUp(self):
-        super().setUp()
-        self.work = tempfile.mkdtemp(prefix="ka-script-")
-        self.addCleanup(shutil.rmtree, self.work)
-
-    def build_bin_dir(self, include_python=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
-        if include_python:
-            self.assertTrue(shutil.which("python3"),
-                            "python3 requested but not available on the host")
-            tools.append("python3")
-        for tool in tools:
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        fake_oc = os.path.join(bin_dir, "oc")
-        with open(fake_oc, "w") as f:
-            f.write(FAKE_OC_SCRIPT)
-        os.chmod(fake_oc, 0o755)
-        return bin_dir
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def patches(self):
-        path = os.path.join(self.work, "patches.log")
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return [json.loads(line) for line in f.read().splitlines() if line]
-
-    def run_child(self, script_path, env):
-        return subprocess.run(
-            ["/bin/bash", script_path], capture_output=True, text=True,
-            env=env, timeout=120)
-
-    def canned_doc(self):
-        """Canned object the fake oc serves for get."""
-        raise NotImplementedError
-
-    def script_env(self):
-        """Capability-specific entries merged into the child environment."""
-        raise NotImplementedError
-
-    def run_script(self, script_name, canned_doc=None,
-                   include_python=True):
-        # Single tool path for the smoke set: python3-only restricted PATH.
-        bin_dir = self.build_bin_dir(include_python=include_python)
-        # Every staged file lands in the same directory as the entry script
-        # because the scripts source their shared preamble from their own
-        # directory, mirroring the single ConfigMap mount.
-        for name, content in self.scripts.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-        if canned_doc is None:
-            canned_doc = self.canned_doc()
-        get_file = os.path.join(self.work, self.get_file_name)
-        with open(get_file, "w") as f:
-            json.dump(canned_doc, f)
-        # Each run is self-contained: drop logs and the fake oc's
-        # resourceVersion counter left by any earlier run.
-        for stale in ("commands.log", "patches.log", get_file + ".rv"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
-        env = {
-            "PATH": bin_dir,
-            "HOME": self.work,
-            **self.script_env(),
-            "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_GET_FILE": get_file,
-            "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
-        }
-        return self.run_child(os.path.join(self.work, script_name), env)
+    work_prefix = "ka-script-"
+    fake_oc_script = FAKE_OC_SCRIPT
 
 
 class OAuthIdpScriptTests(FakeOcScriptFixture):
@@ -737,12 +626,17 @@ class LogoutRedirectSurfaceTests(ChartFixture):
         cm = self.pick(self.configured(), "ConfigMap",
                        "logout-redirect-config")
         data = cm["data"]
-        for key in ("hook-preamble.sh", "logout-redirect-set.sh",
+        for key in ("hook-preamble.sh", "logout-redirect.sh",
+                    "logout-redirect-set.sh",
                     "logout-redirect-unset.sh", "logout-redirect-url"):
             self.assertIn(key, data)
         for key in ("logout-redirect-set.sh", "logout-redirect-unset.sh"):
             self.assertIn("set -euo pipefail", data[key])
-            self.assertIn("consoles.config.openshift.io/cluster", data[key])
+            self.assertIn('conditional_write "$CONSOLE"', data[key])
+        # The Console resource reference the scripts drive lives in the
+        # shared logout-redirect scaffold
+        self.assertIn("consoles.config.openshift.io/cluster",
+                      data["logout-redirect.sh"])
 
     def test_console_host_override_honored(self):
         values = {
@@ -775,7 +669,8 @@ class LogoutRedirectScriptTests(FakeOcScriptFixture):
         cm = self.pick(self.configured_render(), "ConfigMap",
                        "logout-redirect-config")
         self.scripts = {name: cm["data"][name]
-                        for name in ("hook-preamble.sh", "logout-redirect-set.sh",
+                        for name in ("hook-preamble.sh", "logout-redirect.sh",
+                                     "logout-redirect-set.sh",
                                      "logout-redirect-unset.sh")}
         self.url = cm["data"]["logout-redirect-url"].strip()
         self.url_file = os.path.join(self.work, "logout-redirect-url")
@@ -842,10 +737,10 @@ class LogoutRedirectScriptTests(FakeOcScriptFixture):
 
 
 
-class UmbrellaMetadataTests(unittest.TestCase):
-    """Parses the umbrella example's values and metadata: its explicit
-    safe override and the pin/version coherence with the edited chart,
-    without fetching any published package."""
+class ChartDefaultsTests(unittest.TestCase):
+    """Static checks on the shipped keycloak-auth chart metadata: the
+    kubeadmin-removal surface stays default-off and version/appVersion move
+    in lockstep. Umbrella composition checks live in test_maas_umbrella."""
 
     @staticmethod
     def load(path):
@@ -853,30 +748,14 @@ class UmbrellaMetadataTests(unittest.TestCase):
             return yaml.safe_load(f)
 
     def test_chart_default_is_safe(self):
-        self.assertIs(self.load(os.path.join(CHART, "values.yaml"))["removeKubeAdmin"],
-                      False)
-
-    def test_umbrella_explicit_value_is_safe(self):
-        umbrella_values = self.load(os.path.join(UMBRELLA, "values.yaml"))
-        self.assertIs(umbrella_values["keycloak-auth"]["removeKubeAdmin"], False)
+        self.assertIs(
+            self.load(os.path.join(CHART, "values.yaml"))["removeKubeAdmin"],
+            False)
 
     def test_auth_chart_version_bump(self):
         meta = self.load(os.path.join(CHART, "Chart.yaml"))
-        self.assertEqual(meta["version"], "0.4.2")
-        self.assertEqual(meta["appVersion"], "0.4.2")
-
-    def test_umbrella_version_and_pin_coherence(self):
-        umbrella = self.load(os.path.join(UMBRELLA, "Chart.yaml"))
-        self.assertEqual(umbrella["version"], "0.5.5")
-        self.assertNotIn("appVersion", umbrella)
-        deps = {d["name"]: d["version"] for d in umbrella["dependencies"]}
-        self.assertEqual(deps["keycloak-auth"], ">=0.4.0 <0.5.0")
-        self.assertEqual(deps["keycloak"], ">=0.5.0 <0.6.0")
-        # The pin's range must contain the chart's new version.
-        chart_version = tuple(
-            int(p) for p in self.load(os.path.join(CHART, "Chart.yaml"))["version"].split("."))
-        self.assertGreaterEqual(chart_version, (0, 4, 0))
-        self.assertLess(chart_version, (0, 5, 0))
+        self.assertEqual(meta["version"], "0.4.3")
+        self.assertEqual(meta["appVersion"], "0.4.3")
 
 
 class CommandContractTests(unittest.TestCase):

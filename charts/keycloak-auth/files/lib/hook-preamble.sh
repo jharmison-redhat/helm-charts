@@ -40,8 +40,9 @@ select_json_tool() {
 #
 # $1 resource, $2 name of a compute function, $3 patch subject for the
 # compute-failure diagnostic, $4 object label for the concurrency
-# diagnostics. The compute function receives the file holding the fetched
-# object JSON and communicates by contract:
+# diagnostics, $5 namespace (optional — needed for namespaced resources).
+# The compute function receives the file holding the fetched object JSON and
+# communicates by contract:
 #   - prints the merge patch (exit 0) to have it applied
 #   - prints nothing (exit 0) when nothing needs changing
 #   - prints nothing and exits 4 after reporting its own fatal condition
@@ -51,16 +52,20 @@ select_json_tool() {
 # subshell so its scratch files are cleaned by its own EXIT trap without
 # disturbing any trap the caller installed.
 conditional_write() (
-  local resource="$1" compute="$2" patch_subject="$3" object="$4"
+  local resource="$1" compute="$2" patch_subject="$3" object="$4" namespace="${5:-}"
   local json_file err_file attempt=1 patch get_rc=0 compute_rc=0
+  local ns_args=()
 
   json_file=$(mktemp) || exit 1
   err_file=$(mktemp) || { rm -f "$json_file"; exit 1; }
   trap 'rm -f "$json_file" "$err_file"' EXIT
+  if [ -n "$namespace" ]; then
+    ns_args=(-n "$namespace")
+  fi
 
   while :; do
     get_rc=0
-    oc get "$resource" -o json --request-timeout="$REQUEST_TIMEOUT" \
+    oc get "${ns_args[@]}" "$resource" -o json --request-timeout="$REQUEST_TIMEOUT" \
       >"$json_file" 2>"$err_file" || get_rc=$?
     if [ "$get_rc" -ne 0 ]; then
       if grep -q '(NotFound)' "$err_file"; then
@@ -82,7 +87,7 @@ conditional_write() (
       return 3
     fi
 
-    if oc patch "$resource" --type=merge --patch="$patch" \
+    if oc patch "${ns_args[@]}" "$resource" --type=merge --patch="$patch" \
         --request-timeout="$REQUEST_TIMEOUT" >/dev/null 2>"$err_file"; then
       return 0
     fi
@@ -100,3 +105,48 @@ conditional_write() (
     sleep "$RETRY_SLEEP"
   done
 )
+
+# Creates the object described by the remaining arguments, passed to
+# `oc create` verbatim (payload, namespace, and any flags are the caller's).
+# Returns 0 on success and 3 when the object already exists — a concurrent
+# creation the caller cannot merge into blind; any other failure exits 1
+# after printing the server error.
+create_object() {
+  local object="$1"; shift
+  local err_file create_rc=0
+  err_file=$(mktemp) || exit 1
+  oc create "$@" --request-timeout="$REQUEST_TIMEOUT" >/dev/null 2>"$err_file" || create_rc=$?
+  if [ "$create_rc" -eq 0 ]; then
+    rm -f "$err_file"
+    return 0
+  fi
+  if grep -q '(AlreadyExists)' "$err_file"; then
+    rm -f "$err_file"
+    echo "the $object was created concurrently; re-running this hook merges into it" >&2
+    return 3
+  fi
+  cat "$err_file" >&2
+  rm -f "$err_file"
+  exit 1
+}
+
+# Deletes the object named by the remaining arguments, passed to
+# `oc delete` verbatim. Returns 0 on success and 3 when the object is
+# already absent; any other failure exits 1 after printing the server error.
+delete_object() {
+  local object="$1"; shift
+  local err_file delete_rc=0
+  err_file=$(mktemp) || exit 1
+  oc delete "$@" --request-timeout="$REQUEST_TIMEOUT" >/dev/null 2>"$err_file" || delete_rc=$?
+  if [ "$delete_rc" -eq 0 ]; then
+    rm -f "$err_file"
+    return 0
+  fi
+  if grep -q '(NotFound)' "$err_file"; then
+    rm -f "$err_file"
+    return 3
+  fi
+  cat "$err_file" >&2
+  rm -f "$err_file"
+  exit 1
+}
