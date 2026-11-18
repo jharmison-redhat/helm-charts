@@ -1,0 +1,25 @@
+{{- /* Delivers the converge hook's script, the shared conditional-write
+preamble, and the desired overrideArgs payload the script merges into the
+operator-created CertManager singleton. The payload carries exactly the
+fields this chart configures on the CR — nothing else is compared or
+patched */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: converge-cert-manager-config
+  namespace: cert-manager
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  converge-cert-manager.sh: |-
+    {{- .Files.Get "files/converge-cert-manager.sh" | nindent 4 }}
+  {{- /* The Certificate Secrets are created by cert-manager, not Helm;
+  keeping the owner reference off makes them survive helm uninstall with the
+  Certificate resources deleted. The flag is controller-global, so it also
+  applies to the CA-family and nlb Secrets */}}
+  cert-manager-args.json: |-
+    {{- dict "spec" (dict "controllerConfig" (dict "overrideArgs" (list
+        "--dns01-recursive-nameservers=9.9.9.9:53,1.1.1.1:53"
+        "--dns01-recursive-nameservers-only"
+        "--enable-certificate-owner-ref=false")))
+        | toJson | nindent 4 }}

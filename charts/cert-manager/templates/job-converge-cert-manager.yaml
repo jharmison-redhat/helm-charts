@@ -1,0 +1,48 @@
+{{- /* Runs the CertManager singleton convergence after the release is
+applied; the Job is deleted and recreated on upgrade so the immutable Job
+spec is never rejected. The operator creates the singleton at CSV install,
+which precedes any chart install, but the bounded in-script wait keeps the
+hook correct even when it starts before the operator's object appears */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: converge-cert-manager
+  namespace: cert-manager
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  # Outlasts the in-script bounded wait (plus headroom) so the script's own
+  # timeout diagnostics fire before the Job controller kills the pod
+  activeDeadlineSeconds: {{ add (.Values.operatorConfig.waitTimeoutSeconds | default 120) 30 }}
+  template:
+    spec:
+      serviceAccountName: converge-cert-manager
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: converge-cert-manager
+        image: {{ .Values.global.toolsImage }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: CERT_MANAGER_ARGS
+          value: /mnt/cert-manager-args.json
+        - name: WAIT_TIMEOUT
+          value: {{ .Values.operatorConfig.waitTimeoutSeconds | default 120 | quote }}
+        command: ["/mnt/converge-cert-manager.sh"]
+        securityContext:
+          capabilities:
+            drop:
+              - ALL
+        volumeMounts:
+        - name: converge-cert-manager-config
+          mountPath: /mnt
+      volumes:
+      - name: converge-cert-manager-config
+        configMap:
+          name: converge-cert-manager-config
+          defaultMode: 493

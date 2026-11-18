@@ -8,10 +8,12 @@ for the Let's Encrypt and ZeroSSL examples, the trust gate matrix over
 render shape (explicit duration and rotationPolicy), the resourceName-scoped
 trust RBAC, the reuse-values compatibility surface (a pre-0.2.0 release's
 values lack `ca.trust` and `ca.duration`, reproduced locally through the
-`--set x=null` delete path), and the serving-certificate hook surface (the platform
+`--set x=null` delete path), the serving-certificate hook surface (the platform
 IngressController/default and APIServer/cluster objects are never owned —
 hook Jobs write only this chart's reference with a resourceVersion-
-conditional read-modify-write).
+conditional read-modify-write), and the CertManager converge surface (the
+operator-created CertManager/cluster singleton is never rendered — a hook
+Job converges its managed overrideArgs field by value).
 
 Render tests run the chart through ``helm template`` (cert-manager has no
 chart dependencies, so no stubs or registry access are needed). Per the
@@ -27,12 +29,13 @@ import base64
 import copy
 import json
 import os
-import shutil
 import subprocess
-import tempfile
 import unittest
 
 import yaml
+
+from support import docs
+import support
 
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts", "cert-manager"))
@@ -208,43 +211,10 @@ def history_annotation(*payloads):
     return json.dumps([b64(p) for p in payloads])
 
 
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
-
-
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="cm-test-")
-        shutil.copytree(CHART, self.dir, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-        self.addCleanup(shutil.rmtree, self.dir)
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="cm-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
-
-    def render_raw(self, values=None):
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", "test-release-ns"]
-        if values is not None:
-            cmd += ["--values", self.values_file(values)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return result
-
-    def render(self, values=None):
-        result = self.render_raw(values)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return [d for d in docs(result.stdout) if d is not None]
-
-    def render_failure(self, values):
-        """Renders values expected to trip validation and returns stderr."""
-        result = self.render_raw(values)
-        self.assertNotEqual(result.returncode, 0,
-                            "expected a validation failure, but rendering succeeded")
-        return result.stderr
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "cm-test-"
+    values_prefix = "cm-values-"
 
     def acme_values(self, **certificates):
         values = {
@@ -269,19 +239,6 @@ class ChartFixture(unittest.TestCase):
             certificates[mode] = {"managed": True}
         values["certificates"].update(extra_certificates)
         return self.by_kind(self.render(values))
-
-    @staticmethod
-    def by_kind(docs):
-        by_kind = {}
-        for d in docs:
-            by_kind.setdefault(d["kind"], []).append(d)
-        return by_kind
-
-    @staticmethod
-    def pick(by_kind, kind, name):
-        matches = [d for d in by_kind[kind] if d["metadata"]["name"] == name]
-        assert len(matches) == 1, (kind, name, by_kind[kind])
-        return matches[0]
 
 
 class CAFamilyTests(ChartFixture):
@@ -412,37 +369,31 @@ class CAFamilyTests(ChartFixture):
             ["trust-ca"])
         self.assertEqual(
             [d["metadata"]["name"] for d in by_kind.get("ClusterRole", [])],
-            ["trust-ca"])
+            ["converge-cert-manager", "trust-ca"])
         self.assertEqual(
             [b["metadata"]["name"] for b in by_kind.get("ClusterRoleBinding", [])],
-            ["cert-manager-trust-ca"])
+            ["converge-cert-manager", "cert-manager-trust-ca"])
         self.assertEqual(
             [s["metadata"]["name"] for s in by_kind.get("ServiceAccount", [])],
-            ["trust-ca"])
+            ["converge-cert-manager", "trust-ca"])
         self.assertEqual(
             [j["metadata"]["name"] for j in by_kind.get("Job", [])],
-            ["trust-ca-remove", "trust-ca-set"])
+            ["converge-cert-manager", "trust-ca-remove", "trust-ca-set"])
         self.assertEqual(
             [c["metadata"]["name"] for c in by_kind.get("ConfigMap", [])],
-            ["trust-ca-config"])
+            ["converge-cert-manager-config", "trust-ca-config"])
 
     def test_platform_objects_never_render(self):
         # Managed or not, the chart never manifests the platform-owned
-        # IngressController or APIServer objects as release resources.
+        # IngressController or APIServer objects — nor the operator-created
+        # CertManager singleton — as release resources.
         for by_kind in (self.default_render(),
                         self.managed_render(modes=("router",)),
                         self.managed_render(modes=("api",)),
                         self.managed_render(modes=("api", "router"))):
             self.assertNotIn("IngressController", by_kind)
             self.assertNotIn("APIServer", by_kind)
-
-    def test_controller_override_args(self):
-        cr = self.pick(self.default_render(), "CertManager", "cluster")
-        self.assertEqual(cr["spec"]["controllerConfig"]["overrideArgs"], [
-            "--dns01-recursive-nameservers=9.9.9.9:53,1.1.1.1:53",
-            "--dns01-recursive-nameservers-only",
-            "--enable-certificate-owner-ref=false",
-        ])
+            self.assertNotIn("CertManager", by_kind)
 
     def test_managed_certificates_use_selected_issuer(self):
         by_kind = self.managed_render(modes=("api", "router"))
@@ -469,18 +420,15 @@ class ValidationTests(ChartFixture):
     """Render-time validation traps: each broken configuration fails with
     an actionable message naming the value path and the rendered options."""
 
-    def trap(self, values):
-        return self.render_failure(values)
-
     def test_managed_without_any_issuer_fails(self):
-        stderr = self.trap({
+        stderr = self.render_failure({
             "certificates": {"clusterIssuer": "zerossl", "router": {"managed": True}},
         })
         self.assertIn("does not name a rendered ClusterIssuer", stderr)
         self.assertIn("set it to one of: ca-issuer", stderr)
 
     def test_managed_with_ca_disabled_and_no_acme_fails(self):
-        stderr = self.trap({
+        stderr = self.render_failure({
             "ca": {"enabled": False},
             "certificates": {"clusterIssuer": "zerossl", "router": {"managed": True}},
         })
@@ -488,7 +436,7 @@ class ValidationTests(ChartFixture):
         self.assertIn("no issuer is rendered at all", stderr)
 
     def test_managed_with_unconfigured_issuer_name_fails(self):
-        stderr = self.trap({
+        stderr = self.render_failure({
             "acme": {"zerossl": copy.deepcopy(ZEROSSL_ACME)},
             "certificates": {"clusterIssuer": "letsencrypt",
                              "router": {"managed": True}},
@@ -502,11 +450,11 @@ class ValidationTests(ChartFixture):
         self.render()
 
     def test_half_bring_your_own_ca_fails(self):
-        stderr = self.trap({"ca": {"tlsCrt": "PEM-CERT"}})
+        stderr = self.render_failure({"ca": {"tlsCrt": "PEM-CERT"}})
         self.assertIn("ca.tlsCrt and ca.tlsKey must be set together", stderr)
 
     def test_other_half_bring_your_own_ca_fails(self):
-        stderr = self.trap({"ca": {"tlsKey": "PEM-KEY"}})
+        stderr = self.render_failure({"ca": {"tlsKey": "PEM-KEY"}})
         self.assertIn("ca.tlsCrt and ca.tlsKey must be set together", stderr)
 
     def test_byo_ca_with_ca_family_disabled_fails(self):
@@ -514,7 +462,7 @@ class ValidationTests(ChartFixture):
         # the trap fires regardless of the trust gate's position
         for trust in (True, False):
             with self.subTest(trust_enabled=trust):
-                stderr = self.trap({
+                stderr = self.render_failure({
                     "ca": {"enabled": False, "trust": {"enabled": trust},
                            "tlsCrt": "PEM-CERT", "tlsKey": "PEM-KEY"},
                 })
@@ -522,11 +470,11 @@ class ValidationTests(ChartFixture):
                               "is false", stderr)
 
     def test_acme_entry_without_server_fails(self):
-        stderr = self.trap({"acme": {"le": {"email": "ops@example.com"}}})
+        stderr = self.render_failure({"acme": {"le": {"email": "ops@example.com"}}})
         self.assertIn("acme.le.server is required", stderr)
 
     def test_acme_entry_without_email_fails(self):
-        stderr = self.trap({"acme": {"le": {
+        stderr = self.render_failure({"acme": {"le": {
             "server": "https://acme.example.com/directory"}}})
         self.assertIn("acme.le.email is required", stderr)
 
@@ -536,20 +484,20 @@ class ValidationTests(ChartFixture):
             "type": "route53",
             "dnsConfig": {"route53": {"region": "us-east-2"}},
         }]
-        stderr = self.trap(values)
+        stderr = self.render_failure(values)
         self.assertIn("solvers[0].type must be `dns` or `http`", stderr)
         self.assertIn("(got route53)", stderr)
 
     def test_dns_solver_without_dns_config_fails(self):
         values = self.acme_values()
         values["acme"]["letsencrypt"]["solvers"] = [{"type": "dns"}]
-        stderr = self.trap(values)
+        stderr = self.render_failure(values)
         self.assertIn("solvers[0].dnsConfig is required for a dns solver", stderr)
 
     def test_http_solver_without_ingress_class_fails(self):
         values = self.acme_values()
         values["acme"]["letsencrypt"]["solvers"] = [{"type": "http"}]
-        stderr = self.trap(values)
+        stderr = self.render_failure(values)
         self.assertIn("solvers[0].ingressClassName is required", stderr)
         self.assertIn("openshift-default", stderr)
 
@@ -693,14 +641,23 @@ class DocumentIntegrityTests(ChartFixture):
             self.assertEqual(by_name[name]["spec"]["acme"]["server"],
                              entry["server"])
 
-    def test_two_acme_entries_with_ca_disabled_render_exactly_three_documents(self):
+    def test_two_acme_entries_with_ca_disabled_render_exactly_seven_documents(self):
         raw = self.render_two_issuers(
             {"acme": copy.deepcopy(self.TWO_ACME), "ca": {"enabled": False}})
         rendered = [d for d in docs(raw) if d is not None]
+        # Exactly the two issuers plus the unconditional converge surface
+        # (its ServiceAccount, ConfigMap, ClusterRole, ClusterRoleBinding,
+        # and hook Job): no CertManager singleton and no CA-family
+        # documents
+        self.assertEqual(len(rendered), 7)
         self.assertEqual(
-            [(d["kind"], d["metadata"]["name"]) for d in rendered],
-            [("CertManager", "cluster"),
-             ("ClusterIssuer", "first"), ("ClusterIssuer", "second")])
+            {(d["kind"], d["metadata"]["name"]) for d in rendered},
+            {("ClusterIssuer", "first"), ("ClusterIssuer", "second"),
+             ("ServiceAccount", "converge-cert-manager"),
+             ("ConfigMap", "converge-cert-manager-config"),
+             ("ClusterRole", "converge-cert-manager"),
+             ("ClusterRoleBinding", "converge-cert-manager"),
+             ("Job", "converge-cert-manager")})
 
 
 class ServingCertHookTests(ChartFixture):
@@ -726,7 +683,7 @@ class ServingCertHookTests(ChartFixture):
         # enabled by default); the API-mode grants stay off
         self.assertEqual(
             [b["metadata"]["name"] for b in by_kind.get("ClusterRoleBinding", [])],
-            ["cert-manager-trust-ca"])
+            ["converge-cert-manager", "cert-manager-trust-ca"])
         cm = self.pick(by_kind, "ConfigMap", "serving-certs-config")
         self.assertIn("configure-router-cert.sh", cm["data"])
         self.assertIn("router-reference.json", cm["data"])
@@ -736,7 +693,7 @@ class ServingCertHookTests(ChartFixture):
         # defaults true), including its ClusterRole
         self.assertEqual(
             [r["metadata"]["name"] for r in by_kind.get("ClusterRole", [])],
-            ["trust-ca"])
+            ["converge-cert-manager", "trust-ca"])
 
     def test_api_mode_renders_api_surface_only(self):
         by_kind = self.managed_render(modes=("api",))
@@ -890,78 +847,12 @@ class ServingCertHookTests(ChartFixture):
                       cm["data"]["configure-api-cert.sh"])
 
 
-class FakeOcScriptFixture(ChartFixture):
-    """Shared plumbing for executing rendered hook scripts against a fake
-    oc binary, mirroring the keycloak-auth fixture of the same name.
+class FakeOcScriptFixture(ChartFixture, support.FakeOcScriptFixture):
+    """Restricted-PATH harness for the cert-manager hook scripts; the
+    canned oc program is set per subclass (the serving-cert fake and the
+    multi-resource trust fake differ)."""
 
-    Each run gets a restricted PATH built solely from symlinks in an
-    isolated bin directory (the requested JSON tool, core utilities, and
-    the fake oc), so no ambient host tool or real oc can be reached. The
-    child environment is an explicit minimal set — no parent variables are
-    inherited. Subclasses supply the fake oc program, the rendered scripts
-    dict, and their canned docs."""
     work_prefix = "cm-script-"
-    bin_tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort"]
-    fake_oc_script = None
-
-    def setUp(self):
-        super().setUp()
-        self.work = tempfile.mkdtemp(prefix=self.work_prefix)
-        self.addCleanup(shutil.rmtree, self.work)
-
-    def build_bin_dir(self, include_python=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        tools = list(self.bin_tools)
-        if include_python:
-            self.assertTrue(shutil.which("python3"),
-                            "python3 requested but not available on the host")
-            tools.append("python3")
-        for tool in tools:
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        fake_oc = os.path.join(bin_dir, "oc")
-        with open(fake_oc, "w") as f:
-            f.write(self.fake_oc_script)
-        os.chmod(fake_oc, 0o755)
-        return bin_dir
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def patch_lines(self):
-        path = os.path.join(self.work, "patches.log")
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return [line for line in f.read().splitlines() if line]
-
-    def stage_scripts(self):
-        # Every staged file lands in the same directory as the entry script
-        # because the scripts source their shared libs from their own
-        # directory, mirroring the single ConfigMap mount.
-        for name, content in self.scripts.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-
-    def clear_run_state(self):
-        # Each run is self-contained: drop logs and the fake oc's
-        # resourceVersion counters left by any earlier run.
-        for stale in ("commands.log", "patches.log", "create.log",
-                      "create.log.done"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
-        for stale in os.listdir(self.work):
-            if stale.endswith(".rv"):
-                os.unlink(os.path.join(self.work, stale))
-
-    def run_child(self, script_path, env):
-        return subprocess.run(
-            ["/bin/bash", script_path], capture_output=True, text=True,
-            env=env, timeout=120)
 
 
 class HookScriptTests(FakeOcScriptFixture):
@@ -1017,9 +908,6 @@ class HookScriptTests(FakeOcScriptFixture):
             "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
         }
         return self.run_child(script_path, env)
-
-    def patches(self):
-        return [json.loads(line) for line in self.patch_lines()]
 
 
 class RouterScriptTests(HookScriptTests):
@@ -1399,7 +1287,7 @@ class TrustFakeOcFixture(FakeOcScriptFixture):
             files[key] = os.path.join(self.work, f"{key}.json")
             with open(files[key], "w") as f:
                 json.dump(doc, f)
-        self.clear_run_state()
+        self.clear_run_state("create.log", "create.log.done")
         env = {
             "PATH": bin_dir,
             "HOME": self.work,
@@ -1507,6 +1395,290 @@ class TrustRemoveScriptTests(TrustFakeOcFixture):
                          "remove hook must not delete a non-emptied bundle")
 
 
+class ConvergeSurfaceTests(ChartFixture):
+    """The CertManager converge surface: the operator-created
+    CertManager/cluster singleton is never a release manifest, the hook Job
+    waits bounded on it and converges the managed overrideArgs field by
+    value, and every grant is resourceName-scoped with no create or delete
+    verb."""
+
+    OVERRIDE_ARGS = [
+        "--dns01-recursive-nameservers=9.9.9.9:53,1.1.1.1:53",
+        "--dns01-recursive-nameservers-only",
+        "--enable-certificate-owner-ref=false",
+    ]
+
+    def converge_render(self, values=None):
+        return self.by_kind(self.render(values))
+
+    def test_job_identity_and_hooks(self):
+        job = self.pick(self.converge_render(), "Job", "converge-cert-manager")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook"],
+            "post-install,post-upgrade")
+        self.assertEqual(
+            job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
+            "before-hook-creation")
+        self.assertEqual(job["spec"]["backoffLimit"], 3)
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 150)
+        pod = job["spec"]["template"]["spec"]
+        self.assertEqual(pod["serviceAccountName"], "converge-cert-manager")
+        self.assertEqual(pod["restartPolicy"], "Never")
+        self.assertEqual(pod["securityContext"],
+                         {"runAsNonRoot": True,
+                          "seccompProfile": {"type": "RuntimeDefault"}})
+        container = pod["containers"][0]
+        self.assertEqual(container["image"],
+                         "image-registry.openshift-image-registry.svc:5000"
+                         "/openshift/tools:latest")
+        self.assertEqual(container["imagePullPolicy"], "IfNotPresent")
+        self.assertEqual(container["env"],
+                         [{"name": "CERT_MANAGER_ARGS",
+                           "value": "/mnt/cert-manager-args.json"},
+                          {"name": "WAIT_TIMEOUT", "value": "120"}])
+        self.assertEqual(container["command"],
+                         ["/mnt/converge-cert-manager.sh"])
+        self.assertEqual(container["securityContext"],
+                         {"capabilities": {"drop": ["ALL"]}})
+        self.assertEqual(container["volumeMounts"],
+                         [{"name": "converge-cert-manager-config",
+                           "mountPath": "/mnt"}])
+        self.assertEqual(pod["volumes"], [{
+            "name": "converge-cert-manager-config",
+            "configMap": {"name": "converge-cert-manager-config",
+                          "defaultMode": 493},
+        }])
+
+    def test_job_pins_cert_manager_namespace(self):
+        job = self.pick(self.converge_render(), "Job", "converge-cert-manager")
+        self.assertEqual(job["metadata"]["namespace"], "cert-manager")
+
+    def test_custom_wait_deadline(self):
+        by_kind = self.converge_render(
+            {"operatorConfig": {"waitTimeoutSeconds": 60}})
+        job = self.pick(by_kind, "Job", "converge-cert-manager")
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 90)
+        self.assertEqual(job["spec"]["template"]["spec"]["containers"][0]["env"],
+                         [{"name": "CERT_MANAGER_ARGS",
+                           "value": "/mnt/cert-manager-args.json"},
+                          {"name": "WAIT_TIMEOUT", "value": "60"}])
+
+    def test_rbac_is_resource_name_scoped_without_create_or_delete(self):
+        by_kind = self.converge_render()
+        sa = self.pick(by_kind, "ServiceAccount", "converge-cert-manager")
+        self.assertEqual(sa["metadata"]["namespace"], "cert-manager")
+        cluster_role = self.pick(by_kind, "ClusterRole", "converge-cert-manager")
+        self.assertEqual(cluster_role["rules"], [
+            {
+                "apiGroups": ["apiextensions.k8s.io"],
+                "resources": ["customresourcedefinitions"],
+                "resourceNames": ["certmanagers.operator.openshift.io"],
+                "verbs": ["get"],
+            },
+            {
+                "apiGroups": ["operator.openshift.io"],
+                "resources": ["certmanagers"],
+                "resourceNames": ["cluster"],
+                "verbs": ["get", "patch"],
+            },
+        ])
+        binding = self.pick(by_kind, "ClusterRoleBinding",
+                            "converge-cert-manager")
+        self.assertEqual(binding["roleRef"], {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": "converge-cert-manager",
+        })
+        self.assertEqual(binding["subjects"], [{
+            "kind": "ServiceAccount",
+            "name": "converge-cert-manager",
+            "namespace": "cert-manager",
+        }])
+
+    def test_configmap_delivers_script_preamble_and_payload(self):
+        cm = self.pick(self.converge_render(), "ConfigMap",
+                       "converge-cert-manager-config")
+        self.assertEqual(cm["metadata"]["namespace"], "cert-manager")
+        self.assertEqual(sorted(cm["data"]),
+                         ["cert-manager-args.json", "converge-cert-manager.sh",
+                          "hook-preamble.sh"])
+        # The payload carries exactly the spec field the chart configures:
+        # the desired overrideArgs subset, nothing else
+        self.assertEqual(json.loads(cm["data"]["cert-manager-args.json"]),
+                         {"spec": {"controllerConfig":
+                                   {"overrideArgs": self.OVERRIDE_ARGS}}})
+        script = cm["data"]["converge-cert-manager.sh"]
+        self.assertIn("set -euo pipefail", script)
+        self.assertIn('source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"',
+                      script)
+        for forbidden in ("create_object", "delete_object"):
+            self.assertNotIn(forbidden, script)
+        self.assertIn("conditional_write", script)
+        # The resource target is composed from the CRD variable; assert
+        # both halves so a wrong group or name smokes red here
+        self.assertIn('CRD="certmanagers.operator.openshift.io"', script)
+        self.assertIn('RESOURCE="${CRD}/cluster"', script)
+
+    def test_job_args_env_resolves_to_a_delivered_configmap_key(self):
+        # The converge script reads CERT_MANAGER_ARGS as a file path; if the
+        # path leaves the ConfigMap volume or names a key the ConfigMap does
+        # not deliver, the script fails fail-closed with no unit coverage.
+        # This cross-asserts the delivery wiring within one render.
+        by_kind = self.converge_render()
+        job = self.pick(by_kind, "Job", "converge-cert-manager")
+        cm = self.pick(by_kind, "ConfigMap", "converge-cert-manager-config")
+        container = job["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e["value"] for e in container["env"]}
+        self.assertIn("CERT_MANAGER_ARGS", env)
+        args_path = env["CERT_MANAGER_ARGS"]
+        volume_names = {v["name"]: v["configMap"]["name"]
+                        for v in job["spec"]["template"]["spec"]["volumes"]
+                        if "configMap" in v}
+        # The args path must live under a ConfigMap-backed mount, and the
+        # mounted ConfigMap must be the one rendering the payload
+        backing_mounts = [
+            m for m in container["volumeMounts"]
+            if args_path.startswith(m["mountPath"].rstrip("/") + "/")
+        ]
+        self.assertEqual(len(backing_mounts), 1)
+        self.assertEqual(volume_names[backing_mounts[0]["name"]],
+                         cm["metadata"]["name"])
+        # The file basename must be a key the rendered ConfigMap delivers
+        self.assertIn(os.path.basename(args_path), cm["data"])
+
+
+# Fake oc for the converge hook smoke run: answers the CRD-establishment
+# jsonpath check, serves a canned CertManager object for get (bumping the
+# served metadata.resourceVersion on every get), and records every --patch=
+# payload. Every invocation is logged.
+CONVERGE_FAKE_OC_SCRIPT = """\
+#!/bin/bash
+echo "$@" >> "$OC_LOG"
+case "$1" in
+  get)
+    case "$*" in
+      *"crd/"*)
+        echo "True"
+        exit 0 ;;
+      *"certmanagers.operator.openshift.io/cluster"*)
+        rv_file="$OC_OBJECT_FILE.rv"
+        if [[ -f "$rv_file" ]]; then
+          next_rv=$(($(cat "$rv_file") + 1))
+        else
+          next_rv=$(grep -oE '"resourceVersion": *"[0-9]+"' "$OC_OBJECT_FILE" \\
+            | grep -oE '[0-9]+')
+        fi
+        echo "$next_rv" > "$rv_file"
+        sed "s/\\"resourceVersion\\": *\\"[0-9]*\\"/\\"resourceVersion\\": \\"$next_rv\\"/" \\
+          "$OC_OBJECT_FILE" ;;
+      *)
+        echo "unexpected oc get: $*" >&2
+        exit 64 ;;
+    esac ;;
+  patch)
+    for arg in "$@"; do
+      if [[ "$arg" == --patch=* ]]; then
+        printf '%s\\n' "${arg#--patch=}" >> "$OC_PATCH_LOG"
+      fi
+    done
+    exit 0 ;;
+  *)
+    echo "unexpected oc invocation: $*" >&2
+    exit 64 ;;
+esac
+"""
+
+
+class ConvergeScriptTests(ChartFixture, support.FakeOcScriptFixture):
+    """Happy-path smoke for the rendered converge-cert-manager script: the
+    operator-created singleton present with a drifted overrideArgs converges
+    to one merge patch carrying the live resourceVersion, and nothing is
+    created or deleted."""
+    work_prefix = "cm-converge-"
+    bin_tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "env", "sort",
+                 "date"]
+    fake_oc_script = CONVERGE_FAKE_OC_SCRIPT
+
+    def setUp(self):
+        super().setUp()
+        cm = self.pick(self.by_kind(self.render()), "ConfigMap",
+                       "converge-cert-manager-config")
+        self.scripts = {name: cm["data"][name]
+                        for name in ("hook-preamble.sh",
+                                     "converge-cert-manager.sh")}
+
+    def object_doc(self, override_args, resource_version="1597"):
+        return {
+            "apiVersion": "operator.openshift.io/v1alpha1",
+            "kind": "CertManager",
+            "metadata": {"name": "cluster",
+                         "resourceVersion": resource_version},
+            "spec": {"controllerConfig": {"overrideArgs": override_args},
+                     "managementState": "Managed",
+                     "logLevel": "Normal"},
+        }
+
+    def run_script(self, object_doc, include_python=True):
+        bin_dir = self.build_bin_dir(include_python=include_python)
+        self.stage_scripts()
+        object_file = os.path.join(self.work, "object.json")
+        with open(object_file, "w") as f:
+            json.dump(object_doc, f)
+        self.clear_run_state()
+        env = {
+            "PATH": bin_dir,
+            "HOME": self.work,
+            "WAIT_TIMEOUT": "2",
+            "POLL_INTERVAL": "0",
+            "CERT_MANAGER_ARGS": os.path.join(self.work, "args.json"),
+            "OC_LOG": os.path.join(self.work, "commands.log"),
+            "OC_OBJECT_FILE": object_file,
+            "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
+        }
+        with open(env["CERT_MANAGER_ARGS"], "w") as f:
+            json.dump({"spec": {"controllerConfig": {"overrideArgs":
+                       ConvergeSurfaceTests.OVERRIDE_ARGS}}}, f)
+        return self.run_child(os.path.join(self.work, "converge-cert-manager.sh"),
+                              env)
+
+    def test_drifted_override_args_converge(self):
+        result = self.run_script(
+            self.object_doc(["--enable-certificate-owner-ref=true"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The bounded wait resolves through the CRD-establishment check
+        # first, then the object get — cluster-scoped, so no -n anywhere
+        self.assertEqual(
+            self.log().splitlines()[0],
+            "get crd/certmanagers.operator.openshift.io "
+            "-o jsonpath={.status.conditions[?(@.type==\"Established\")].status} "
+            "--request-timeout=30s")
+        self.assertEqual(
+            self.log().splitlines()[1],
+            "get certmanagers.operator.openshift.io/cluster -o json "
+            "--request-timeout=30s")
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        # The fake bumps the served resourceVersion on every get: the
+        # bounded wait's get served 1597, the conditional write's fresh
+        # read served 1598
+        self.assertEqual(patches[0], {
+            "metadata": {"resourceVersion": "1598"},
+            "spec": {"controllerConfig": {"overrideArgs":
+                                          ConvergeSurfaceTests.OVERRIDE_ARGS}},
+        })
+        # The converge neither creates nor deletes the operator-owned
+        # object
+        self.assertNotIn("create", self.log())
+        self.assertNotIn("delete", self.log())
+
+    def test_matching_override_args_are_a_no_op(self):
+        result = self.run_script(
+            self.object_doc(ConvergeSurfaceTests.OVERRIDE_ARGS))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already carries the configured", result.stdout)
+        self.assertEqual(self.patches(), [])
+
+
 class ValuesContractTests(unittest.TestCase):
     """Static checks on the shipped values: the default stays a deliberate
     validation trap, and the documented examples match what renders."""
@@ -1534,6 +1706,10 @@ class ValuesContractTests(unittest.TestCase):
         self.assertEqual(values["ca"]["duration"], "87600h")
         self.assertIs(values["ca"]["trust"]["enabled"], True)
         self.assertEqual(values["ca"]["trustTimeoutSeconds"], 120)
+
+    def test_operator_config_defaults(self):
+        values = self.load(os.path.join(CHART, "values.yaml"))
+        self.assertEqual(values["operatorConfig"]["waitTimeoutSeconds"], 120)
 
 
 if __name__ == "__main__":

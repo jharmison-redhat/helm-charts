@@ -8,6 +8,12 @@ global:
     # REQUIRED: set to your cluster base domain before enabling managed certificates
     baseDomain: domain.com
 
+operatorConfig:
+  # Seconds the converge hook waits for the operator-created CertManager
+  # cluster singleton (and its CRD) to exist before failing; the Job's
+  # activeDeadlineSeconds covers this plus headroom
+  waitTimeoutSeconds: 120
+
 ca:
   enabled: true
   # Go duration of the self-provisioned CA certificate (the selfsigned-ca

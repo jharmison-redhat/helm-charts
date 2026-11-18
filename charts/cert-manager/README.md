@@ -10,8 +10,8 @@ Prerequisites
 -------------
 
 The cert-manager Operator for Red Hat OpenShift is NOT installed by this chart. It must already be installed before this
-chart is deployed — the chart renders custom resources directly (`CertManager`, ClusterIssuers, Certificates), and a
-plain `helm install` fails on the missing CRDs otherwise. Use the `install-operators` chart for the operator install:
+chart is deployed — the chart renders custom resources directly (ClusterIssuers, Certificates), and a plain
+`helm install` fails on the missing CRDs otherwise. Use the `install-operators` chart for the operator install:
 
 ```yaml
 # install-operators values
@@ -36,31 +36,53 @@ objects target it:
   `trust-ca-config` ConfigMap, and the `trust-ca-set`/`trust-ca-remove` hook Jobs (when `ca.trust.enabled`)
 - the `serving-certs` ServiceAccount, its `serving-certs-config` ConfigMap, and the certificate hook Jobs (when a
   platform certificate is managed)
+- the `converge-cert-manager` ServiceAccount, ClusterRole/ClusterRoleBinding, `converge-cert-manager-config` ConfigMap,
+  and the `converge-cert-manager` hook Job (always — see "Operator configuration")
 
 The release namespace is free — every namespaced object this chart renders pins its namespace outright: objects that
 belong with the operator pin `namespace: cert-manager`, while the platform serving Certificates pin `openshift-config`
 and `openshift-ingress` and their Role/RoleBinding pair pins `openshift-ingress-operator`, where the platform expects
-them (the CertManager configuration CR, the ClusterIssuers, and the ClusterRoles/ClusterRoleBindings are cluster-scoped
-and carry no namespace). Any release namespace works. `cert-manager` itself is a natural choice and pre-exists through
-the operator install; it is not Pod-Security-Admission restricted, so it admits the root-running tools image the hook
-Jobs use.
+them (the ClusterIssuers and the ClusterRoles/ClusterRoleBindings are cluster-scoped and carry no namespace). Any
+release namespace works. `cert-manager` itself is a natural choice and pre-exists through the operator install; it is
+not Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use.
 
 Operator configuration
 ----------------------
 
-The chart renders the `CertManager` cluster-scoped operator configuration CR (governed by the operator's own CRD, so it
-applies as soon as the CRDs are established) with two controller overrides:
+The cert-manager Operator for Red Hat OpenShift auto-creates the `CertManager` cluster-scoped configuration singleton
+(`operator.openshift.io/v1alpha1`, name `cluster`) at CSV install — before any chart release exists — so the chart never
+renders it as a release manifest: on any cluster where the operator ran first, plain `helm install` would fail the
+ownership preflight on a rendered copy, and adopt-then-delete paths would delete the operator's own object at uninstall.
+Instead, a `converge-cert-manager` hook Job (post-install,post-upgrade) waits bounded
+(`operatorConfig.waitTimeoutSeconds`, default 120 — the Job's active deadline covers this plus headroom) for the
+operator-created object, then converges the one spec field this chart configures, by value:
 
-- `--dns01-recursive-nameservers=9.9.9.9:53,1.1.1.1:53` plus `--dns01-recursive-nameservers-only`. Red Hat documents
-  that DNS01 propagation checks against the cluster's own DNS fail when the public zone (e.g. `example.com` on Route53)
-  overlaps the cluster's private hosted zone — the private zone shadows the public records, so cert-manager never sees
-  its own TXT records. Checking propagation through public recursive resolvers instead makes DNS01 work on such
-  clusters, which is why the chart sets the override unconditionally.
-- `--enable-certificate-owner-ref=false`. Certificate Secrets are created by cert-manager, not by Helm, so the only
-  deletion path when a Certificate resource is removed (e.g. at `helm uninstall`) is the owner reference cascading the
-  Secret. Keeping the flag explicitly off — which matches the upstream default at cert-manager 1.20 — makes the teardown
-  contract below deterministic. The flag is controller-global, so it applies to the CA-family and NLB Secrets as well,
-  not only to the platform serving certificates.
+- `spec.controllerConfig.overrideArgs` is set to exactly:
+  - `--dns01-recursive-nameservers=9.9.9.9:53,1.1.1.1:53` plus `--dns01-recursive-nameservers-only`. Red Hat documents
+    that DNS01 propagation checks against the cluster's own DNS fail when the public zone (e.g. `example.com` on
+    Route53) overlaps the cluster's private hosted zone — the private zone shadows the public records, so cert-manager
+    never sees its own TXT records. Checking propagation through public recursive resolvers instead makes DNS01 work on
+    such clusters, which is why the chart sets the override unconditionally.
+  - `--enable-certificate-owner-ref=false`. Certificate Secrets are created by cert-manager, not by Helm, so the only
+    deletion path when a Certificate resource is removed (e.g. at `helm uninstall`) is the owner reference cascading the
+    Secret. Keeping the flag explicitly off — which matches the upstream default at cert-manager 1.20 — makes the
+    teardown contract below deterministic. The flag is controller-global, so it applies to the CA-family and NLB Secrets
+    as well, not only to the platform serving certificates.
+
+The convergence is a desired-subset read-modify-write merge patch carrying the live `metadata.resourceVersion` (a
+concurrent modification is rejected with HTTP 409 and retried): only the managed field is compared and patched, and
+every other field the operator sets on the object is never touched. The hook runs on every install and upgrade, so a
+drifted value is re-converged then; between hook runs the operator's reconciles win. Because the Job waits on the
+operator-created object rather than creating anything, the chart installs cleanly even if the operator's object has not
+appeared yet.
+
+The hook runs as the `converge-cert-manager` ServiceAccount with resourceName-scoped grants only: get on exactly the
+`certmanagers.operator.openshift.io` CRD and get/patch on exactly the `CertManager` `cluster` object. There is no create
+or delete verb — the object belongs to the operator.
+
+**Uninstall contract:** `helm uninstall` never deletes the `CertManager`/`cluster` object. It is the operator's own
+singleton — the operator recreates it if it is ever deleted — and the converged controller arguments persist on it until
+the operator or a user changes them. Nothing of this surface is walked back at uninstall.
 
 Issuers
 -------
