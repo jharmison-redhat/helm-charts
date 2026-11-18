@@ -26,7 +26,7 @@ spec:
       {{- toYaml . | nindent 6 }}
     {{- end }}
     solvers:
-    {{- range $solver := $acme.solvers -}}
+    {{- range $solver := $acme.solvers }}
       {{- if eq $solver.type "dns" }}
       - dns01:
           {{- toYaml $solver.dnsConfig | nindent 10 }}
