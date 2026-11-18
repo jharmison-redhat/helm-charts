@@ -135,3 +135,12 @@ Existing realms do not pick the attribute up on upgrade: `KeycloakRealmImport` i
 Job does not re-run for a changed custom resource — fresh installs get the attribute automatically, but a realm that
 already exists needs a one-time manual client-attributes patch through the Keycloak admin API (using the operator's
 master-realm bootstrap admin credentials) or realm recreation.
+
+Upgrades
+--------
+
+On a chart version bump, Helm 4's server-side apply can reject the upgrade with a field-manager conflict against the Red
+Hat Build of Keycloak operator: the operator claims the release's bookkeeping labels (`app.kubernetes.io/version`,
+`helm.sh/chart`) on the `Keycloak` custom resource when it reconciles it, and the bumped chart then applies different
+values for those labels. Re-run the upgrade with `helm upgrade --force-conflicts` to resolve it in Helm's favor; the
+operator reconciles around the ownership change. The conflict recurs on each subsequent chart version bump.
