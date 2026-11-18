@@ -5,5 +5,5 @@ description: >
   A helm chart to deploy cert-manager, manage ClusterIssuers, and manage
   certificates for cluster services like the Router
 type: application
-version: 0.3.0
-appVersion: 0.3.0
+version: 0.3.1
+appVersion: 0.3.1

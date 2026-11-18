@@ -640,6 +640,69 @@ class AcmeRenderTests(ChartFixture):
             [])
 
 
+class DocumentIntegrityTests(ChartFixture):
+    """Regression guard for the 0.3.0 YAML-fusion defect: a right-trim
+    marker on the acme range action in clusterissuer.yaml ate the newline
+    before each iteration's leading `---`, gluing the previous issuer's
+    last line to the separator. With two or more acme entries the next
+    ClusterIssuer's document fused into the previous one (duplicate root
+    keys, last-wins): the stream still parsed, but the earlier issuer
+    silently vanished from the release. The guard renders the fusion-prone
+    two-entry shape and asserts the documents stay separate and every
+    issuer survives with its own configuration."""
+
+    TWO_ACME = {
+        "first": {"server": "https://acme-first.example.com/directory",
+                  "email": "ops@example.com",
+                  "solvers": [{"type": "http",
+                               "ingressClassName": "openshift-default"}]},
+        "second": {"server": "https://acme-second.example.com/directory",
+                   "email": "ops@example.com",
+                   "solvers": [{"type": "http",
+                                "ingressClassName": "openshift-default"}]},
+    }
+
+    def render_two_issuers(self, values=None):
+        if values is None:
+            values = {"acme": copy.deepcopy(self.TWO_ACME)}
+        raw = self.render_raw(values).stdout
+        # No document separator may be glued to content: a line ending in
+        # `<non-dash>---` is the signature of the trim-marker fusion.
+        # Dashes are excluded from the sentinel because the rendered hook
+        # scripts carry PEM fences (`-----BEGIN ... -----`).
+        for line in raw.splitlines():
+            self.assertNotRegex(line, r"[^-\s]---$", raw)
+        return raw
+
+    def test_two_acme_entries_render_two_separate_issuers(self):
+        # The default CA family renders alongside, exercising the
+        # acme-range → CA-section boundary too.
+        by_name = {d["metadata"]["name"]: d
+                   for d in docs(self.render_two_issuers())
+                   if d["kind"] == "ClusterIssuer"}
+        # Exact names and count: the 0.3.0 fusion silently dropped the
+        # first issuer's ClusterIssuer from the release.
+        self.assertEqual(sorted(by_name),
+                         ["ca-issuer", "first", "second",
+                          "selfsigned-issuer"])
+        # Each acme entry parses as its own document carrying its own
+        # server: the fusion merged the next document's keys into the
+        # previous one (last-wins), so a fused issuer surfaces as a
+        # missing or wrong server here.
+        for name, entry in self.TWO_ACME.items():
+            self.assertEqual(by_name[name]["spec"]["acme"]["server"],
+                             entry["server"])
+
+    def test_two_acme_entries_with_ca_disabled_render_exactly_three_documents(self):
+        raw = self.render_two_issuers(
+            {"acme": copy.deepcopy(self.TWO_ACME), "ca": {"enabled": False}})
+        rendered = [d for d in docs(raw) if d is not None]
+        self.assertEqual(
+            [(d["kind"], d["metadata"]["name"]) for d in rendered],
+            [("CertManager", "cluster"),
+             ("ClusterIssuer", "first"), ("ClusterIssuer", "second")])
+
+
 class ServingCertHookTests(ChartFixture):
     """With a mode managed, its hook Job, script ConfigMap, ServiceAccount,
     and resourceName-scoped grants render; with neither mode managed,

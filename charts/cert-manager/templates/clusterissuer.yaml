@@ -1,6 +1,9 @@
 {{- include "cert-manager.validateCa" . }}
 {{- include "cert-manager.validateAcme" . -}}
-{{- range $name, $acme := .Values.acme -}}
+{{- range $name, $acme := .Values.acme }}
+{{- /* The comment action must not right-trim: the newline it would eat is the
+one separating the previous iteration's last line from this `---` document
+separator (a right-trim glues them into one YAML document). */}}
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
