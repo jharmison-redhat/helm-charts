@@ -17,8 +17,10 @@ The operand charts require the following before the operand install:
   cert-manager `Certificate` whose issuerRef defaults to it, and the referenced Secret needs a `ca.crt`, which
   cert-manager only populates for CA-capable issuers. Verify a Ready, CA-capable ClusterIssuer (default name
   `ca-issuer`) exists before installing with `oc get clusterissuer ca-issuer`; a fresh cluster must create one, for
-  example via this repository's cert-manager chart or an existing platform issuer. Keycloak itself uses the OpenShift
-  service CA and needs no cert-manager.
+  example via this repository's cert-manager chart or an existing platform issuer. The cert-manager operator itself is
+  subscribed by the operator install: `operator-values.yaml` carries an `openshift-cert-manager-operator` entry, and the
+  `openshift-ai` chart's default surface (the DSC `aigateway` component and its Gateway `Certificate` plumbing) requires
+  cert-manager. Keycloak itself uses the OpenShift service CA and needs no cert-manager.
 - Namespace `keycloak` is ensured by the operator install: the `install-operators` chart creates it by hook when absent.
 
 Two-install flow
@@ -30,8 +32,8 @@ its operand CR in one release. Deployment therefore uses two installs:
 
 1. **Operator install** — the `install-operators` chart, one release covering all OLM operators via its `operators` map.
    `operator-values.yaml` in this example pairs with it for the operators required by the operand charts of this
-   repository (RHBK, CloudNativePG, Red Hat Connectivity Link, LeaderWorkerSet, NFD, and NVIDIA GPU Operator):
-   `rhods-operator` (channel `stable-3.5`) is also included, for the `charts/openshift-ai` chart:
+   repository (RHBK, CloudNativePG, cert-manager, Red Hat Connectivity Link, LeaderWorkerSet, NFD, and NVIDIA GPU
+   Operator): `rhods-operator` (channel `stable-3.5`) is also included, for the `charts/openshift-ai` chart:
 
    ```
    helm upgrade --install install-operators charts/install-operators \

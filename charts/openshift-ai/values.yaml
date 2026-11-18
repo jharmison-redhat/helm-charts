@@ -54,6 +54,13 @@ gateways:
 
 enableUserTelemetry: false
 
+# Bounded wall-clock wait (seconds) shared by the operand configuration hook
+# Jobs (dashboard config, MLflow, operator-created configs) for custom
+# resource definition establishment and operator-created object appearance;
+# each hook Job's activeDeadlineSeconds is this + 30. Must be a positive
+# integer (validated at render time)
+operandHookWaitTimeoutSeconds: 240
+
 # KEDA metrics reader for WVA autoscaling on LLMInferenceService
 # Opt-in: only create when WVA/KEDA is actually deployed
 kedaMetricsReader:
@@ -198,6 +205,12 @@ admins: []
 userGroups:
   - system:authenticated
 
+# Dashboard OdhDashboardConfig spec passthrough, converged onto the
+# odh-dashboard-config object by the dashboard-config hook (never a release
+# manifest — the object's CRD exists only after the operator reconciles the
+# DataScienceCluster). Merge-patch semantics: fields the chart's payload
+# carries are set by value; fields it omits are left alone; an explicit null
+# inside dashboardConfig removes a field
 dashboardConfig: {}
 # dashboardConfig:
 #   disableBYONImageStream: false
@@ -311,6 +324,12 @@ maasTenantConfig:
 # (Tech Preview) — pairs with the mlflowoperator component above.
 # globalMLflowNamespaces: []
 
+# MLflow operand: mlflow.create gates the MLflow set hook (the MLflow object
+# is created/converged by a conditional-write hook, never a release manifest
+# — the CRD exists only after the mlflowoperator component deploys). The
+# matching pre-delete proof-gated delete plumbing renders unconditionally, so
+# disabling management after a chart-created MLflow still walks it back on
+# uninstall
 mlflow:
   create: true
   spec:

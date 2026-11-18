@@ -1,0 +1,179 @@
+{{- $wait := int (include "openshift-ai.waitSeconds.validated" (dict "field" "operandHookWaitTimeoutSeconds" "value" .Values.operandHookWaitTimeoutSeconds)) -}}
+{{- $fullname := include "openshift-ai.hookSurface.fullname" (dict "root" . "family" "dashboard-config") -}}
+{{- $deadline := add $wait 30 -}}
+{{- include "openshift-ai.dscComponent.validated" (dict "root" . "component" "dashboard" "surface" "dashboard-config hook") -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+rules:
+  # resourceName-scoped management of the chart-created OdhDashboardConfig.
+  # delete mirrors release ownership on uninstall and runs only under the
+  # chart-created proof annotation.
+  - apiGroups:
+      - opendatahub.io
+    resources:
+      - odhdashboardconfigs
+    resourceNames:
+      - odh-dashboard-config
+    verbs:
+      - get
+      - patch
+      - delete
+  # create is the one grant RBAC cannot scope by name (documented in the
+  # README), so it lives in its own unscoped rule — an unscoped create inside
+  # a resourceNames-scoped rule can never authorize.
+  - apiGroups:
+      - opendatahub.io
+    resources:
+      - odhdashboardconfigs
+    verbs:
+      - create
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    resourceNames:
+      - odhdashboardconfigs.opendatahub.io
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullname }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  set-chart-created-cr.sh: |-
+    {{- .Files.Get "files/lib/set-chart-created-cr.sh" | nindent 4 }}
+  delete-chart-created-cr.sh: |-
+    {{- .Files.Get "files/lib/delete-chart-created-cr.sh" | nindent 4 }}
+  create.json: |-
+    {{- include "openshift-ai.dashboardConfig.object" . | nindent 4 }}
+  spec.json: |-
+    {{- dict "spec" (include "openshift-ai.dashboardConfig.spec" . | fromJson) | toJson | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-set
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+  annotations:
+    # Recreated on every install/upgrade so the immutable Job spec is never
+    # rejected; the supporting resources are ordinary release manifests.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $deadline }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.hookSurface.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: set-dashboard-config
+          image: {{ .Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/set-chart-created-cr.sh"]
+          env:
+            - name: CRD_NAME
+              value: odhdashboardconfigs.opendatahub.io
+            - name: RESOURCE
+              value: odhdashboardconfigs.opendatahub.io/odh-dashboard-config
+            - name: OBJECT_NAME
+              value: odh-dashboard-config
+            - name: OBJECT_NAMESPACE
+              value: redhat-ods-applications
+            - name: CREATE_PAYLOAD
+              value: /config/create.json
+            - name: SPEC_PAYLOAD
+              value: /config/spec.json
+            - name: WAIT_TIMEOUT
+              value: {{ $wait | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-delete
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  # The delete has no wait phase — one bounded get/delete round-trip — so a
+  # fixed deadline sits far above the expected few-second run while still
+  # terminating a wedged pod.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.hookSurface.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: delete-dashboard-config
+          image: {{ .Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/delete-chart-created-cr.sh"]
+          env:
+            - name: RESOURCE
+              value: odhdashboardconfigs.opendatahub.io/odh-dashboard-config
+            - name: OBJECT_NAME
+              value: odh-dashboard-config
+            - name: OBJECT_NAMESPACE
+              value: redhat-ods-applications
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493

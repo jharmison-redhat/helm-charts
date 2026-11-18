@@ -290,3 +290,124 @@ values must be nonnegative integers.
 {{- $n -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Release-qualified name of an operand hook surface's resources (ServiceAccount
+/ ClusterRole / ClusterRoleBinding / ConfigMap / hook Jobs), parameterized by
+.family (e.g. "operator-configs", "dashboard-config", "mlflow").
+Collision-resistant across release namespaces, mirroring the replicaSurface
+naming.
+*/}}
+{{- define "openshift-ai.hookSurface.fullname" -}}
+{{- $base := printf "%s-%s" .root.Release.Name .family -}}
+{{- $hash := sha256sum (printf "%s/%s" .root.Release.Namespace .root.Release.Name) | trunc 8 -}}
+{{- printf "%s-%s" (trimSuffix "-" ($base | trunc 54)) $hash -}}
+{{- end -}}
+
+{{/*
+Chart labels for the operand hook surface resources.
+*/}}
+{{- define "openshift-ai.hookSurface.labels" -}}
+app.kubernetes.io/name: openshift-ai
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
+
+{{/*
+The chart-managed OdhDashboardConfig spec as JSON: the notebookController
+block always renders, and the dashboardConfig/templateDisablement/
+templateOrder passthrough blocks render only when set (matching the
+pre-hook release manifest's `with` semantics, where empty maps are omitted).
+*/}}
+{{- define "openshift-ai.dashboardConfig.spec" -}}
+{{- $spec := dict "notebookController" (dict
+      "enabled" .Values.showJupyterInEnabledApplications
+      "notebookNamespace" "rhods-notebooks"
+      "pvcSize" .Values.defaultWorkbenchPvcSize) -}}
+{{- with .Values.dashboardConfig -}}
+{{- $_ := set $spec "dashboardConfig" . -}}
+{{- end -}}
+{{- with .Values.templateDisablement -}}
+{{- $_ := set $spec "templateDisablement" . -}}
+{{- end -}}
+{{- with .Values.templateOrder -}}
+{{- $_ := set $spec "templateOrder" . -}}
+{{- end -}}
+{{- $spec | toJson -}}
+{{- end -}}
+
+{{/*
+Full OdhDashboardConfig creation payload as JSON, carrying the chart-created
+proof annotation the pre-delete hook requires before it deletes the object.
+*/}}
+{{- define "openshift-ai.dashboardConfig.object" -}}
+{{- $object := dict
+      "apiVersion" "opendatahub.io/v1alpha"
+      "kind" "OdhDashboardConfig"
+      "metadata" (dict
+        "name" "odh-dashboard-config"
+        "namespace" "redhat-ods-applications"
+        "labels" (dict
+          "app.kubernetes.io/part-of" "rhods-dashboard"
+          "app.opendatahub.io/rhods-dashboard" "true")
+        "annotations" (dict "openshift-ai/chart-created" "true"))
+      "spec" (include "openshift-ai.dashboardConfig.spec" . | fromJson) -}}
+{{- $object | toJson -}}
+{{- end -}}
+
+{{/*
+Full MLflow creation payload as JSON with the chart-created proof
+annotation. The spec is the mlflow.spec passthrough; an unset spec renders a
+spec-less object (matching the pre-hook release manifest's `with` semantics).
+*/}}
+{{- define "openshift-ai.mlflow.object" -}}
+{{- $object := dict
+      "apiVersion" "mlflow.opendatahub.io/v1"
+      "kind" "MLflow"
+      "metadata" (dict
+        "name" "mlflow"
+        "namespace" "redhat-ods-applications"
+        "annotations" (dict "openshift-ai/chart-created" "true")) -}}
+{{- with .Values.mlflow.spec -}}
+{{- $_ := set $object "spec" . -}}
+{{- end -}}
+{{- $object | toJson -}}
+{{- end -}}
+
+{{/*
+Validates enableUserTelemetry as a boolean. The segment-key payload
+stringifies the value, so a null renders a literal "<nil>" and any other
+non-boolean renders non-boolean text into the ConfigMap patch; an explicit
+null also deletes the values.yaml default, so it fails rather than silently
+falling back.
+*/}}
+{{- define "openshift-ai.enableUserTelemetry.validated" -}}
+{{- $v := .Values.enableUserTelemetry -}}
+{{- if not (kindIs "bool" $v) -}}
+{{- fail (printf "enableUserTelemetry must be a boolean (got %s) — set it to true or false; an explicit null removes the default and cannot drive the segment-key telemetry toggle" (kindOf $v)) -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+
+{{/*
+Render-time composition check between a hook surface and the
+DataScienceCluster component that owns the surface's custom resource
+definitions: a component explicitly set to anything but Managed never
+establishes its CRDs, so a waiting hook Job burns its full wait budget and
+fails the install. Conservative — only an explicitly configured component
+entry fails (the components tree may describe a DataScienceCluster the chart
+does not render, and an absent entry carries no explicit disablement).
+Expects a dict with root (chart context), component (the components map key)
+and surface (the enabled values surface to name in the diagnostic).
+*/}}
+{{- define "openshift-ai.dscComponent.validated" -}}
+{{- $dsc := .root.Values.dataScienceCluster | default dict -}}
+{{- $components := dig "components" dict $dsc -}}
+{{- if and (dig "create" true $dsc) (hasKey $components .component) -}}
+{{- $component := get $components .component -}}
+{{- $state := dig "managementState" "" $component -}}
+{{- if ne $state "Managed" -}}
+{{- fail (printf "dataScienceCluster.components.%s.managementState is %q but the %s surface is enabled — the component's custom resource definitions never establish and the hook Job burns its full wait budget failing the install; set the component to Managed or disable the surface" .component $state .surface) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

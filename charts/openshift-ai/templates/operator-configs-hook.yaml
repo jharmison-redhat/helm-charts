@@ -1,0 +1,137 @@
+{{- $wait := int (include "openshift-ai.waitSeconds.validated" (dict "field" "operandHookWaitTimeoutSeconds" "value" .Values.operandHookWaitTimeoutSeconds)) -}}
+{{- $fullname := include "openshift-ai.hookSurface.fullname" (dict "root" . "family" "operator-configs") -}}
+{{- $deadline := add $wait 30 -}}
+{{- $telemetry := include "openshift-ai.enableUserTelemetry.validated" . -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+rules:
+  # get/patch only, resource-name-scoped to the three operator-created
+  # singletons this chart converges — the chart never creates or deletes
+  # them, so no create/delete verbs exist here. The cluster scope of the
+  # permission covers the Auth and DSCInitialization singletons (both
+  # cluster-scoped, no namespace) and the product namespace the segment-key
+  # ConfigMap lives in (a Role in redhat-ods-applications cannot be used
+  # because that namespace does not exist until the operator creates it —
+  # the same first-install-independence boundary as the replicaSurface
+  # ClusterRole).
+  - apiGroups:
+      - services.platform.opendatahub.io
+    resources:
+      - auths
+    resourceNames:
+      - auth
+    verbs:
+      - get
+      - patch
+  - apiGroups:
+      - dscinitialization.opendatahub.io
+    resources:
+      - dscinitializations
+    resourceNames:
+      - default-dsci
+    verbs:
+      - get
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - odh-segment-key-config
+    verbs:
+      - get
+      - patch
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    resourceNames:
+      - auths.services.platform.opendatahub.io
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullname }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+data:
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  converge-operator-configs.sh: |-
+    {{- .Files.Get "files/operator-configs/converge-operator-configs.sh" | nindent 4 }}
+  auth-patch.json: |-
+    {{- dict "spec" (dict "adminGroups" (list "rhods-admins") "allowedGroups" .Values.userGroups) | toJson | nindent 4 }}
+  dsci-patch.json: |-
+    {{- dict "spec" (.Values.dataScienceClusterInitialization | default dict) | toJson | nindent 4 }}
+  segment-key-patch.json: |-
+    {{- dict "data" (dict "segmentKeyEnabled" $telemetry) | toJson | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+  annotations:
+    # Recreated on every install/upgrade so the immutable Job spec is never
+    # rejected; the supporting resources are ordinary release manifests.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $deadline }}
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.hookSurface.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: converge-operator-configs
+          image: {{ .Values.global.toolsImage }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/converge-operator-configs.sh"]
+          env:
+            - name: WAIT_TIMEOUT
+              value: {{ $wait | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493

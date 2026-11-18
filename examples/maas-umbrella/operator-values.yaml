@@ -52,6 +52,12 @@ operators:
       targetNamespaces:
         - openshift-nfd
 
+  openshift-cert-manager-operator:
+    channel: stable-v1
+    namespace: cert-manager-operator
+    operatorGroup:
+      enabled: true # AllNamespaces scope — no targetNamespaces
+
   gpu-operator-certified:
     channel: v26.3
     namespace: nvidia-gpu-operator

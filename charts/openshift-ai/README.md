@@ -8,11 +8,12 @@ plumbing for MaaS and inference traffic, KEDA metrics-reader plumbing, MLflow/Ev
 maas-db bootstrap Job.
 
 The `rhods-operator` is NOT installed by this chart. It must already be installed before this chart is deployed — the
-chart renders custom resources directly (`DataScienceCluster`, `OdhDashboardConfig`, and so on), and a plain
-`helm install` fails on the missing CRDs otherwise. The source GitOps composition relied on ArgoCD
-`SkipDryRunOnMissingResource` annotations to bridge this ordering; under a helm-native two-install flow the operator
-install comes first instead. Use the `install-operators` chart for the operator install (see the
-`examples/maas-umbrella` README for the full two-install flow):
+chart renders the `DataScienceCluster` resource directly, and its CRD exists only once the operator is installed (the
+`DSCInitialization` configuration is converged by a hook — see "Operand configuration hooks" below). The chart's
+remaining product objects are configured through conditional-write hook Jobs that wait for their custom resource
+definitions to be established (see "Operand configuration hooks" below), so a fresh cluster installs cleanly in one shot
+once the operators are in place. Use the `install-operators` chart for the operator installs (the umbrella example's
+two-install flow works the same way — see the `examples/maas-umbrella` README):
 
 ```yaml
 # install-operators values
@@ -22,6 +23,23 @@ operators:
     namespace: redhat-ods-operator
     operatorGroup:
       enabled: true
+```
+
+cert-manager is a prerequisite of the default surface: the DSC's `aigateway` component (`Managed` by default) reconciles
+through cert-manager `Certificate` objects, and the chart's own Gateway plumbing renders cert-manager `Certificate`
+release manifests when `gateways.<name>.certificate.create` is true (the default) — without cert-manager the component's
+reconcile fails, and a Gateway-rendering install fails outright on the missing Certificate CRD. Install the cert-manager
+operator through the same `install-operators` release (see the `cert-manager` chart README for the entry shape — the
+umbrella example composes its operator installs this way):
+
+```yaml
+# install-operators values (in addition to the rhods-operator entry above)
+operators:
+  openshift-cert-manager-operator:
+    channel: stable-v1
+    namespace: cert-manager-operator
+    operatorGroup:
+      enabled: true # AllNamespaces scope — no targetNamespaces
 ```
 
 Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of this chart.
@@ -42,11 +60,14 @@ Usage
 The chart performs the following:
 
 - Renders a `DataScienceCluster` (gated by `dataScienceCluster.create`) with `spec.components` passthrough over the full
-  14-component matrix, and a `DSCInitialization` (gated by a non-empty `dataScienceClusterInitialization` block) with
-  whole-block `spec` passthrough
-- Renders `OdhDashboardConfig` + `Auth` (dashboard config incl. the 3.5 feature flags — `genAiStudio`, `modelAsService`,
-  `disableLLMd`, `gpuaas`, and the rest; the passthrough accepts every dashboard flag), the segment-key and
-  notebook-culler ConfigMaps, and the `hardwareprofile-view` RoleBinding
+  14-component matrix, and converges a `DSCInitialization`'s configured spec fields (the
+  `dataScienceClusterInitialization` block) onto the operator-created `DSCInitialization/default-dsci` singleton through
+  the operator-configs hook — never a release manifest (see "Operand configuration hooks" below)
+- Configures the dashboard surface through conditional-write hook Jobs — `OdhDashboardConfig` (dashboard config incl.
+  the 3.5 feature flags — `genAiStudio`, `modelAsService`, `disableLLMd`, `gpuaas`, and the rest), the operator-created
+  `Auth` singleton (admin/allowed groups), the segment-key ConfigMap (telemetry enablement), and the notebook-culler
+  ConfigMap; the first three are never release manifests (see "Operand configuration hooks" below). Also renders the
+  `hardwareprofile-view` RoleBinding
 - Renders `HardwareProfile` resources (one per `hardwareProfiles` entry)
 - Renders the `maas-default-gateway` plumbing (ConfigMap, Certificate/Route, optional EnvoyFilter, Gateway) — gated on
   the DSC's `aigateway.modelsAsAService` being `Managed` (evaluates false when the components tree is unset)
@@ -58,8 +79,11 @@ The chart performs the following:
 - Renders the payload-processing `NetworkPolicy` (gated by `maasPayloadProcessingNetworkPolicy.create`)
 - Renders the KEDA metrics-reader plumbing: ServiceAccount, ClusterRoleBinding, token Secret, and
   `ClusterTriggerAuthentication` in `openshift-keda` (gated by `kedaMetricsReader.create`)
-- Renders MLflow (gated by `mlflow.create`) and EvalHub (gated by `evalhub.create`) with `spec` passthrough, plus the
-  evalhub-tenant subtree (gated by `evalhub.create` AND `evalhub.tenant.create`)
+- Configures the MLflow operand through a conditional-write hook pair — never a release manifest. The set hook is gated
+  by `mlflow.create`; the proof-gated pre-delete plumbing renders unconditionally, so disabling management after a
+  chart-created MLflow still walks the object back on uninstall instead of orphaning it. Renders EvalHub (gated by
+  `evalhub.create`) with `spec` passthrough, plus the evalhub-tenant subtree (gated by `evalhub.create` AND
+  `evalhub.tenant.create`)
 - Renders the maas-db bootstrap plumbing: ServiceAccount, RoleBinding, script ConfigMap, and the bootstrap Job in
   `maasDb.namespace` (gated by the `modelsAsAService == Managed` gate AND `maasDb.create` or `maasDb.secretName`)
 - Optionally manages the replica counts of the rhods-operator-created `rhods-dashboard`/`rhods-operator` Deployments
@@ -167,6 +191,79 @@ Uninstall contract. The Deployments are never chart-owned in either mode: with t
 and nothing else touches the Deployments; with the partial-manifests mode, `helm.sh/resource-policy: keep` leaves the
 patched Deployments in place after the same restore.
 
+Operand configuration hooks
+---------------------------
+
+Five product objects can never be release manifests of this chart: `OdhDashboardConfig`, `MLflow`, the `Auth` singleton,
+the `DSCInitialization/default-dsci` singleton, and the `odh-segment-key-config` ConfigMap. The first four have custom
+resource definitions that come into existence only after the rhods-operator reconciles the `DataScienceCluster` (and
+some only after the owning component deploys), and the segment-key ConfigMap deploys with the dashboard; the operator
+also creates `default-dsci` itself at startup, so a release manifest of it collides with the operator-created object on
+every install. The chart configures them through conditional-write hook Jobs instead — bounded wait for the CRD to be
+established (or the operator-created object to appear), then a read-modify-write merge patch carrying the live
+`metadata.resourceVersion` with a bounded 409 retry. Three hook families render in the release namespace:
+
+- **dashboard-config** (`OdhDashboardConfig/odh-dashboard-config`): a `post-install,post-upgrade` set hook waits for the
+  `odhdashboardconfigs.opendatahub.io` CRD, then creates the object — recording a chart-created proof annotation
+  (`openshift-ai/chart-created`) — or converges the live object's spec by value when it already exists. The dashboard
+  backend creates a default `OdhDashboardConfig` when absent, so a pre-existing object is normal: the hook converges it
+  but never annotates it. A `pre-delete` hook deletes the object on uninstall only under the proof annotation.
+- **mlflow** (`MLflow/mlflow`): the same create-or-converge pattern against the `mlflows.mlflow.opendatahub.io` CRD,
+  which the `mlflowoperator` component establishes, plus the matching pre-delete proof-gated delete hook. Only the set
+  hook is gated by `mlflow.create` — the delete Job and its supporting resources render unconditionally, so an upgrade
+  that disables management (`--set mlflow.create=false`) after the chart created the operand still removes it on
+  uninstall.
+- **operator-configs** (`Auth/auth` + `DSCInitialization/default-dsci` + ConfigMap `odh-segment-key-config`): all three
+  objects are operator-created — the rhods-operator's DSCInitialization controller creates the cluster-scoped `Auth`
+  singleton (`auth`, no namespace), the operator creates the cluster-scoped `DSCInitialization/default-dsci` singleton
+  at startup (before any `DataScienceCluster` exists), and the segment-key ConfigMap deploys with the dashboard — so the
+  chart renders none of them, creates none, and deletes none. The hook waits bounded for each object to appear, then
+  converges the chart-managed fields by value: `spec.adminGroups`/`spec.allowedGroups` on the Auth singleton
+  (adminGroups pinned to `rhods-admins`, allowedGroups from `userGroups`), the `dataScienceClusterInitialization` spec
+  fields on the DSCInitialization singleton (whole-block passthrough — by default the `spec.monitoring` block), and
+  `data.segmentKeyEnabled` from `enableUserTelemetry` on the ConfigMap.
+
+Patch semantics for all three families: fields the chart's payload carries are set by value on every install/upgrade;
+fields it omits are left untouched; an explicit `null` inside the configured values (`dashboardConfig`, `mlflow.spec`,
+`dataScienceClusterInitialization`) removes a field. Writes are by-value idempotent — a converged object produces no
+patch.
+
+RBAC is resource-name-scoped per object (get/patch; delete for the pre-delete hooks; CRD `get` for the bounded waits).
+The one exception is `create` on `odhdashboardconfigs` and `mlflows`: RBAC cannot scope `create` by name, so each of
+those grants lives in its own unscoped rule — broader than the rest of the surface. They exist because the set hooks
+must create the objects when no default exists yet, and they are called out here per the chart's ownership discipline.
+
+Reconcile-fight caveats. These are explicitly configured fields, so the chart converges them by value without the
+foreign-value STOP other hook surfaces apply — and the operator can write the same fields back at any time: the platform
+controllers reconcile the `Auth` singleton and the `DSCInitialization` singleton, and the dashboard's own
+cluster-settings actions rewrite `data.segmentKeyEnabled` directly (the UI tracking toggle). Between hook runs the
+operator's value wins; the chart's convergence re-runs on every install/upgrade.
+
+Composition validation: a hook surface that waits for a component's custom resource definitions cannot succeed when the
+`DataScienceCluster` config removes that component — the CRDs never establish and the Job burns its full wait budget
+failing the install. The chart fails the render instead, naming both keys, when `mlflow.create` is enabled while
+`dataScienceCluster.components.mlflowoperator.managementState` is explicitly not `Managed`, or when the
+`dashboard-config` hook renders while `dataScienceCluster.components.dashboard.managementState` is explicitly not
+`Managed`. An explicitly configured component entry whose `managementState` is anything but `Managed` fails; an absent
+entry or a `DataScienceCluster` the chart does not render (`dataScienceCluster.create: false`) is left to the operator.
+
+Uninstall contract:
+
+- `OdhDashboardConfig` and `MLflow` are deleted on uninstall only when the chart-created proof annotation proves the set
+  hook created them. An object the chart merely converged (dashboard-default or otherwise pre-existing) persists,
+  retaining the last-converged spec values.
+- The `Auth` singleton, the `DSCInitialization/default-dsci` singleton, and `odh-segment-key-config` are never deleted
+  and carry no proof annotation: the operator owns all three objects, and they persist with the last-converged values.
+- The `DataScienceCluster` release manifest is deleted by Helm on uninstall; the operator's component teardown governs
+  everything it created.
+
+First-install timing: a fresh cluster's `DataScienceCluster` reconcile can take longer than the hooks' bounded waits
+(`operandHookWaitTimeoutSeconds`, default 240; each hook Job's `activeDeadlineSeconds` is this + 30). A failed hook
+fails the install — pass `--timeout 10m` on the first install of a fresh cluster, or re-run `helm upgrade --install`
+after the operator catches up. Upgrading a release installed by a pre-hook chart revision (which owned these objects as
+release manifests) deletes the old release-manifest objects and lets the hooks recreate/converge them; the operator
+reconciles through the transition.
+
 Gateway classes
 ---------------
 
@@ -261,15 +358,26 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `dataScienceCluster.components` — the full 14-component management-state matrix; pass an empty map to render a bare
   `spec: {}`. Kueue queue-name fields (`defaultClusterQueueName`/`defaultLocalQueueName`) are only effective when
   `kueue.managementState` is `Unmanaged`, so the default `Removed` entry carries no queue names
-- `dashboardConfig` — free-form `OdhDashboardConfig` spec passthrough; representative commented examples in
-  `values.yaml` cover `modelAsService`, `disableLLMd`, and `gpuaas` alongside the established flags
+- `dashboardConfig` — free-form `OdhDashboardConfig` spec passthrough, converged by the dashboard-config hook (never a
+  release manifest); representative commented examples in `values.yaml` cover `modelAsService`, `disableLLMd`, and
+  `gpuaas` alongside the established flags
+- `operandHookWaitTimeoutSeconds` — bounded wall-clock wait (default 240) shared by the operand configuration hook Jobs
+  for CRD establishment and operator-created object appearance; each hook Job's `activeDeadlineSeconds` is this value
+  plus 30. Must be a positive integer (validated at render time)
+- `enableUserTelemetry` (default `false`) — converged by the operator-configs hook onto the operator-created
+  `odh-segment-key-config` ConfigMap; must be a boolean (validated at render time, since the payload stringifies the
+  value and a null or string would render invalid text); the dashboard's own tracking toggle rewrites the same key
+  between hook runs
+- `userGroups` — allowed groups converged onto the operator-created `Auth` singleton by the operator-configs hook
 - `genAiStudioConfig.aiAssetCustomEndpoints` — custom-endpoint config for the Gen AI Studio asset surface
   (`externalProviders`/`clusterDomains`); commented example in `values.yaml`
 - `globalMLflowNamespaces` — DSC spec-level list of namespaces where MLflow deployments are allowed (Tech Preview);
   pairs with the `mlflowoperator` component. Commented example in `values.yaml`
-- `dataScienceClusterInitialization.monitoring` — the commented example in `values.yaml` shows the optional
-  `monitoring.traces` block (`exporters`, `sampleRatio`, `storage` — `storage.size` is required for traces) and
-  `monitoring.alerting` alongside the metrics storage defaults
+- `dataScienceClusterInitialization` — spec fields converged onto the operator-created `DSCInitialization/default-dsci`
+  singleton by the operator-configs hook (never a release manifest — the operator creates the singleton itself at
+  startup). The commented example in `values.yaml` shows the optional `monitoring.traces` block (`exporters`,
+  `sampleRatio`, `storage` — `storage.size` is required for traces) and `monitoring.alerting` alongside the metrics
+  storage defaults
 - `gateways.maasDefaultGateway` / `gateways.openshiftAiInference` — Gateway plumbing with `hostname` override support,
   certificate/Route selection (`useRoute` vs `certificate.create`), the referenced `gatewayClassName`, the
   `routeNamespaceSelector` namespace authorization, and the `replicas` deployment overlay (null omits the patch field)
@@ -295,7 +403,10 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   instances, 2Gi storage, modest resource requests/limits, namespace `redhat-ai-gateway-infra`)
 - `kedaMetricsReader.create` — opt-in KEDA metrics-reader plumbing (default: `false`); only enable when WVA/KEDA is
   actually deployed
-- `mlflow.create` / `evalhub.create` — opt-in operands with free-form `spec` passthrough
+- `mlflow.create` / `evalhub.create` — `mlflow.create` defaults to `true`: the MLflow set hook manages the operand by
+  default (the MLflow object is created/converged by a hook, never a release manifest), and setting it to `false` stops
+  the set hook while the matching pre-delete proof-gated plumbing renders unconditionally; `evalhub.create` (default
+  `false`) gates the EvalHub release manifest with free-form `spec` passthrough
 - `evalhub.tenant.waitTimeoutSeconds` — bounded wall-clock wait (default 240) for the product-created
   `ds-pipeline-s3-dspa` secret before the `update-secret-minio` credential Job fails; the Job's `activeDeadlineSeconds`
   is this value plus 30. Must be a positive integer (validated at render time)
