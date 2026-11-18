@@ -754,8 +754,8 @@ class ChartDefaultsTests(unittest.TestCase):
 
     def test_auth_chart_version_bump(self):
         meta = self.load(os.path.join(CHART, "Chart.yaml"))
-        self.assertEqual(meta["version"], "0.4.3")
-        self.assertEqual(meta["appVersion"], "0.4.3")
+        self.assertEqual(meta["version"], "0.4.4")
+        self.assertEqual(meta["appVersion"], "0.4.4")
 
 
 class CommandContractTests(unittest.TestCase):
@@ -774,3 +774,35 @@ class CommandContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HookGuardTests(ChartFixture):
+    """Hook Job containers carry the guard-without-pin securityContext: the
+    four restricted-pod guards and no runAsUser/runAsGroup anywhere in the
+    pod — restricted SCCs assign the namespace range UID to UID-less pods,
+    and a pin would fight that platform assignment. The remove-kubeadmin
+    Job is exempt: kube-system is PSA-privileged and bypasses SCC
+    assignment, so the guards cannot pass there and it runs as the stock
+    image's default user by design."""
+
+    def test_every_guarded_hook_job_is_guarded_without_pin(self):
+        jobs = support.hook_jobs(self.render(self.configured_values(remove=True)))
+        self.assertEqual(
+            sorted(j["metadata"]["name"] for j in jobs),
+            ["logout-redirect-set", "logout-redirect-unset",
+             "oauth-idp-remove", "oauth-idp-upsert", "remove-kubeadmin"])
+        guarded = [j for j in jobs
+                   if j["metadata"]["name"] != "remove-kubeadmin"]
+        for job in guarded:
+            support.assert_guard_without_pin(
+                self, job["spec"]["template"]["spec"])
+
+    def test_kubeadmin_hook_job_has_no_security_context(self):
+        # The exemption is a contract: a future "helpful" guard re-addition
+        # must fail this suite.
+        job = self.pick(
+            self.opt_in_render(), "Job", "remove-kubeadmin")
+        pod = job["spec"]["template"]["spec"]
+        self.assertNotIn("securityContext", pod)
+        self.assertNotIn(
+            "securityContext", pod["containers"][0])

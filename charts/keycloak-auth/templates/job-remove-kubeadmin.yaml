@@ -18,6 +18,10 @@ spec:
       containers:
       - name: remove-kubeadmin
         image: {{ .Values.global.toolsImage }}
+        # No guard securityContext: kube-system is PSA-privileged and bypasses
+        # SCC assignment, so no range UID is injected and the UID-less non-root
+        # proof cannot pass there. This opt-in hook runs as the stock image's
+        # default user in the platform-privileged namespace.
         imagePullPolicy: IfNotPresent
         command: ["oc"]
         args:

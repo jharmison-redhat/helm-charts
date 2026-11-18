@@ -28,6 +28,8 @@ spec:
       containers:
         - name: enforce-replicas
           image: {{ .Values.global.toolsImage }}
+          securityContext:
+            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/enforce-replicas.sh"]
           env:
@@ -73,6 +75,8 @@ spec:
       containers:
         - name: restore-replicas
           image: {{ .Values.global.toolsImage }}
+          securityContext:
+            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/restore-replicas.sh"]
           volumeMounts:

@@ -22,19 +22,13 @@ spec:
     spec:
       serviceAccountName: logout-redirect
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: logout-redirect-set
         image: {{ .Values.global.toolsImage }}
         imagePullPolicy: IfNotPresent
         command: ["/mnt/logout-redirect-set.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "keycloak-auth.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: logout-redirect-config
           mountPath: /mnt

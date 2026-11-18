@@ -104,19 +104,13 @@ spec:
     spec:
       serviceAccountName: ensure-operator-namespaces
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: ensure-operator-namespaces
           image: {{ .Values.global.toolsImage }}
           imagePullPolicy: IfNotPresent
           command: ["/mnt/ensure-namespaces.sh"]
           securityContext:
-            capabilities:
-              drop:
-                - ALL
+            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
           volumeMounts:
             - name: ensure-operator-namespaces-script
               mountPath: /mnt

@@ -18,19 +18,13 @@ spec:
     spec:
       serviceAccountName: clusterautoscaler
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: clusterautoscaler-set
         image: {{ .Values.global.toolsImage }}
         imagePullPolicy: IfNotPresent
         command: ["/mnt/clusterautoscaler-set.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "aws-nvidia-gpu-machinesets.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: clusterautoscaler-config
           mountPath: /mnt

@@ -122,6 +122,8 @@ spec:
       containers:
         - name: converge-operator-configs
           image: {{ .Values.global.toolsImage }}
+          securityContext:
+            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/converge-operator-configs.sh"]
           env:

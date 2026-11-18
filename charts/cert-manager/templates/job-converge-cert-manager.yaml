@@ -20,10 +20,6 @@ spec:
     spec:
       serviceAccountName: converge-cert-manager
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: converge-cert-manager
         image: {{ .Values.global.toolsImage }}
@@ -35,9 +31,7 @@ spec:
           value: {{ .Values.operatorConfig.waitTimeoutSeconds | default 120 | quote }}
         command: ["/mnt/converge-cert-manager.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: converge-cert-manager-config
           mountPath: /mnt

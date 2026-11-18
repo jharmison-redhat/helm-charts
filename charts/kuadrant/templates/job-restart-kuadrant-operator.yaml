@@ -20,6 +20,8 @@ spec:
           image: {{ .Values.global.toolsImage }}
           imagePullPolicy: IfNotPresent
           workingDir: /app
+          securityContext:
+            {{- include "kuadrant.hookSecurityContext" . | nindent 12 }}
           command: ["/app/restart-kuadrant-operator.sh"]
           args: []
           volumeMounts:

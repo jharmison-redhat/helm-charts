@@ -45,8 +45,11 @@ The release namespace is free — every namespaced object this chart renders pin
 outright: the MachineSets and MachineAutoscalers must live there because the referenced credentials and user-data
 secrets the installer created live there, and the hook Jobs, their ConfigMap, and their ServiceAccount pin it too (the
 ClusterRole/ClusterRoleBinding are cluster-scoped, as is the ClusterAutoscaler the hook pair configures). Any release
-namespace works; `openshift-machine-api` itself is a natural choice and pre-exists on every cluster (it is not
-Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use).
+namespace works; `openshift-machine-api` itself is a natural choice and pre-exists on every cluster. The hook Jobs run
+as non-root — the platform's restricted SCCs assign the namespace's range UID to the UID-less hook pods, which carry a
+restricted-compatible securityContext — so hardened namespaces work. The chart cannot be installed into the `default`
+namespace: that namespace's configuration assigns no SCC, so the UID-less non-root proof falls through to the stock
+image's root user and the hook pods are rejected.
 
 Replica semantics
 -----------------

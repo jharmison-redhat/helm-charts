@@ -86,19 +86,13 @@ spec:
     spec:
       serviceAccountName: approve-{{ $operator }}
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: approve-operator
           image: {{ $.Values.global.toolsImage }}
           imagePullPolicy: IfNotPresent
           command: ["/mnt/approve-operator.sh"]
           securityContext:
-            capabilities:
-              drop:
-                - ALL
+            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
           volumeMounts:
             - name: approve-operator-script
               mountPath: /mnt

@@ -95,19 +95,13 @@ spec:
     spec:
       serviceAccountName: install-{{ $operator }}
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: subscription-set
           image: {{ $.Values.global.toolsImage }}
           imagePullPolicy: IfNotPresent
           command: ["/mnt/subscription-set.sh"]
           securityContext:
-            capabilities:
-              drop:
-                - ALL
+            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
           volumeMounts:
             - name: subscription-script
               mountPath: /mnt
@@ -133,19 +127,13 @@ spec:
     spec:
       serviceAccountName: install-{{ $operator }}
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
         - name: subscription-remove
           image: {{ $.Values.global.toolsImage }}
           imagePullPolicy: IfNotPresent
           command: ["/mnt/subscription-remove.sh"]
           securityContext:
-            capabilities:
-              drop:
-                - ALL
+            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
           volumeMounts:
             - name: subscription-script
               mountPath: /mnt

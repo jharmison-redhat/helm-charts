@@ -20,10 +20,6 @@ spec:
     spec:
       serviceAccountName: oauth-idp
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: oauth-idp-upsert
         image: {{ .Values.global.toolsImage }}
@@ -33,9 +29,7 @@ spec:
           value: {{ .Values.oauth.idpName | quote }}
         command: ["/mnt/oauth-idp-upsert.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "keycloak-auth.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: oauth-idp-config
           mountPath: /mnt

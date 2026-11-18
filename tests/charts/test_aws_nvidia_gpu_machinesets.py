@@ -141,17 +141,19 @@ class GatingTests(ChartFixture):
             pod = job["spec"]["template"]["spec"]
             self.assertEqual(pod["serviceAccountName"], "clusterautoscaler")
             self.assertEqual(pod["restartPolicy"], "Never")
-            self.assertEqual(pod["securityContext"],
-                             {"runAsNonRoot": True,
-                              "seccompProfile": {"type": "RuntimeDefault"}})
+            self.assertNotIn("securityContext", pod)
             container = pod["containers"][0]
             self.assertEqual(container["command"], [f"/mnt/{name}.sh"])
             self.assertEqual(container["image"],
                              "image-registry.openshift-image-registry.svc:"
                              "5000/openshift/tools:latest")
             self.assertEqual(container["imagePullPolicy"], "IfNotPresent")
-            self.assertEqual(container["securityContext"],
-                             {"capabilities": {"drop": ["ALL"]}})
+            self.assertEqual(container["securityContext"], {
+                "runAsNonRoot": True,
+                "allowPrivilegeEscalation": False,
+                "capabilities": {"drop": ["ALL"]},
+                "seccompProfile": {"type": "RuntimeDefault"},
+            })
             self.assertEqual(container["volumeMounts"],
                              [{"name": "clusterautoscaler-config",
                                "mountPath": "/mnt"}])
@@ -514,3 +516,21 @@ class HookScriptSmokeTests(FakeOcScriptFixture):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class HookGuardTests(ChartFixture):
+    """Every hook Job container carries the guard-without-pin
+    securityContext: the four restricted-pod guards and no
+    runAsUser/runAsGroup anywhere in the pod — restricted SCCs assign the
+    namespace range UID to UID-less pods, and a pin would fight that
+    platform assignment."""
+
+    def test_every_hook_job_is_guarded_without_pin(self):
+        jobs = support.hook_jobs(
+            [d for docs_ in self.render_enabled().values() for d in docs_])
+        self.assertEqual(
+            sorted(j["metadata"]["name"] for j in jobs),
+            ["clusterautoscaler-remove", "clusterautoscaler-set"])
+        for job in jobs:
+            support.assert_guard_without_pin(
+                self, job["spec"]["template"]["spec"])

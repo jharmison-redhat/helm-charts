@@ -117,6 +117,8 @@ spec:
       containers:
         - name: set-mlflow
           image: {{ .Values.global.toolsImage }}
+          securityContext:
+            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/set-chart-created-cr.sh"]
           env:
@@ -170,6 +172,8 @@ spec:
       containers:
         - name: delete-mlflow
           image: {{ .Values.global.toolsImage }}
+          securityContext:
+            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/delete-chart-created-cr.sh"]
           env:

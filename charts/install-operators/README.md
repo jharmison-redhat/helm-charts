@@ -86,15 +86,16 @@ Release namespace
 
 The release namespace hosts the subscription-management and namespace-ensure hook Jobs: the operator namespaces are
 ensured by hook, never release-owned, and uninstall never removes them. When `installPlanApproval: Manual` or
-`approveCSVs` are set, the InstallPlan approval Job renders in each operator namespace instead, running the same
-root-running tools image — those namespaces are created fresh by the ensure hook, so they admit it. Co-locating the
-release with an operators' namespace suits single-namespace topologies (for example
-`helm install <name> charts/install-operators -n openshift-storage`); otherwise use any namespace that exists at install
-time and does not enforce restricted Pod Security Admission, which the hook Jobs' root-running tools image trips in
-hardened namespaces (e.g. `default`). Installing into a namespace created by `--create-namespace` or pre-created
-manually takes the ensure hook's merge path: the chart's labels land, and the chart's creation-proof annotation exists
-only on namespaces the hook creates itself (informational only). Pin `operatorGroup.targetNamespaces` only when the
-operator's InstallModeType actually supports it — check with
+`approveCSVs` are set, the InstallPlan approval Job renders in each operator namespace instead. The hook Jobs run as
+non-root — the platform's restricted SCCs assign the namespace's range UID to the UID-less hook pods, which carry a
+restricted-compatible securityContext — so hardened namespaces work, in the release namespace and in each operator
+namespace alike. The chart cannot be installed into the `default` namespace: that namespace's configuration assigns no
+SCC, so the UID-less non-root proof falls through to the stock image's root user and the hook pods are rejected.
+Co-locating the release with an operators' namespace suits single-namespace topologies (for example
+`helm install <name> charts/install-operators -n openshift-storage`); otherwise use any existing namespace. Installing
+into a namespace created by `--create-namespace` or pre-created manually takes the ensure hook's merge path: the chart's
+labels land, and the chart's creation-proof annotation exists only on namespaces the hook creates itself (informational
+only). Pin `operatorGroup.targetNamespaces` only when the operator's InstallModeType actually supports it — check with
 `oc get packagemanifest <name> -o jsonpath='{.status.channels[*].currentCSVDesc.installModes}'` and match the pin
 against the install mode of the operator's target namespace scope (a `targetNamespaces` pin on an operator that does not
 support that mode makes its CSV fail with `UnsupportedOperatorGroup`; e.g. rhods-operator 3.5.3 supports only

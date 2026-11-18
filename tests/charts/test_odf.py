@@ -501,3 +501,21 @@ class ConsolePluginSanityTests(ChartFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HookGuardTests(ChartFixture):
+    """Every hook Job container carries the guard-without-pin
+    securityContext: the four restricted-pod guards and no
+    runAsUser/runAsGroup anywhere in the pod — restricted SCCs assign the
+    namespace range UID to UID-less pods, and a pin would fight that
+    platform assignment."""
+
+    def test_every_hook_job_is_guarded_without_pin(self):
+        jobs = support.hook_jobs(self.render(DISKS_VALUES))
+        self.assertEqual(
+            sorted(j["metadata"]["name"] for j in jobs),
+            ["enable-odf-console-plugin", "label-storage-nodes-remove",
+             "label-storage-nodes-set"])
+        for job in jobs:
+            support.assert_guard_without_pin(
+                self, job["spec"]["template"]["spec"])

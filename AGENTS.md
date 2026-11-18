@@ -70,11 +70,16 @@ Source parity is not a goal — the contract is correct behavior under normal He
   watch scopes, secrets referenced by name, operator-watched custom resources), hook Jobs that run in the release
   namespace, and the uninstall contract for the namespace (chart-created namespaces are never release-owned; uninstall
   never removes them).
-- Hook Jobs run with the charts' shared tools image, which runs as root: a release namespace enforcing restricted Pod
-  Security Admission rejects the hook pods, so recommendations avoid hardened namespaces (the `default` namespace on
-  common clusters enforces restricted).
+- Hook Jobs run with the charts' shared tools image under a guard-without-pin securityContext (container-level
+  `runAsNonRoot`, no privilege escalation, ALL capabilities dropped, RuntimeDefault seccomp): restricted SCCs assign the
+  namespace's range UID to UID-less pods, so hardened namespaces work. The `default` namespace is excluded — charts
+  cannot be installed there because its configuration assigns no SCC, and the kubelet's non-root proof falls through to
+  the image's root user. Never pin `runAsUser`/`runAsGroup` in hook pods: platform assignment is the mechanism. The
+  keycloak-auth `remove-kubeadmin` hook is the sanctioned exception: its fixed namespace `kube-system` is PSA-privileged
+  and bypasses SCC assignment entirely (no range-UID injection), so the guards would make the opt-in surface unrunnable
+  — it carries no securityContext and runs as the stock image's default user in the platform-privileged namespace.
 - When the release namespace is genuinely free, the README says so; when hooks are hardcoded to a fixed object
-  namespace, the PSA constraint transfers there and the README says where.
+  namespace, the non-root contract applies there too and the README says where.
 - When a chart has a canonical object namespace (operator watch scopes, platform namespaces its objects require), the
   templates pin it outright — the release namespace carries no chart objects, and the README says the release namespace
   is free.
@@ -86,11 +91,11 @@ Source parity is not a goal — the contract is correct behavior under normal He
   surface's Job, RBAC, and script `<surface>-{job,rbac,script}.yaml` while cert-manager names the Job first
   (`job-<surface>.yaml`) with `<surface>-{config,rbac}.yaml` siblings, and openshift-ai groups per-feature script
   families. The rule is chart-local consistency.
-- Scripts live under `files/` or `files/<family>/`, with `files/lib/` holding the shared hook preamble plus each
-  chart's shared helper modules (cert-manager's `trust-bundle.sh`, keycloak-auth's `logout-redirect.sh`,
-  openshift-ai's `set/delete-chart-created-cr.sh`). A ConfigMap that globs (e.g. openshift-ai's maas-db `files/*`
-  glob) must not be able to absorb sibling families' scripts — the no-root-level-script-leakage invariant is guarded
-  by a unit test (`test_maas_db_glob_cannot_absorb_tenant_script`).
+- Scripts live under `files/` or `files/<family>/`, with `files/lib/` holding the shared hook preamble plus each chart's
+  shared helper modules (cert-manager's `trust-bundle.sh`, keycloak-auth's `logout-redirect.sh`, openshift-ai's
+  `set/delete-chart-created-cr.sh`). A ConfigMap that globs (e.g. openshift-ai's maas-db `files/*` glob) must not be
+  able to absorb sibling families' scripts — the no-root-level-script-leakage invariant is guarded by a unit test
+  (`test_maas_db_glob_cannot_absorb_tenant_script`).
 
 ## Testing
 

@@ -21,10 +21,6 @@ spec:
     spec:
       serviceAccountName: trust-ca
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: trust-ca-set
         image: {{ .Values.global.toolsImage }}
@@ -34,9 +30,7 @@ spec:
           value: {{ .Values.ca.trustTimeoutSeconds | default 120 | quote }}
         command: ["/mnt/trust-ca-set.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: trust-ca-config
           mountPath: /mnt

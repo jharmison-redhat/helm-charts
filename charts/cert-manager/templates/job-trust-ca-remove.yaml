@@ -18,19 +18,13 @@ spec:
     spec:
       serviceAccountName: trust-ca
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: trust-ca-remove
         image: {{ .Values.global.toolsImage }}
         imagePullPolicy: IfNotPresent
         command: ["/mnt/trust-ca-remove.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: trust-ca-config
           mountPath: /mnt

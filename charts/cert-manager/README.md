@@ -43,8 +43,11 @@ The release namespace is free — every namespaced object this chart renders pin
 belong with the operator pin `namespace: cert-manager`, while the platform serving Certificates pin `openshift-config`
 and `openshift-ingress` and their Role/RoleBinding pair pins `openshift-ingress-operator`, where the platform expects
 them (the ClusterIssuers and the ClusterRoles/ClusterRoleBindings are cluster-scoped and carry no namespace). Any
-release namespace works. `cert-manager` itself is a natural choice and pre-exists through the operator install; it is
-not Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use.
+release namespace works. `cert-manager` itself is a natural choice and pre-exists through the operator install. The hook
+Jobs run as non-root — the platform's restricted SCCs assign the namespace's range UID to the UID-less hook pods, which
+carry a restricted-compatible securityContext — so hardened namespaces work. The chart cannot be installed into the
+`default` namespace: that namespace's configuration assigns no SCC, so the UID-less non-root proof falls through to the
+stock image's root user and the hook pods are rejected.
 
 Operator configuration
 ----------------------

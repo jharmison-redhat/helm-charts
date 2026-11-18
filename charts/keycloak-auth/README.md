@@ -14,8 +14,11 @@ Standalone consumers set `global.oidc.*` directly: `realm` must match a keycloak
 must match a client name within it, and `keycloak.name` must match the Keycloak CR name.
 
 Install with `-n keycloak` (co-located with the Keycloak stack, matching the `examples/maas-umbrella` composition) or
-any namespace that does not enforce restricted Pod Security Admission — the OAuth hook Jobs run in the release namespace
-with a root-running tools image, which namespaces enforcing restricted Pod Security Admission reject.
+any other namespace. The hook Jobs run as non-root — the platform's restricted SCCs assign the namespace's range UID to
+the UID-less hook pods, which carry a restricted-compatible securityContext — so hardened namespaces work (the opt-in
+kubeadmin-removal hook, which runs in `kube-system`, is the exception described under Kubeadmin removal). The chart
+cannot be installed into the `default` namespace: that namespace's configuration assigns no SCC, so the UID-less
+non-root proof falls through to the stock image's root user and the hook pods are rejected.
 
 Usage
 -----
@@ -162,4 +165,6 @@ administrator login works — configured resources (the OAuth identity provider,
 else this chart manages) are not proof that anyone can authenticate. Before setting `removeKubeAdmin: true`, log in as a
 replacement administrator and confirm that access works. The removal Job deletes only the `kubeadmin` Secret in
 `kube-system` with a delete-only Role; a successful run means the API accepted the deletion request, not that a login
-was verified.
+was verified. This hook runs in `kube-system`, which is PSA-privileged and bypasses SCC assignment — so unlike the
+release-namespace hook Jobs, it carries no restricted-pod securityContext and runs as the image's default user by
+design.

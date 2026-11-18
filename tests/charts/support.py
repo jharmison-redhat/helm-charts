@@ -22,6 +22,41 @@ def docs(text):
     return [d for d in yaml.safe_load_all(text) if d is not None]
 
 
+def hook_jobs(rendered):
+    """The rendered Job manifests carrying a helm.sh/hook annotation."""
+    return [d for d in rendered
+            if d.get("kind") == "Job"
+            and "helm.sh/hook" in d.get("metadata", {}).get("annotations", {})]
+
+
+def assert_guard_without_pin(testcase, pod):
+    """Asserts the hook guard-without-pin contract on a rendered pod spec
+    (a Job's ``spec.template.spec``).
+
+    Every container carries all four restricted-pod guards (runAsNonRoot,
+    no privilege escalation, ALL capabilities dropped, RuntimeDefault
+    seccomp), and no securityContext anywhere in the pod pins a
+    runAsUser/runAsGroup — the UID-less shape is the contract: restricted
+    SCCs assign the namespace's range UID to UID-less pods at admission,
+    and a pin would fight that platform assignment.
+    """
+    containers = pod.get("initContainers", []) + pod.get("containers", [])
+    testcase.assertTrue(containers, "pod carries no containers")
+    for container in containers:
+        sc = container.get("securityContext") or {}
+        with testcase.subTest(container=container.get("name")):
+            testcase.assertIs(sc.get("runAsNonRoot"), True)
+            testcase.assertIs(sc.get("allowPrivilegeEscalation"), False)
+            testcase.assertEqual(sc.get("capabilities"), {"drop": ["ALL"]})
+            testcase.assertEqual(
+                sc.get("seccompProfile"), {"type": "RuntimeDefault"})
+            testcase.assertNotIn("runAsUser", sc)
+            testcase.assertNotIn("runAsGroup", sc)
+    pod_sc = pod.get("securityContext") or {}
+    testcase.assertNotIn("runAsUser", pod_sc)
+    testcase.assertNotIn("runAsGroup", pod_sc)
+
+
 class ChartFixture(unittest.TestCase):
     """Copies the chart under test into a temp dir and renders it with
     ``helm template``.

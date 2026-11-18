@@ -19,19 +19,13 @@ spec:
     spec:
       serviceAccountName: serving-certs
       restartPolicy: Never
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
       containers:
       - name: configure-api-certificate
         image: {{ .Values.global.toolsImage }}
         imagePullPolicy: IfNotPresent
         command: ["/mnt/configure-api-cert.sh"]
         securityContext:
-          capabilities:
-            drop:
-              - ALL
+          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
         volumeMounts:
         - name: serving-certs-config
           mountPath: /mnt

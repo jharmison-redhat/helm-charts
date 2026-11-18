@@ -164,8 +164,11 @@ render fails with a mode-naming diagnostic when the values combination is incohe
 every namespaced object this chart renders pins `namespace: openshift-storage` outright (the StorageCluster is the
 namespaced anchor that must live there, and the hook Jobs, their ConfigMaps, and their ServiceAccounts pin it too; the
 StorageSystem and the ClusterRole/ClusterRoleBindings are cluster-scoped and carry no namespace), so any release
-namespace works. `openshift-storage` itself is a natural choice and pre-exists through the operator install; it is not
-Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use.
+namespace works. `openshift-storage` itself is a natural choice and pre-exists through the operator install. The hook
+Jobs run as non-root — the platform's restricted SCCs assign the namespace's range UID to the UID-less hook pods, which
+carry a restricted-compatible securityContext — so hardened namespaces work. The chart cannot be installed into the
+`default` namespace: that namespace's configuration assigns no SCC, so the UID-less non-root proof falls through to the
+stock image's root user and the hook pods are rejected.
 
 Upgrading from 0.1.x
 --------------------

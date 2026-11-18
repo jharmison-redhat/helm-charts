@@ -45,10 +45,12 @@ operators:
 Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of this chart.
 
 Install with `-n redhat-ods-operator` — the operator namespace, which the `install-operators` chart ensures before this
-chart deploys — or any pre-existing namespace that does not enforce restricted Pod Security Admission (the hook Jobs run
-with a root-running tools image). Root-running hook Jobs also land in the `maasDb.namespace` namespace (the
-`create-maas-db-config` hook) and in each tenant namespace (the evalhub tenant hooks); those namespaces must admit the
-tools image as well.
+chart deploys — or any pre-existing namespace. The hook Jobs run as non-root — the platform's restricted SCCs assign the
+namespace's range UID to the UID-less hook pods, which carry a restricted-compatible securityContext — so hardened
+namespaces work, in the release namespace and in the hook destination namespaces (`maasDb.namespace` for the
+`create-maas-db-config` hook, each tenant namespace for the evalhub tenant hooks) alike. The chart cannot be installed
+into the `default` namespace: that namespace's configuration assigns no SCC, so the UID-less non-root proof falls
+through to the stock image's root user and the hook pods are rejected.
 
 Deploy one release of this chart per cluster: the `DataScienceCluster` and KEDA `ClusterTriggerAuthentication` are
 cluster-scoped fixed names, and the Gateways and their ConfigMaps use fixed names that collide when two releases share a

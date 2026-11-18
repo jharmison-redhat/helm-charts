@@ -434,7 +434,7 @@ class SubscriptionOwnershipTests(ChartFixture):
         self.assertEqual(
             manifest["metadata"]["annotations"][PROOF_ANNOTATION], "true")
         self.assertEqual(manifest["metadata"]["labels"]["helm.sh/chart"],
-                         "install-operators-0.3.1")
+                         "install-operators-0.3.2")
 
     def test_disabled_operator_renders_no_subscription_surface(self):
         empty = self.by_kind(self.render(self.hook_operator(enabled=False)))
@@ -444,8 +444,8 @@ class SubscriptionOwnershipTests(ChartFixture):
     def test_chart_metadata_is_in_lockstep(self):
         with open(os.path.join(CHART, "Chart.yaml")) as f:
             meta = yaml.safe_load(f)
-        self.assertEqual(meta["version"], "0.3.1")
-        self.assertEqual(meta["appVersion"], "0.3.1")
+        self.assertEqual(meta["version"], "0.3.2")
+        self.assertEqual(meta["appVersion"], "0.3.2")
 
 
 class HookOrderingTests(ChartFixture):
@@ -844,3 +844,22 @@ class SubscriptionScriptTests(FakeOcScriptFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HookGuardTests(ChartFixture):
+    """Every hook Job container carries the guard-without-pin
+    securityContext: the four restricted-pod guards and no
+    runAsUser/runAsGroup anywhere in the pod — restricted SCCs assign the
+    namespace range UID to UID-less pods, and a pin would fight that
+    platform assignment."""
+
+    def test_every_hook_job_is_guarded_without_pin(self):
+        jobs = support.hook_jobs(
+            self.render(self.hook_operator(approveCSVs=["test-csv"])))
+        self.assertEqual(
+            sorted(j["metadata"]["name"] for j in jobs),
+            ["approve-test-operator", "ensure-operator-namespaces",
+             "install-test-operator-remove", "install-test-operator-set"])
+        for job in jobs:
+            support.assert_guard_without_pin(
+                self, job["spec"]["template"]["spec"])

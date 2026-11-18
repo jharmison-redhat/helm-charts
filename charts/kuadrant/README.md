@@ -32,7 +32,10 @@ The release namespace is free — all resources, including the restart hook Job,
 namespace (default `kuadrant-system`). Co-locating the release
 (`helm install <name> charts/kuadrant -n kuadrant-system`) is tidy; the operand namespace must admit the root-running
 restart Job. With default values the chart does not render the operand namespace — the `install-operators` ensure hook
-creates it — and a pre-existing one must not enforce restricted Pod Security Admission.
+creates it. The hook Jobs run as non-root — the platform's restricted SCCs assign the namespace's range UID to the
+UID-less hook pods, which carry a restricted-compatible securityContext — so hardened namespaces work. The chart cannot
+be installed into the `default` namespace: that namespace's configuration assigns no SCC, so the UID-less non-root proof
+falls through to the stock image's root user and the hook pods are rejected.
 
 Values
 ------
