@@ -18,14 +18,11 @@ walk-back proof, node-wait timeout) is proven by live-cluster validation,
 not fixtures.
 """
 
-import json
 import os
-import shutil
-import subprocess
-import tempfile
 import unittest
 
-import yaml
+from support import docs
+import support
 
 CHART = os.path.abspath(os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "charts", "odf"))
@@ -98,57 +95,12 @@ fi
 """
 
 
-def docs(text):
-    return [d for d in yaml.safe_load_all(text) if d is not None]
-
-
-class ChartFixture(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="odf-test-")
-        shutil.copytree(CHART, self.dir, dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("charts", "Chart.lock"))
-        self.addCleanup(shutil.rmtree, self.dir)
-
-    def values_file(self, values):
-        fd, path = tempfile.mkstemp(prefix="odf-values-", suffix=".yaml")
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(values, f)
-        self.addCleanup(os.unlink, path)
-        return path
-
-    def render_raw(self, values=None, namespace="openshift-storage"):
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", namespace]
-        if values is not None:
-            cmd += ["--values", self.values_file(values)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout
-
-    def render(self, values=None, namespace="openshift-storage"):
-        return [d for d in docs(self.render_raw(values, namespace=namespace))
-                if d is not None]
-
-    def render_failure(self, values):
-        cmd = ["helm", "template", "test-release", self.dir,
-               "--namespace", "openshift-storage",
-               "--values", self.values_file(values)]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
-        return result.stderr
-
-    @staticmethod
-    def by_kind(rendered):
-        by_kind = {}
-        for d in rendered:
-            by_kind.setdefault(d["kind"], []).append(d)
-        return by_kind
-
-    @staticmethod
-    def pick(by_kind, kind, name):
-        matches = [d for d in by_kind[kind] if d["metadata"]["name"] == name]
-        assert len(matches) == 1, (kind, name, by_kind[kind])
-        return matches[0]
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "odf-test-"
+    values_prefix = "odf-values-"
+    # Every chart object pins openshift-storage, so renders default there
+    release_namespace = "openshift-storage"
 
     def label_hook_names(self, by_kind):
         return {d["metadata"]["name"]
@@ -197,7 +149,7 @@ class PlatformObjectsNeverRenderTests(ChartFixture):
         # The only sanctioned carrier of the label key is the hook script
         # ConfigMap content; release manifests (StorageCluster, RBAC, Jobs)
         # must not carry Node-shaped fragments.
-        raw = self.render_raw(DISKS_VALUES)
+        raw = self.render_stdout(DISKS_VALUES)
         for doc in docs(raw):
             if doc["kind"] == "ConfigMap":
                 continue
@@ -345,52 +297,16 @@ class DisksValidationTests(ChartFixture):
         self.assertIn("appears more than once", stderr)
 
 
-class FakeOcScriptFixture(ChartFixture):
-    """Shared plumbing for executing rendered hook scripts against a fake
-    oc binary. Each run gets a restricted PATH built solely from symlinks
-    in an isolated bin directory (the requested JSON tool, core utilities,
-    and the fake oc), so no ambient host tool or real oc can be reached.
-    The child environment is an explicit minimal set — no parent variables
-    are inherited."""
+class FakeOcScriptFixture(ChartFixture, support.FakeOcScriptFixture):
+    """Restricted-PATH harness for the odf hook scripts; the canned oc
+    program is this module's FAKE_OC_SCRIPT (which records patch payloads
+    in both --patch=<value> and separate-argument --patch <value> forms).
+    The hook scripts' wait loops need date on the tool path."""
 
-    def setUp(self):
-        super().setUp()
-        self.work = tempfile.mkdtemp(prefix="odf-script-")
-        self.addCleanup(shutil.rmtree, self.work)
-
-    def build_bin_dir(self, include_python=True):
-        bin_dir = os.path.join(self.work, "bin")
-        os.makedirs(bin_dir, exist_ok=True)
-        for name in os.listdir(bin_dir):
-            os.unlink(os.path.join(bin_dir, name))
-        tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "date"]
-        if include_python:
-            self.assertTrue(shutil.which("python3"),
-                            "python3 requested but not available on the host")
-            tools.append("python3")
-        for tool in tools:
-            os.symlink(shutil.which(tool), os.path.join(bin_dir, tool))
-        fake_oc = os.path.join(bin_dir, "oc")
-        with open(fake_oc, "w") as f:
-            f.write(FAKE_OC_SCRIPT)
-        os.chmod(fake_oc, 0o755)
-        return bin_dir
-
-    def log(self):
-        with open(os.path.join(self.work, "commands.log")) as f:
-            return f.read()
-
-    def patches(self):
-        path = os.path.join(self.work, "patches.log")
-        if not os.path.exists(path):
-            return []
-        with open(path) as f:
-            return [json.loads(line) for line in f.read().splitlines() if line]
-
-    def run_child(self, script_path, env):
-        return subprocess.run(
-            ["/bin/bash", script_path], capture_output=True, text=True,
-            env=env, timeout=120)
+    work_prefix = "odf-script-"
+    bin_tools = ["mktemp", "grep", "cat", "sed", "sleep", "rm", "date"]
+    fake_oc_script = FAKE_OC_SCRIPT
+    get_file_name = "node.json"
 
     def node_doc(self, labels=None, annotations=None,
                  resource_version="1597"):
@@ -400,43 +316,6 @@ class FakeOcScriptFixture(ChartFixture):
         if annotations:
             meta["annotations"] = annotations
         return {"apiVersion": "v1", "kind": "Node", "metadata": meta}
-
-    def canned_doc(self):
-        raise NotImplementedError
-
-    def script_env(self):
-        raise NotImplementedError
-
-    def run_script(self, script_name, canned_doc=None,
-                   include_python=True):
-        # Single tool path for the smoke set: python3-only restricted PATH.
-        bin_dir = self.build_bin_dir(include_python=include_python)
-        # Every staged file lands in the same directory as the entry script
-        # because the scripts source their shared preamble from their own
-        # directory, mirroring the single ConfigMap mount.
-        for name, content in self.scripts.items():
-            with open(os.path.join(self.work, name), "w") as f:
-                f.write(content)
-        if canned_doc is None:
-            canned_doc = self.canned_doc()
-        get_file = os.path.join(self.work, "node.json")
-        with open(get_file, "w") as f:
-            json.dump(canned_doc, f)
-        # Each run is self-contained: drop logs and the fake oc's
-        # resourceVersion counter left by any earlier run.
-        for stale in ("commands.log", "patches.log", get_file + ".rv"):
-            stale_path = os.path.join(self.work, stale)
-            if os.path.exists(stale_path):
-                os.unlink(stale_path)
-        env = {
-            "PATH": bin_dir,
-            "HOME": self.work,
-            **self.script_env(),
-            "OC_LOG": os.path.join(self.work, "commands.log"),
-            "OC_GET_FILE": get_file,
-            "OC_PATCH_LOG": os.path.join(self.work, "patches.log"),
-        }
-        return self.run_child(os.path.join(self.work, script_name), env)
 
 
 class NodeLabelScriptTests(FakeOcScriptFixture):
@@ -516,37 +395,89 @@ class NodeLabelScriptTests(FakeOcScriptFixture):
 
 
 class ConsolePluginScriptTests(FakeOcScriptFixture):
-    """Happy-path smoke run for the rendered console-plugin enable script.
-    The canned Console cluster object carries the plugins section without
-    the ODF plugin, so the script's add-op patch is the expected outcome."""
+    """Smoke set for the rendered console-plugin enable script: the append
+    path preserving a pre-existing plugin entry (the regression case for
+    the list-init race that merge-patched the whole array to []), the
+    create path for an absent plugins array, the no-op when the plugin is
+    already enabled, and the fail-closed no-tool check. The script's
+    patches are JSON patches guarded by a test operation on the read
+    resourceVersion, so a concurrent writer's entry can never be lost."""
+
+    get_file_name = "console.json"
 
     def setUp(self):
         super().setUp()
         by_kind = self.by_kind(self.render(
             {"enableConsolePlugin": True, **DEVICE_SET_VALUES}))
         cm = self.pick(by_kind, "ConfigMap", "enable-odf-console-plugin")
-        self.scripts = {"enable-console-plugin.sh":
-                        cm["data"]["enable-console-plugin.sh"]}
+        self.scripts = {name: cm["data"][name]
+                        for name in ("hook-preamble.sh",
+                                     "enable-console-plugin.sh")}
+
+    def console_doc(self, plugins=None, resource_version="1597"):
+        meta = {"name": "cluster", "resourceVersion": resource_version}
+        spec = {} if plugins is None else {"plugins": plugins}
+        return {"apiVersion": "operator.openshift.io/v1", "kind": "Console",
+                "metadata": meta, "spec": spec}
 
     def canned_doc(self):
-        return {
-            "apiVersion": "operator.openshift.io/v1",
-            "kind": "Console",
-            "metadata": {"name": "cluster", "resourceVersion": "1597"},
-            "spec": {"plugins": []},
-        }
+        return self.console_doc()
 
     def script_env(self):
         return {"PLUGIN_NAME": "odf-console"}
 
-    def test_adds_plugin_when_absent(self):
-        result = self.run_script("enable-console-plugin.sh")
+    def assert_test_op(self, patch, resource_version="1597"):
+        self.assertEqual(patch[0], {
+            "op": "test", "path": "/metadata/resourceVersion",
+            "value": resource_version,
+        })
+
+    def test_appends_after_existing_entry(self):
+        # The clobber regression: a pre-existing foreign entry must survive
+        # as the first element while the ODF plugin appends after it — the
+        # old script's substring match made any foreign entry containing
+        # the ODF plugin's name as a substring suppress the append.
+        result = self.run_script("enable-console-plugin.sh",
+                                 self.console_doc(["other-plugin"]))
         self.assertEqual(result.returncode, 0, result.stderr)
         patches = self.patches()
         self.assertEqual(len(patches), 1)
-        self.assertEqual(patches[0], [{
-            "op": "add", "path": "/spec/plugins/-", "value": "odf-console",
-        }])
+        self.assert_test_op(patches[0])
+        self.assertEqual(patches[0][1:], [
+            {"op": "add", "path": "/spec/plugins/-", "value": "odf-console"},
+        ])
+
+    def test_creates_array_when_absent(self):
+        # The create path is a single atomic add carrying the plugin — no
+        # empty-array intermediate a concurrent writer could be lost to.
+        result = self.run_script("enable-console-plugin.sh",
+                                 self.console_doc())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        patches = self.patches()
+        self.assertEqual(len(patches), 1)
+        self.assert_test_op(patches[0])
+        self.assertEqual(patches[0][1:], [
+            {"op": "add", "path": "/spec/plugins",
+             "value": ["odf-console"]},
+        ])
+
+    def test_present_plugin_is_a_no_op(self):
+        result = self.run_script("enable-console-plugin.sh",
+                                 self.console_doc(["other-plugin",
+                                                   "odf-console"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already enabled", result.stdout)
+        self.assertEqual(self.patches(), [])
+
+    def test_missing_json_tool_fails_before_any_cluster_call(self):
+        result = self.run_script("enable-console-plugin.sh",
+                                 self.console_doc(), include_python=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("neither jq nor python3", result.stderr)
+        self.assertEqual(self.patches(), [])
+        self.assertFalse(
+            os.path.exists(os.path.join(self.work, "commands.log")),
+            "oc must not be invoked when no JSON tool is available")
 
 
 class ConsolePluginSanityTests(ChartFixture):

@@ -7,9 +7,12 @@ metadata:
   namespace: openshift-storage
 {{- /*
 The blank-line replace reproduces AsConfig's blank-line indentation so the
-rendered data stays byte-identical to the previous glob-based rendering.
+rendered enable-console-plugin.sh key stays byte-identical to the previous
+glob-based rendering of that script.
 */}}
 data:
   enable-console-plugin.sh: |
 {{ .Files.Get "files/enable-console-plugin.sh" | trim | indent 4 | replace "\n    \n" "\n  \n" }}
+  hook-preamble.sh: |-
+    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
 {{- end }}

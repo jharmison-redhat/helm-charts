@@ -162,10 +162,10 @@ helm install <name> charts/odf -n openshift-storage \
 Supply the mode-specific values with `-f` — one of the example files above (standalone MCGW or full Ceph+MCGW); the
 render fails with a mode-naming diagnostic when the values combination is incoherent. The release namespace is free —
 every namespaced object this chart renders pins `namespace: openshift-storage` outright (the StorageCluster is the
-namespaced anchor that must live there, and the hook Jobs, their ConfigMaps, and their ServiceAccounts pin it too;
-the StorageSystem and the ClusterRole/ClusterRoleBindings are cluster-scoped and carry no namespace), so any release
-namespace works. `openshift-storage` itself is a natural choice and pre-exists through the operator install; it
-is not Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use.
+namespaced anchor that must live there, and the hook Jobs, their ConfigMaps, and their ServiceAccounts pin it too; the
+StorageSystem and the ClusterRole/ClusterRoleBindings are cluster-scoped and carry no namespace), so any release
+namespace works. `openshift-storage` itself is a natural choice and pre-exists through the operator install; it is not
+Pod-Security-Admission restricted, so it admits the root-running tools image the hook Jobs use.
 
 Upgrading from 0.1.x
 --------------------
@@ -196,7 +196,9 @@ Real defaults live in `values.yaml`. Notable keys:
   labeling section
 - `monDataDirHostPath` — host path for Ceph monitor data on labeled nodes (required in full Ceph+MCGW mode when `disks`
   is the only capacity source)
-- `enableConsolePlugin` — runs a Job enabling the `odf-console` plugin
+- `enableConsolePlugin` — runs a hook Job enabling the `odf-console` plugin on the platform Console operator object; the
+  write is a resourceVersion-tested JSON patch that appends to the existing plugins list (or creates it atomically), so
+  a concurrent writer's plugin entries are never lost
 - `resources` — per-component resource overrides on the `StorageCluster`
 - `cephConfig` — passthrough to the `StorageCluster`'s `managedResources.cephConfig` block
 - `multiCloudGateway` — passed through to the `StorageCluster`'s `multiCloudGateway` block
