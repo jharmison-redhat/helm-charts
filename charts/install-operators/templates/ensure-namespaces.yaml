@@ -9,7 +9,7 @@ script ConfigMap) are themselves pre-install/pre-upgrade hooks at weight -10,
 so they exist before the weight-0 Job's pod is admitted, and they are cleaned
 up after each successful run and re-created before the next one — no
 release-tracked residue. before-hook-creation also removes them after a
-failed run, so the retry never hits AlreadyExists. */ -}}
+failed run, so the retry never hits AlreadyExists. */}}
 {{- $namespaces := fromJsonArray (include "install-operators.managedNamespaces" .) }}
 {{- if $namespaces }}
 ---

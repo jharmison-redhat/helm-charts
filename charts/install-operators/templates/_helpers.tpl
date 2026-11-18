@@ -69,6 +69,30 @@ output directly would treat "false" as truthy.
 {{- end -}}
 
 {{/*
+Render-time values-shape guard: operator entries belong under `operators:`.
+A top-level entry (e.g. `rhods-operator:` at the values root instead of under
+`operators:`) silently renders nothing, so when `operators` is empty or
+absent and the values carry keys outside the chart's known top-level set,
+fail naming them and the correct nesting. Fires only when `operators` is
+empty so unrelated values files never trip it.
+*/}}
+{{- define "install-operators.validateValues" -}}
+{{- if not .Values.operators }}
+{{- $stray := list }}
+{{- range $key, $_ := .Values }}
+{{- if not (has $key (list "global" "operators" "nameOverride"
+    "fullnameOverride")) }}
+{{- $stray = append $stray $key }}
+{{- end }}
+{{- end }}
+{{- if $stray }}
+{{- $sorted := $stray | sortAlpha }}
+{{- fail (printf "unrecognized top-level values keys [%s]: operator entries belong under the `operators:` key (operators:\n  <operator>:\n    channel: <channel>) — at the top level they silently render nothing" ($sorted | join ", ")) }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
 The namespace an operator entry installs into.
 */}}
 {{- define "install-operators.operatorNamespace" -}}

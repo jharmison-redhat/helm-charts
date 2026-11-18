@@ -40,7 +40,10 @@ OperatorGroup, etc.) including the following features:
   Subscription, and approval resources are not rendered. A Namespace is never rendered regardless of the toggle —
   operator namespaces are ensured by hook rather than owned by the release.
 - Manual InstallPlan approval Jobs run as Helm `post-install,post-upgrade` hooks (recreated on re-runs via
-  `before-hook-creation`); under ArgoCD these map to `PostSync` and behave the same way.
+  `before-hook-creation`); under ArgoCD these map to `PostSync` and behave the same way. The approval Job runs at hook
+  weight 1, after the weight-0 Subscription set Jobs (Helm executes hooks in ascending weight order): under
+  `installPlanApproval: Manual` the approval Job polls for an InstallPlan the Subscription produces, so the Subscription
+  has to exist first.
 
 An example `values.yaml` you could use to actuate some of these features would look like this:
 
@@ -90,8 +93,13 @@ release with an operators' namespace suits single-namespace topologies (for exam
 time and does not enforce restricted Pod Security Admission, which the hook Jobs' root-running tools image trips in
 hardened namespaces (e.g. `default`). Installing into a namespace created by `--create-namespace` or pre-created
 manually takes the ensure hook's merge path: the chart's labels land, and the chart's creation-proof annotation exists
-only on namespaces the hook creates itself (informational only). Pin `operatorGroup.targetNamespaces` on real installs —
-the rendered default (no targets) is an OLM global OperatorGroup, which conflicts with an existing global group.
+only on namespaces the hook creates itself (informational only). Pin `operatorGroup.targetNamespaces` only when the
+operator's InstallModeType actually supports it — check with
+`oc get packagemanifest <name> -o jsonpath='{.status.channels[*].currentCSVDesc.installModes}'` and match the pin
+against the install mode of the operator's target namespace scope (a `targetNamespaces` pin on an operator that does not
+support that mode makes its CSV fail with `UnsupportedOperatorGroup`; e.g. rhods-operator 3.5.3 supports only
+AllNamespaces, so pinning its OperatorGroup breaks it). The rendered default (no targets) is an OLM global
+OperatorGroup, which conflicts with an existing global group but is the safe default for AllNamespaces-only operators.
 
 Uninstall contract
 ---

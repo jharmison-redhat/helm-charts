@@ -1,3 +1,4 @@
+{{- include "install-operators.validateValues" . }}
 {{- range $operator, $config := .Values.operators }}
 {{- if eq (include "install-operators.operatorEnabled" $config) "true" }}
 {{- $sub := dict "operator" $operator "config" $config "root" $ }}
@@ -9,7 +10,9 @@
 owned by the release: the set Job converges the chart-managed fields on every
 install/upgrade (a one-shot apply leaves the Subscription drifting after its
 first run), and the remove Job deletes it on uninstall only when the set hook
-created it. */ -}}
+created it. The comment action must not right-trim: the newline it would eat
+is the one separating the previous iteration's last line from this `---`
+document separator (a right-trim glues them into one YAML document). */}}
 ---
 apiVersion: v1
 kind: ServiceAccount

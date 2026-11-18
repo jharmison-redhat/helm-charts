@@ -480,7 +480,7 @@ class SubscriptionOwnershipTests(ChartFixture):
         self.assertEqual(
             manifest["metadata"]["annotations"][PROOF_ANNOTATION], "true")
         self.assertEqual(manifest["metadata"]["labels"]["helm.sh/chart"],
-                         "install-operators-0.3.0")
+                         "install-operators-0.3.1")
 
     def test_disabled_operator_renders_no_subscription_surface(self):
         empty = self.by_kind(self.render(self.hook_operator(enabled=False)))
@@ -490,8 +490,141 @@ class SubscriptionOwnershipTests(ChartFixture):
     def test_chart_metadata_is_in_lockstep(self):
         with open(os.path.join(CHART, "Chart.yaml")) as f:
             meta = yaml.safe_load(f)
-        self.assertEqual(meta["version"], "0.3.0")
-        self.assertEqual(meta["appVersion"], "0.3.0")
+        self.assertEqual(meta["version"], "0.3.1")
+        self.assertEqual(meta["appVersion"], "0.3.1")
+
+
+class HookOrderingTests(ChartFixture):
+    """Helm executes hooks in ascending weight order; within a weight, order
+    is the stable file-path order the manifests were collected in
+    (pkg/action/hooks.go sorts stably by weight only, over hooks gathered in
+    manifest file-path order by pkg/releaseutil/manifest_sorter.go) — there
+    is no same-weight name tiebreak. At equal weight 0, the approve Jobs in
+    install-plan-approvals.yaml sorted before the set Jobs in
+    subscriptions.yaml purely by file-path order, so under
+    installPlanApproval: Manual an approve Job polled forever for an
+    InstallPlan the not-yet-created Subscription would never produce. The
+    approve Job therefore runs at weight 1, which no file-path order can
+    outrank."""
+
+    MANUAL_OPERATOR = {
+        "channel": "stable",
+        "namespace": "test-operators",
+        "installPlanApproval": "Manual",
+        "startingCSV": "test-operator.v1.0.0",
+    }
+
+    def test_approve_job_runs_after_the_subscription_set_job(self):
+        values = {"operators": {
+            "test-operator": dict(self.MANUAL_OPERATOR),
+            "plain-operator": {"channel": "stable",
+                               "namespace": "test-operators"},
+        }}
+        by_kind = self.by_kind(self.render(values))
+        approve = self.pick(by_kind, "Job", "approve-test-operator",
+                            namespace="test-operators")
+        self.assertEqual(
+            approve["metadata"]["annotations"]["helm.sh/hook-weight"], "1")
+        for job in by_kind["Job"]:
+            if job["metadata"]["name"].endswith("-set"):
+                self.assertNotIn("helm.sh/hook-weight",
+                                 job["metadata"]["annotations"],
+                                 job["metadata"]["name"])
+
+    def test_pre_delete_hooks_carry_no_weight(self):
+        # Remove-side ordering: the pre-delete remove Jobs are the only
+        # pre-delete hooks, have no ordering dependency among themselves,
+        # and must all run at the default weight 0.
+        values = {"operators": {
+            "test-operator": dict(self.MANUAL_OPERATOR),
+            "plain-operator": {"channel": "stable",
+                               "namespace": "test-operators"},
+        }}
+        for job in self.by_kind(self.render(values))["Job"]:
+            if job["metadata"]["annotations"]["helm.sh/hook"] == "pre-delete":
+                self.assertNotIn("helm.sh/hook-weight",
+                                 job["metadata"]["annotations"],
+                                 job["metadata"]["name"])
+
+
+class DocumentIntegrityTests(ChartFixture):
+    """Regression guard for the 0.3.0 YAML-fusion defect: a right-trim
+    marker on the hook-branch comment in subscriptions.yaml ate the newline
+    before each range iteration's leading `---`, fusing the previous
+    operator's documents into one (the fused-out remove Job silently vanished
+    from the release and the SSA apply failed on the merged document). The
+    guard renders the fusion-prone orderings and asserts the documents stay
+    separate, nothing vanishes, and delivery objects never gain foreign
+    top-level fields."""
+
+    # No explicit namespace: without the ensure-namespaces surface the
+    # document counts are exactly the per-operator surfaces.
+    HOOK = {"channel": "stable"}
+    OWN = {"channel": "stable", "ownSubscription": True}
+
+    def render_ordering(self, first, second):
+        values = {"operators": {"op-one": first, "op-two": second}}
+        raw = self.render_raw(values).stdout
+        # No document separator may be glued to content: a line ending in
+        # `<non-space>---` is the signature of the trim-marker fusion.
+        for line in raw.splitlines():
+            self.assertNotRegex(line, r"\S---$", raw)
+        return [d for d in docs(raw) if d is not None]
+
+    def assert_delivery_objects_clean(self, rendered):
+        # The 0.3.0 fusion merged the following document's apiVersion/kind
+        # into the previous document (duplicate top-level keys, last-wins),
+        # which surfaced as a `spec` on a ServiceAccount at SSA time.
+        for doc in rendered:
+            if doc["kind"] == "ServiceAccount":
+                self.assertEqual(set(doc), {"apiVersion", "kind", "metadata"},
+                                 doc["metadata"]["name"])
+            elif doc["kind"] == "Role":
+                self.assertEqual(set(doc), {"apiVersion", "kind", "metadata",
+                                            "rules"}, doc["metadata"]["name"])
+            elif doc["kind"] == "RoleBinding":
+                self.assertEqual(set(doc), {"apiVersion", "kind", "metadata",
+                                            "roleRef", "subjects"},
+                                 doc["metadata"]["name"])
+
+    def test_hook_then_hook_renders_all_twelve_documents(self):
+        rendered = self.render_ordering(self.HOOK, self.HOOK)
+        # Exact document count: a fusion silently removes objects from the
+        # release (the 0.3.0 defect merged each remove Job into the next
+        # operator's ServiceAccount document).
+        self.assertEqual(len(rendered), 12)
+        names = {d["metadata"]["name"] for d in rendered}
+        # The silently-vanished object class: both operators' pre-delete
+        # remove Jobs must be present in full.
+        for op in ("op-one", "op-two"):
+            self.assertIn(f"install-{op}-remove", names)
+            self.assertIn(f"install-{op}-set", names)
+        self.assert_delivery_objects_clean(rendered)
+
+    def test_own_then_hook_renders_all_seven_documents(self):
+        rendered = self.render_ordering(self.OWN, self.HOOK)
+        self.assertEqual(len(rendered), 7)
+        names = {d["metadata"]["name"] for d in rendered}
+        self.assertIn("install-op-two-remove", names)
+        self.assertIn("op-one", names)  # the release-owned Subscription
+        self.assert_delivery_objects_clean(rendered)
+
+    def test_own_then_own_renders_exactly_two_subscriptions(self):
+        rendered = self.render_ordering(self.OWN, self.OWN)
+        self.assertEqual(len(rendered), 2)
+        names = {d["metadata"]["name"] for d in rendered}
+        self.assertEqual(names, {"op-one", "op-two"})
+        for doc in rendered:
+            self.assertEqual(doc["kind"], "Subscription")
+
+    def test_hook_then_own_renders_all_seven_documents(self):
+        rendered = self.render_ordering(self.HOOK, self.OWN)
+        self.assertEqual(len(rendered), 7)
+        names = {d["metadata"]["name"] for d in rendered}
+        self.assertIn("install-op-one-remove", names)
+        self.assertIn("install-op-one-set", names)
+        self.assertIn("op-two", names)  # the release-owned Subscription
+        self.assert_delivery_objects_clean(rendered)
 
 
 # Fake oc for the hook-script smoke runs: serves a canned object for get

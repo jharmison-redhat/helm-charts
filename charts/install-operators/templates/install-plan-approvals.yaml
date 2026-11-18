@@ -74,6 +74,12 @@ metadata:
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-delete-policy: before-hook-creation
+    {{- /* Weight 1 runs the approve Job after the weight-0
+    subscription-set Jobs (Helm executes hooks in ascending weight order):
+    under installPlanApproval: Manual the approve Job polls for an
+    InstallPlan the Subscription produces, so the Subscription must exist
+    first. */}}
+    helm.sh/hook-weight: "1"
 spec:
   backoffLimit: 4
   template:
