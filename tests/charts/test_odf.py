@@ -328,6 +328,7 @@ class NodeLabelScriptTests(FakeOcScriptFixture):
         cm = self.pick(by_kind, "ConfigMap", "label-storage-nodes")
         self.scripts = {name: cm["data"][name]
                         for name in ("hook-preamble.sh",
+                                     "wait-for.sh",
                                      "label-storage-nodes-set.sh",
                                      "label-storage-nodes-remove.sh")}
         self.nodes_file = os.path.join(self.work, "nodes.txt")

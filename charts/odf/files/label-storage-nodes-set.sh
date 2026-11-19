@@ -15,6 +15,7 @@
 set -euo pipefail
 
 source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+source "${BASH_SOURCE[0]%/*}/wait-for.sh"
 
 LABEL_KEY="cluster.ocs.openshift.io/openshift-storage"
 PROOF_ANNOTATION="odf/label-proof"
@@ -47,31 +48,34 @@ trap 'rm -rf "$workdir"' EXIT
 # Waits with one shared deadline until every named Node exists. Nodes may
 # register late (e.g. freshly provisioned machines joining the cluster after
 # the release was applied).
+check_nodes_registered() {
+  local missing=() node
+  for node in "${nodes[@]}"; do
+    if ! oc get "node/$node" -o json --request-timeout="$REQUEST_TIMEOUT" \
+          >/dev/null 2>"$workdir/oc.err"; then
+      if grep -q '(NotFound)' "$workdir/oc.err"; then
+        missing+=("$node")
+      else
+        cat "$workdir/oc.err" >&2
+        exit 1
+      fi
+    fi
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    return 0
+  fi
+  WAIT_DETAIL="${missing[*]}"
+  return 3
+}
+
 wait_for_nodes() {
   local deadline=$(( $(date +%s) + NODE_WAIT_TIMEOUT ))
-  while :; do
-    local missing=() node
-    for node in "${nodes[@]}"; do
-      if ! oc get "node/$node" -o json --request-timeout="$REQUEST_TIMEOUT" \
-            >/dev/null 2>"$workdir/oc.err"; then
-        if grep -q '(NotFound)' "$workdir/oc.err"; then
-          missing+=("$node")
-        else
-          cat "$workdir/oc.err" >&2
-          exit 1
-        fi
-      fi
-    done
-    if [ "${#missing[@]}" -eq 0 ]; then
-      return 0
-    fi
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "ERROR: timed out after ${NODE_WAIT_TIMEOUT}s waiting for Node(s) ${missing[*]} to register; nodes named in the disks values must exist on the cluster before the storage label can be applied (check the node names and cluster state), then re-run this hook" >&2
-      exit 1
-    fi
-    echo "Node(s) ${missing[*]} not registered yet; retrying" >&2
-    sleep "$NODE_POLL_INTERVAL"
-  done
+  if ! wait_for "$deadline" "$NODE_POLL_INTERVAL" \
+        'Node(s) %s not registered yet; retrying\n' \
+        check_nodes_registered; then
+    echo "ERROR: timed out after ${NODE_WAIT_TIMEOUT}s waiting for Node(s) ${WAIT_DETAIL} to register; nodes named in the disks values must exist on the cluster before the storage label can be applied (check the node names and cluster state), then re-run this hook" >&2
+    exit 1
+  fi
 }
 
 # Computes the label merge patch from the live Node JSON in $1: the storage

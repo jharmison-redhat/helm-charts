@@ -88,6 +88,8 @@ metadata:
 data:
   hook-preamble.sh: |-
     {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  wait-for.sh: |-
+    {{- .Files.Get "files/lib/wait-for.sh" | nindent 4 }}
   converge-operator-configs.sh: |-
     {{- .Files.Get "files/operator-configs/converge-operator-configs.sh" | nindent 4 }}
   auth-patch.json: |-

@@ -27,6 +27,7 @@
 set -euo pipefail
 
 source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+source "${BASH_SOURCE[0]%/*}/wait-for.sh"
 
 PROOF_ANNOTATION="openshift-ai/replicas-prior"
 COMPONENTS_FILE="${REPLICAS_COMPONENTS_FILE:-/config/components.txt}"
@@ -109,33 +110,36 @@ PYEOF
 # Waits with one shared deadline until every managed Deployment exists. The
 # Deployments are operator-created operands that appear only after the
 # rhods-operator reconciles the DataScienceCluster.
+check_deployments_present() {
+  local missing=() component namespace name
+  for component in "${components[@]}"; do
+    read -r namespace name _ <<< "$component"
+    if ! oc get "deployment/$name" -n "$namespace" -o json \
+          --request-timeout="$REQUEST_TIMEOUT" \
+          >/dev/null 2>"$workdir/oc.err"; then
+      if grep -q '(NotFound)' "$workdir/oc.err"; then
+        missing+=("$name")
+      else
+        cat "$workdir/oc.err" >&2
+        exit 1
+      fi
+    fi
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    return 0
+  fi
+  WAIT_DETAIL="${missing[*]}"
+  return 3
+}
+
 wait_for_deployments() {
   local deadline=$(( $(date +%s) + WAIT_TIMEOUT ))
-  while :; do
-    local missing=() component namespace name
-    for component in "${components[@]}"; do
-      read -r namespace name _ <<< "$component"
-      if ! oc get "deployment/$name" -n "$namespace" -o json \
-            --request-timeout="$REQUEST_TIMEOUT" \
-            >/dev/null 2>"$workdir/oc.err"; then
-        if grep -q '(NotFound)' "$workdir/oc.err"; then
-          missing+=("$name")
-        else
-          cat "$workdir/oc.err" >&2
-          exit 1
-        fi
-      fi
-    done
-    if [ "${#missing[@]}" -eq 0 ]; then
-      return 0
-    fi
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for Deployment(s) ${missing[*]}; the rhods-operator must deploy the operands before the replica counts can be enforced (check the operator state and DataScienceCluster reconciliation, then re-run this hook)" >&2
-      exit 1
-    fi
-    echo "Deployment(s) ${missing[*]} not created yet; retrying" >&2
-    sleep "$POLL_INTERVAL"
-  done
+  if ! wait_for "$deadline" "$POLL_INTERVAL" \
+        'Deployment(s) %s not created yet; retrying\n' \
+        check_deployments_present; then
+    echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for Deployment(s) ${WAIT_DETAIL}; the rhods-operator must deploy the operands before the replica counts can be enforced (check the operator state and DataScienceCluster reconciliation, then re-run this hook)" >&2
+    exit 1
+  fi
 }
 
 # The set hook (bounded-wait mode) waits for every managed Deployment up

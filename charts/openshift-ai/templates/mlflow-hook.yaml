@@ -80,6 +80,8 @@ metadata:
 data:
   hook-preamble.sh: |-
     {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  wait-for.sh: |-
+    {{- .Files.Get "files/lib/wait-for.sh" | nindent 4 }}
   set-chart-created-cr.sh: |-
     {{- .Files.Get "files/lib/set-chart-created-cr.sh" | nindent 4 }}
   delete-chart-created-cr.sh: |-

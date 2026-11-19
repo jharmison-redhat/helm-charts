@@ -23,6 +23,7 @@
 set -euo pipefail
 
 source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+source "${BASH_SOURCE[0]%/*}/wait-for.sh"
 
 AUTH_CRD="auths.services.platform.opendatahub.io"
 AUTH_RESOURCE="${AUTH_CRD}/auth"
@@ -57,25 +58,28 @@ done
 
 # Waits until a resource type (CRD) is established, against the script-wide
 # deadline computed below.
-wait_for_crd() {
+check_crd_established() {
   local crd="$1" rc=0 established
-  while :; do
-    established=$(oc get "crd/$crd" \
-      -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' \
-      --request-timeout="$REQUEST_TIMEOUT" 2>"$workdir/oc.err") && rc=0 || rc=$?
-    if [ "$rc" -eq 0 ] && [ "$established" = "True" ]; then
-      return 0
-    fi
-    if [ "$rc" -ne 0 ] && ! grep -q '(NotFound)' "$workdir/oc.err"; then
-      cat "$workdir/oc.err" >&2
-      exit 1
-    fi
-    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-      echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for the $crd custom resource definition to be established; the rhods-operator must install and reconcile the owning component first (check the operator state and the DataScienceCluster reconciliation, then re-run this hook)" >&2
-      exit 1
-    fi
-    sleep "$POLL_INTERVAL"
-  done
+  established=$(oc get "crd/$crd" \
+    -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' \
+    --request-timeout="$REQUEST_TIMEOUT" 2>"$workdir/oc.err") && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$established" = "True" ]; then
+    return 0
+  fi
+  if [ "$rc" -ne 0 ] && ! grep -q '(NotFound)' "$workdir/oc.err"; then
+    cat "$workdir/oc.err" >&2
+    exit 1
+  fi
+  return 3
+}
+
+wait_for_crd() {
+  local crd="$1"
+  if ! wait_for "$DEADLINE" "$POLL_INTERVAL" "" \
+        check_crd_established "$crd"; then
+    echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for the $crd custom resource definition to be established; the rhods-operator must install and reconcile the owning component first (check the operator state and the DataScienceCluster reconciliation, then re-run this hook)" >&2
+    exit 1
+  fi
 }
 
 # Waits until the operator-created object exists, against the script-wide
@@ -83,25 +87,27 @@ wait_for_crd() {
 # $1 is the oc get target, $2 the display label, and any remaining arguments
 # are passed to oc get verbatim (the -n flag for namespaced targets). Only
 # absence is retried; every other read failure exits immediately.
+check_object_present() {
+  local target="$1" object="$2"; shift 2
+  if oc get "$target" "$@" -o json --request-timeout="$REQUEST_TIMEOUT" \
+      >"$workdir/object.json" 2>"$workdir/oc.err"; then
+    return 0
+  fi
+  if ! grep -q '(NotFound)' "$workdir/oc.err"; then
+    cat "$workdir/oc.err" >&2
+    exit 1
+  fi
+  WAIT_DETAIL="$object"
+  return 3
+}
+
 wait_for_object() {
   local target="$1" object="$2"; shift 2
-  local rc=0
-  while :; do
-    if oc get "$target" "$@" -o json --request-timeout="$REQUEST_TIMEOUT" \
-        >"$workdir/object.json" 2>"$workdir/oc.err"; then
-      return 0
-    fi
-    if ! grep -q '(NotFound)' "$workdir/oc.err"; then
-      cat "$workdir/oc.err" >&2
-      exit 1
-    fi
-    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-      echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for $object to appear; the rhods-operator creates these objects during operator startup and DataScienceCluster reconciliation (check the operator state, then re-run this hook)" >&2
-      exit 1
-    fi
-    echo "$object not created yet; retrying" >&2
-    sleep "$POLL_INTERVAL"
-  done
+  if ! wait_for "$DEADLINE" "$POLL_INTERVAL" '%s not created yet; retrying\n' \
+        check_object_present "$target" "$object" "$@"; then
+    echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for $object to appear; the rhods-operator creates these objects during operator startup and DataScienceCluster reconciliation (check the operator state, then re-run this hook)" >&2
+    exit 1
+  fi
 }
 
 # Computes the Auth merge patch from the live object JSON in $1: the managed

@@ -27,6 +27,7 @@
 set -euo pipefail
 
 source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
+source "${BASH_SOURCE[0]%/*}/wait-for.sh"
 
 : "${CRD_NAME:?CRD_NAME is required}"
 : "${RESOURCE:?RESOURCE is required}"
@@ -54,25 +55,26 @@ done
 # Waits bounded for the CRD to be established, against the script-wide
 # deadline computed below: the operator's component controllers create it
 # only after the DataScienceCluster (or the owning component) is reconciled.
-wait_for_crd() {
+check_crd_established() {
   local rc=0 established
-  while :; do
-    established=$(oc get "crd/$CRD_NAME" \
-      -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' \
-      --request-timeout="$REQUEST_TIMEOUT" 2>"$workdir/oc.err") && rc=0 || rc=$?
-    if [ "$rc" -eq 0 ] && [ "$established" = "True" ]; then
-      return 0
-    fi
-    if [ "$rc" -ne 0 ] && ! grep -q '(NotFound)' "$workdir/oc.err"; then
-      cat "$workdir/oc.err" >&2
-      exit 1
-    fi
-    if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-      echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for the $CRD_NAME custom resource definition to be established; the rhods-operator must install and reconcile the owning component first (check the operator state and the DataScienceCluster reconciliation, then re-run this hook)" >&2
-      exit 1
-    fi
-    sleep "$POLL_INTERVAL"
-  done
+  established=$(oc get "crd/$CRD_NAME" \
+    -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' \
+    --request-timeout="$REQUEST_TIMEOUT" 2>"$workdir/oc.err") && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ] && [ "$established" = "True" ]; then
+    return 0
+  fi
+  if [ "$rc" -ne 0 ] && ! grep -q '(NotFound)' "$workdir/oc.err"; then
+    cat "$workdir/oc.err" >&2
+    exit 1
+  fi
+  return 3
+}
+
+wait_for_crd() {
+  if ! wait_for "$DEADLINE" "$POLL_INTERVAL" "" check_crd_established; then
+    echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for the $CRD_NAME custom resource definition to be established; the rhods-operator must install and reconcile the owning component first (check the operator state and the DataScienceCluster reconciliation, then re-run this hook)" >&2
+    exit 1
+  fi
 }
 
 # Computes the converge merge patch from the live object JSON in $1: the

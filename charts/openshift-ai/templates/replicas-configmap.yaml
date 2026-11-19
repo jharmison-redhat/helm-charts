@@ -12,6 +12,8 @@ metadata:
 data:
   hook-preamble.sh: |-
     {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+  wait-for.sh: |-
+    {{- .Files.Get "files/lib/wait-for.sh" | nindent 4 }}
   enforce-replicas.sh: |-
     {{- .Files.Get "files/replicas/enforce-replicas.sh" | nindent 4 }}
   restore-replicas.sh: |-
