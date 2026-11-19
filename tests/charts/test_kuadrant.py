@@ -28,14 +28,43 @@ class ChartFixture(support.ChartFixture):
     values_prefix = "kuadrant-values-"
 
 
-class HookGuardTests(ChartFixture):
-    """The default render's hook-Job inventory, with every hook Job
-    container carrying the guard-without-pin securityContext: the four
-    restricted-pod guards and no runAsUser/runAsGroup anywhere in the pod —
-    restricted SCCs assign the namespace range UID to UID-less pods, and a
-    pin would fight that platform assignment."""
+class DefaultRenderTests(ChartFixture):
+    """The default render's object inventory: the Authorino CR carrying the
+    listener TLS config and the CRD-required oidcServer surface, the
+    serving-cert-annotated authorization
+    Service with its ports, and every hook Job container carrying the
+    guard-without-pin securityContext — the four restricted-pod guards and no
+    runAsUser/runAsGroup anywhere in the pod. Restricted SCCs assign the
+    namespace range UID to UID-less pods, and a pin would fight that platform
+    assignment."""
 
-    def test_every_hook_job_is_guarded_without_pin(self):
+    def test_default_render_inventory(self):
+        by_kind = self.by_kind(self.render())
+        services = self.pick(by_kind, "Service", "authorino-authorino-authorization")
+        self.assertEqual(
+            services["spec"]["ports"],
+            [
+                {"name": "grpc", "port": 50051, "protocol": "TCP",
+                 "targetPort": 50051},
+                {"name": "http", "port": 5001, "protocol": "TCP",
+                 "targetPort": 5001},
+            ])
+        self.assertEqual(
+            services["metadata"]["annotations"],
+            {"service.beta.openshift.io/serving-cert-secret-name":
+             "authorino-server-cert"})
+
+        authorino = self.pick(by_kind, "Authorino", "authorino")
+        # Listener TLS is chart-configured; oidcServer is disabled exactly
+        # as the Kuadrant operator's own auto-created CR carries it (the
+        # MaaS guide enables listener TLS only).
+        self.assertEqual(
+            authorino["spec"]["listener"]["tls"],
+            {"certSecretRef": {"name": "authorino-server-cert"},
+             "enabled": True})
+        self.assertEqual(
+            authorino["spec"]["oidcServer"], {"tls": {"enabled": False}})
+
         jobs = support.hook_jobs(self.render())
         self.assertEqual(
             sorted(j["metadata"]["name"] for j in jobs),

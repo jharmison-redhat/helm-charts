@@ -6,4 +6,19 @@ metadata:
   namespace: {{ .Values.kuadrant.namespace }}
   annotations:
     service.beta.openshift.io/serving-cert-secret-name: {{ .Values.authorino.spec.listener.tls.certSecretRef.name }}
+spec:
+  # No selector: the operator adopts this Service because it already exists and
+  # adds its own selector (and ownerReferences) on reconcile; the serving-cert
+  # annotation is what makes the serving-cert Secret appear. Without the
+  # annotation the Secret never appears and the operator tears the authorino
+  # Deployment down.
+  ports:
+    - name: grpc
+      port: 50051
+      protocol: TCP
+      targetPort: 50051
+    - name: http
+      port: 5001
+      protocol: TCP
+      targetPort: 5001
 {{- end }}

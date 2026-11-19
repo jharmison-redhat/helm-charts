@@ -38,3 +38,14 @@ authorino:
         certSecretRef:
           name: authorino-server-cert
         enabled: true
+    # The authorino-operator v1.4.3 CRD requires spec to carry both listener
+    # and oidcServer, each with a tls object. The RHOAI MaaS guide enables
+    # TLS for the Authorino listener only; the Kuadrant operator auto-creates
+    # the Authorino CR with oidcServer.tls.enabled set to false — an empty
+    # tls object defaults enabled to true in the operator, which then fails
+    # reconcile (TlsSecretNotProvided: "oidc secret with tls cert not
+    # provided"). Mirror that platform default so only the listener TLS is
+    # configured.
+    oidcServer:
+      tls:
+        enabled: false

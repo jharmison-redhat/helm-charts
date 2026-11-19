@@ -18,9 +18,15 @@ The chart performs the following:
 
 - Renders a `Kuadrant` custom resource (gated by `kuadrant.create`) with free-form `spec` passthrough
 - Renders an `Authorino` custom resource (gated by `authorino.overwrite`) with listener TLS backed by the
-  `authorino-server-cert` secret
-- Renders the `authorino-authorino-authorization` Service annotated for an OpenShift serving certificate (gated by
-  `authorino.serviceTls`)
+  `authorino-server-cert` secret and `oidcServer.tls.enabled: false` — the authorino-operator CRD requires both spec
+  surfaces, while the RHOAI MaaS platform configuration enables TLS for the Authorino listener only (the Kuadrant
+  operator's own auto-created Authorino CR disables the oidcServer TLS the same way; an empty `tls` object defaults
+  enabled and fails reconcile without an OIDC certificate secret)
+- Renders the full `authorino-authorino-authorization` Service (grpc 50051, http 5001) annotated for an OpenShift
+  serving certificate (gated by `authorino.serviceTls`). The authorino operator would otherwise create this Service
+  without the annotation, then tear the authorino Deployment down because the serving-certificate secret it needs can
+  never appear; pre-creating the annotated Service breaks that cycle. The Service carries no selector — the operator
+  adds its own (and its owner references) when it adopts the pre-existing Service on reconcile
 - Renders a Namespace for the operand namespace when it differs from `operatorNamespace`
 - Renders the restart plumbing: a ServiceAccount in the operand namespace, RoleBindings to `aggregate-olm-view` and
   `edit` in the operator namespace, the restart script as a ConfigMap, and the restart Job
@@ -52,10 +58,15 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `kuadrant.spec` — free-form `Kuadrant` spec passthrough (default enables observability)
 - `authorino.overwrite` — render the `Authorino` custom resource (default: `true`); only applies when `kuadrant.create`
   is also true — a hands-off chart never overwrites the Authorino resource of an existing RHCL deployment
-- `authorino.serviceTls` — render the serving-cert-annotated authorization Service (default: `true`); like the Authorino
-  custom resource, it also depends on `kuadrant.create` and `authorino.overwrite` — a hands-off chart renders neither
-- `authorino.spec` — free-form `Authorino` spec passthrough (default enables listener TLS against
-  `authorino-server-cert`)
+- `authorino.serviceTls` — render the full `authorino-authorino-authorization` Service with the serving-cert annotation
+  (default: `true`); like the Authorino custom resource, it also depends on `kuadrant.create` and `authorino.overwrite`
+  — a hands-off chart renders neither. The Service is release content and is removed with the release at uninstall; the
+  authorino operator GCs it regardless when the Authorino custom resource is deleted, so uninstall leaves no
+  serving-certificate residue either way
+- `authorino.spec` — free-form `Authorino` spec passthrough (defaults enable listener TLS against
+  `authorino-server-cert`, and carry the CRD-required `oidcServer` surface with its TLS disabled, as the Kuadrant
+  operator's auto-created CR does; the CRD requires both surfaces. Helm merges `spec` maps recursively, so an override
+  only drops a surface by setting it to explicit `null` — such overrides fail at apply against the operator's CRD)
 - `restart.csvReadyTimeoutSeconds` / `restart.csvReadyPollIntervalSeconds` / `restart.rolloutTimeoutSeconds` — bounded
   waits for the restart hook, in seconds: the per-operator CSV readiness deadline, the poll interval between readiness
   probes, and the `oc rollout status` timeout for the operator deployment (defaults: 120, 5, 300). The restart Job's
