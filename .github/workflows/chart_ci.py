@@ -13,6 +13,7 @@ Modes:
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -206,21 +207,95 @@ def build_registry(chart_dir):
             time.sleep(RETRY_DELAY_SECONDS)
 
 
+_LIBRARY_DEFINE_RE = re.compile(r'\{\{-?\s*define\s+"([^"]+)"\s*-?\}\}')
+
+
+def _library_template_names(chart_dir):
+    """Every named template the library's templates/ defines."""
+    names = []
+    templates = os.path.join(chart_dir, "templates")
+    if not os.path.isdir(templates):
+        return names
+    for filename in sorted(os.listdir(templates)):
+        path = os.path.join(templates, filename)
+        if not os.path.isfile(path):
+            continue
+        with open(path) as f:
+            names.extend(_LIBRARY_DEFINE_RE.findall(f.read()))
+    return names
+
+
+def _render_library_harness(chart_dir, chart):
+    """Render a library chart through a synthesized consumer harness.
+
+    ``helm template`` rejects ``type: library`` charts as non-installable,
+    so the strict render gate runs against a throwaway application chart
+    that depends on the library via file:// and includes every named
+    template the library defines into one ConfigMap document.
+    """
+    lib_name = chart["name"]
+    template_names = _library_template_names(chart_dir)
+    with tempfile.TemporaryDirectory(prefix="chart-ci-lib.",
+                                     dir=_work_root()) as harness_dir:
+        harness_chart = {
+            "apiVersion": "v2",
+            "name": f"{lib_name}-harness",
+            "version": "0.1.0",
+            "type": "application",
+            "dependencies": [{
+                "name": lib_name,
+                "version": chart["version"],
+                "repository": f"file://{os.path.abspath(chart_dir)}",
+            }],
+        }
+        with open(os.path.join(harness_dir, chart_metadata.CHART_FILE),
+                  "w") as f:
+            yaml.safe_dump(harness_chart, f, sort_keys=False)
+        os.makedirs(os.path.join(harness_dir, "templates"))
+        # Each include renders as a block scalar (`| indent 4`), mirroring
+        # the consumers' delivery shape, so arbitrary payload text stays
+        # valid YAML in the rendered document.
+        lines = ["apiVersion: v1", "kind: ConfigMap", "metadata:",
+                 f"  name: {lib_name}-harness", "data:"]
+        for name in template_names:
+            lines.append(f'  {name.replace(".", "-")}: |')
+            lines.append(f'{{{{ include "{name}" $ | indent 4 }}}}')
+        harness_template = os.path.join(harness_dir, "templates",
+                                        "harness.yaml")
+        with open(harness_template, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        run_helm(["dependency", "build", harness_dir], env_overrides={
+            "HELM_REPOSITORY_CONFIG": _empty_repo_config(),
+            "HELM_REPOSITORY_CACHE": tempfile.mkdtemp(
+                prefix="chart-ci-cache.", dir=_work_root()),
+        }, cwd=REPO_ROOT)
+        return run_helm(["template", harness_dir], cwd=REPO_ROOT,
+                        capture_stdout=True)
+
+
 def lint(chart_dir):
     """helm lint plus a render check on the given directory, then a strict
-    parse of the rendered output."""
+    parse of the rendered output.
+
+    Library charts cannot render themselves (`helm template` rejects them
+    as non-installable), so their render check runs through a synthesized
+    consumer harness instead of skipping the gate.
+    """
+    chart = chart_metadata.load_chart(chart_dir)
     run_helm(["lint", chart_dir], cwd=REPO_ROOT)
-    render_args = ["template", chart_dir]
-    # A chart-local ci-values.yaml exists solely so this default-values CI
-    # render succeeds for charts whose real values are required per cluster
-    # (missing values fail the render with diagnostics); installs never
-    # reference it.
-    ci_values = os.path.join(chart_dir, "ci-values.yaml")
-    if os.path.isfile(ci_values):
-        render_args.extend(["-f", ci_values])
-    rendered = run_helm(render_args, cwd=REPO_ROOT, capture_stdout=True)
-    chart_name = chart_metadata.load_chart(chart_dir)["name"]
-    _parse_rendered_docs(chart_name, rendered)
+    if chart.get("type") == "library":
+        rendered = _render_library_harness(chart_dir, chart)
+    else:
+        render_args = ["template", chart_dir]
+        # A chart-local ci-values.yaml exists solely so this default-values CI
+        # render succeeds for charts whose real values are required per cluster
+        # (missing values fail the render with diagnostics); installs never
+        # reference it.
+        ci_values = os.path.join(chart_dir, "ci-values.yaml")
+        if os.path.isfile(ci_values):
+            render_args.extend(["-f", ci_values])
+        rendered = run_helm(render_args, cwd=REPO_ROOT, capture_stdout=True)
+    _parse_rendered_docs(chart["name"], rendered)
 
 
 def _work_root():

@@ -211,6 +211,15 @@ class LintAndBuildTest(unittest.TestCase):
         self.assertEqual(self.helm.call_args_list[1].args[0][1:],
                          ["template", d])
 
+    def test_explicit_application_type_renders_itself(self):
+        d = self.chart()
+        with open(os.path.join(d, chart_metadata.CHART_FILE), "a") as f:
+            f.write("type: application\n")
+        chart_ci.lint(d)
+        self.assertEqual(
+            [call.args[0][1] for call in self.helm.call_args_list],
+            ["lint", "template"])
+
     def test_build_registry_retries_then_fails(self):
         d = self.chart(deps=True)
         self.helm.side_effect = subprocess.CalledProcessError(1, "helm")
@@ -284,6 +293,105 @@ class RenderedOutputGateTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_lint("\n---\n")
         self.assertIn("contains no documents", self.stderr.getvalue())
+
+
+class LibraryChartLintTest(unittest.TestCase):
+    """type: library charts render through a synthesized consumer harness.
+
+    helm lint still runs on the library itself; the strict render gate runs
+    against a temp-dir harness application chart depending on the library
+    via file://. Helm subprocesses are stubbed, but the harness files are
+    written for real and inspected through the stub's captured arguments.
+    """
+
+    def setUp(self):
+        self.helm_ctx = mock.patch.object(chart_ci.subprocess, "run")
+        self.helm = self.helm_ctx.start()
+        self.addCleanup(self.helm_ctx.stop)
+        self.stderr = io.StringIO()
+        err_ctx = mock.patch("sys.stderr", new=self.stderr)
+        err_ctx.start()
+        self.addCleanup(err_ctx.stop)
+
+    def library(self, name="libby"):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, chart_metadata.CHART_FILE), "w") as f:
+            f.write(f"name: {name}\nversion: 1.0.0\ntype: library\n")
+        os.makedirs(os.path.join(d, "templates"))
+        with open(os.path.join(d, "templates", "_payload.tpl"), "w") as f:
+            f.write('{{ define "libby.payload" }}\n'
+                    "payload text\n"
+                    "{{ end }}\n"
+                    '{{ define "libby.other" }}\n'
+                    "other text\n"
+                    "{{ end }}\n")
+        return d
+
+    def run_lint(self, chart_dir, rendered=None, template_error=None):
+        seen = {}
+
+        def snapshot(harness_dir):
+            with open(os.path.join(harness_dir,
+                                   chart_metadata.CHART_FILE)) as f:
+                seen["harness_chart"] = f.read()
+            with open(os.path.join(harness_dir, "templates",
+                                   "harness.yaml")) as f:
+                seen["harness_template"] = f.read()
+
+        def helm(args, **kwargs):
+            if args[1] == "lint":
+                seen["lint_target"] = args[2]
+            elif args[1] == "dependency":
+                seen["build_target"] = args[3]
+                snapshot(args[3])
+            elif args[1] == "template":
+                seen["template_target"] = args[2]
+                snapshot(args[2])
+                if template_error is not None:
+                    raise template_error
+                return subprocess.CompletedProcess(
+                    args, 0, stdout=(rendered or "").encode())
+            return subprocess.CompletedProcess(args, 0)
+
+        self.helm.side_effect = helm
+        chart_ci.lint(chart_dir)
+        return seen
+
+    def test_library_lints_itself_and_renders_through_harness(self):
+        d = self.library()
+        rendered = ("---\napiVersion: v1\nkind: ConfigMap\n"
+                    "metadata:\n  name: harness\n")
+        seen = self.run_lint(d, rendered=rendered)
+        self.assertEqual(seen["lint_target"], d)
+        # The harness is the only render target, and its own dependency is
+        # built first, pointing at the prepared library copy.
+        self.assertEqual(seen["template_target"], seen["build_target"])
+        self.assertIn("type: application", seen["harness_chart"])
+        self.assertIn("name: libby", seen["harness_chart"])
+        self.assertIn("version: 1.0.0", seen["harness_chart"])
+        self.assertIn(f"repository: file://{d}", seen["harness_chart"])
+        harness_template = seen["harness_template"]
+        self.assertIn('include "libby.payload"', harness_template)
+        self.assertIn('include "libby.other"', harness_template)
+
+    def test_broken_library_render_fails_the_gate(self):
+        # The library templates parse (helm lint succeeds), but the harness
+        # render produces no documents: the strict-parse gate must fail with
+        # the library's own name.
+        d = self.library()
+        with self.assertRaises(SystemExit):
+            self.run_lint(d, rendered="\n---\n")
+        message = self.stderr.getvalue()
+        self.assertIn("chart 'libby'", message)
+        self.assertIn("contains no documents", message)
+
+    def test_library_render_failure_fails_lint(self):
+        # A template that fails to resolve surfaces as a helm failure at
+        # template time, propagating out of lint() so the gate fails.
+        d = self.library()
+        error = subprocess.CalledProcessError(1, "helm")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_lint(d, template_error=error)
 
 
 class UrllibTransportTest(unittest.TestCase):
