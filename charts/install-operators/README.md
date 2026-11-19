@@ -18,7 +18,7 @@ OperatorGroup, etc.) including the following features:
 - Picking other namespaces to install your operator in, whether using cluster-wide or namespace scopes
 - Maintaining each operator's Subscription through hook Jobs rather than release ownership: a
   `post-install,post-upgrade` hook converges the chart-managed fields (`source`, `sourceNamespace`, `channel`,
-  `installPlanApproval`, `startingCSV`, and the `env` list) to the configured values on every install and upgrade, and a
+  `installPlanApproval`, `startingCSV`, and the `env` map) to the configured values on every install and upgrade, and a
   `pre-delete` hook removes the Subscription on uninstall only when the chart created it (a Subscription that
   pre-existed is left in place). `ownSubscription: true` opts a specific operator into a release-owned Subscription
   instead, which lets a GitOps tool own and continuously reconcile it — at the cost of those tools reporting the
@@ -35,7 +35,7 @@ OperatorGroup, etc.) including the following features:
   hooks themselves: they are created at hook weight -10 (before the weight-0 Job runs), removed after each successful
   run, and re-created on the next install or upgrade, so nothing in the hook surface is release-tracked — the Job alone
   is retained between a run and its retry via `before-hook-creation`.
-- Specifying an `env` array for a Subscription easily for an operator, to override default behavior.
+- Specifying an `env` map for a Subscription easily for an operator, to override default behavior.
 - Toggling any operator off entirely with `enabled: false` (default is `true` when unset), so its OperatorGroup,
   Subscription, and approval resources are not rendered. A Namespace is never rendered regardless of the toggle —
   operator namespaces are ensured by hook rather than owned by the release.

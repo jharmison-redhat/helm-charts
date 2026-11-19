@@ -53,8 +53,8 @@ into the `default` namespace: that namespace's configuration assigns no SCC, so 
 through to the stock image's root user and the hook pods are rejected.
 
 Deploy one release of this chart per cluster: the `DataScienceCluster` and KEDA `ClusterTriggerAuthentication` are
-cluster-scoped fixed names, and the Gateways and their ConfigMaps use fixed names that collide when two releases share a
-namespace.
+cluster-scoped fixed names, and the Gateways and their ConfigMaps are pinned to `openshift-ingress` with fixed names
+that collide across any two releases, regardless of release namespace.
 
 Usage
 -----

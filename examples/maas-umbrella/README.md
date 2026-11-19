@@ -80,11 +80,11 @@ maas-db respectively. One Cluster per parent is the exact pattern CloudNativePG 
 Composing charts from this repository
 ---
 
-Each chart in this repository is subchart-friendly: values are namespaced under the chart's own key, charts support an
-`enabled` toggle for conditional inclusion, and `global.*` passthrough compatibility is preserved. An umbrella chart
-declares the published OCI charts as dependencies in its `Chart.yaml` and configures them entirely through values, as
-`values.yaml` in this example demonstrates. Additional charts published from this repository can be composed as
-dependencies the same way.
+Each chart in this repository is subchart-friendly: values are namespaced under the chart's own key, each chart gates
+its surfaces through its own values flags (the umbrella's `Chart.yaml` dependencies define no `condition:` fields), and
+`global.*` passthrough compatibility is preserved. An umbrella chart declares the published OCI charts as dependencies
+in its `Chart.yaml` and configures them entirely through values, as `values.yaml` in this example demonstrates.
+Additional charts published from this repository can be composed as dependencies the same way.
 
 Shared OIDC values are set once in this chart under `global.oidc`: `keycloak-auth` reads
 `global.oidc.{realm,clientId,secret}` directly, and the keycloak chart's realm client entry references

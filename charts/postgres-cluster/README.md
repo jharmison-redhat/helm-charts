@@ -90,3 +90,23 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 
 Passwords are never defaulted: the `databases` entries' `password` field must be provided through values when a
 basic-auth Secret is wanted.
+
+Uninstall and data persistence
+------------------------------
+
+`helm uninstall` deletes every object the chart rendered, including the CloudNativePG `Cluster` custom resource. When a
+Cluster is deleted, the CNPG operator deletes the per-instance PVCs — the PostgreSQL data and WAL volumes are destroyed
+— unless the backing storage class uses `reclaimPolicy: Retain`, in which case the underlying volumes survive in
+`Released` state but cannot be reattached to a new cluster by this chart. The chart provides no knob to prevent this,
+and upstream CloudNativePG provides no spec field for it either (open feature request
+[cloudnative-pg/cloudnative-pg#8442](https://github.com/cloudnative-pg/cloudnative-pg/issues/8442)).
+
+To keep your data, take a backup before uninstalling: configure a `backups:` entry (volume-snapshot method) and keep the
+resulting VolumeSnapshots; a future install can restore from them through the chart's `recovery:` value (CNPG's
+`bootstrap.recovery`). A StorageClass with `reclaimPolicy: Retain` is a prudent safety net, but it is not a supported
+restore path for this chart.
+
+Caveat: upstream does not document the PVC deletion behavior in its manual — it is verified from the operator's issue
+tracker ([#8442](https://github.com/cloudnative-pg/cloudnative-pg/issues/8442),
+[discussion #5253](https://github.com/cloudnative-pg/cloudnative-pg/discussions/5253)) and source
+(`finalizers_delete.go`), and this repository's live validation covers it before publish.

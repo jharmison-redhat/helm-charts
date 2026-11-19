@@ -83,19 +83,23 @@ realms: {}
 #      prefix: user
 #      count: 5
 #      password: changeme
+#    # Generate one group per role (plus `admins`) — set to false to supply
+#    # `groups` explicitly instead
+#    groupsFromRoles: true
+#    # One realm role per entry; groupsFromRoles also creates one group per
+#    # role name, so `groups` below must reference one of those
+#    roles:
+#      user: {}
 #    users:
 #      someuser:
 #        password: changeme
 #        realmRoles:
 #          - user
 #        groups:
-#          - users
+#          - user
 #    admin:
 #      username: admin
 #      password: changeme
-#    # Generate one group per role (plus `admins`) — set to false to supply
-#    # `groups` explicitly instead
-#    groupsFromRoles: true
 #    clients:
 #      ocp-idp:
 #        # Client entry string values may reference global.oidc.* via a
