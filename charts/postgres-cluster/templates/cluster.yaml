@@ -7,6 +7,9 @@
 {{- if and (not (eq $disabled "[]")) .Values.managed.services }}
 {{- fail "managed.services collides with the generated `services.disabledDefaultServices` (from `services`): either keep the default services enabled or set `managed` without `services`" }}
 {{- end }}
+{{- if not (has "rw" .Values.services) }}
+{{- fail "the rw service cannot be disabled: CloudNativePG requires the read-write service — keep `rw` in `services` (removing `ro`/`r` is supported)" }}
+{{- end }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:

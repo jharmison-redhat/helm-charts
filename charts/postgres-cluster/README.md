@@ -75,7 +75,9 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `storage` / `walStorage` — storage configuration passed through to the Cluster CR (default: 10Gi; an empty
   `storageClass` uses the cluster default StorageClass)
 - `resources` — resource requests/limits for the cluster instances
-- `services` — operator-created default services (default: `rw`, `ro`, `r`)
+- `services` — operator-created default services (default: `rw`, `ro`, `r`); entries can be removed to disable those
+  default services, but `rw` must remain — CloudNativePG requires the read-write service, and the chart fails the render
+  otherwise
 - `certificate` — the server `Certificate` (enabled by default; `issuerRef` defaults to a `ca-issuer` ClusterIssuer from
   cert-manager.io, and `clusterDomain` adds a suffix below the `.svc` DNS level). The `issuerRef` must resolve to a
   CA-capable issuer (CA, SelfSigned, or Vault): the referenced Secret doubles as `serverCASecret` and needs a `ca.crt`,

@@ -33,8 +33,10 @@ walStorage: {}
 managed: {}
 
 # Operator-created default services. Remove entries to disable the
-# corresponding default service — specifying `services` in the `managed` block
-# while a default service is disabled makes the chart fail at render time.
+# corresponding default service — `rw` must remain: CloudNativePG requires the
+# read-write service, and the chart fails the render otherwise. Specifying
+# `services` in the `managed` block while a default service is disabled makes
+# the chart fail at render time.
 services:
   - rw
   - ro
