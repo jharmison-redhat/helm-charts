@@ -43,9 +43,10 @@ Source parity is not a goal — the contract is correct behavior under normal He
   the contents).
 - Mutate platform-owned objects only through conditional-write hook Jobs following the established pattern (reference
   implementations: `charts/keycloak-auth` OAuth IdP + logout-redirect, `charts/cert-manager` cluster trust + serving
-  certs): scripts in `files/` delivered via ConfigMap, the chart-local `files/lib/hook-preamble.sh` conditional-write
-  engine, dual jq/python3 fail-closed, read-modify-write carrying `metadata.resourceVersion` with a bounded 409 retry,
-  foreign-value STOP, by-value idempotence, and resourceName-scoped RBAC. `create` is the one grant RBAC cannot scope by
+  certs): scripts in `files/` delivered via ConfigMap, the `common` library chart's conditional-write engine delivered
+  into consumers' script ConfigMaps by the `common.hook-preamble` named-template include, dual jq/python3 fail-closed,
+  read-modify-write carrying `metadata.resourceVersion` with a bounded 409 retry, foreign-value STOP, by-value
+  idempotence, and resourceName-scoped RBAC. `create` is the one grant RBAC cannot scope by
   name — when it is unavoidable, call it out in the README.
 - Singletons created by user or platform action may already exist with foreign configuration (e.g.
   `ClusterAutoscaler/default`) and are never release manifests when they may pre-exist: a conditional-write hook creates
@@ -94,10 +95,15 @@ Source parity is not a goal — the contract is correct behavior under normal He
   surface's Job, RBAC, and script `<surface>-{job,rbac,script}.yaml` while cert-manager names the Job first
   (`job-<surface>.yaml`) with `<surface>-{config,rbac}.yaml` siblings, and openshift-ai groups per-feature script
   families. The rule is chart-local consistency.
-- Scripts live under `files/` or `files/<family>/`, with `files/lib/` holding the shared hook preamble plus each chart's
-  shared helper modules (cert-manager's `trust-bundle.sh`, keycloak-auth's `logout-redirect.sh`, openshift-ai's
-  `set/delete-chart-created-cr.sh`). A ConfigMap that globs (e.g. openshift-ai's maas-db `files/*` glob) must not be
-  able to absorb sibling families' scripts — the no-root-level-script-leakage invariant is guarded by a unit test
+- Scripts live under `files/` or `files/<family>/`, with `files/lib/` holding each chart's own helper modules
+  (cert-manager's `trust-bundle.sh`, keycloak-auth's `logout-redirect.sh`, openshift-ai's
+  `set/delete-chart-created-cr.sh`); the shared hook scripts (`hook-preamble.sh`, `wait-for.sh`) come from the `common`
+  library chart by named-template include. Shared hook-script payloads and shared template helpers land in `common` by
+  dependency pin bump, never as new per-chart copies; the admission boundary is the library template itself, not script
+  payloads — shared non-script partials are admitted as well (a shared naming template, if one lands, is the canonical
+  case). A
+  ConfigMap that globs (e.g. openshift-ai's maas-db `files/*` glob) must not be able to absorb sibling families'
+  scripts — the no-root-level-script-leakage invariant is guarded by a unit test
   (`test_maas_db_glob_cannot_absorb_tenant_script`).
 
 ## Testing
@@ -111,8 +117,8 @@ the marginal value of asserting more template surface offline is very low. It ex
 2. Catch template failures `helm lint` cannot see — also covered repo-wide by the CI strict-render gate
    (`chart_ci.py`), which handles parse-level breakage wholesale.
 3. Enforce the repo's structural invariants: platform-objects-never-render-as-release-manifests, the ConfigMap-glob
-   no-leakage rule, guard-without-pin securityContext on hook Jobs, and shared-lib byte parity (`hook-preamble.sh`,
-   `wait-for.sh`).
+   no-leakage rule, guard-without-pin securityContext on hook Jobs, and the `common` library invariants (dependency
+   pin-sync, no stray payload copies, payload guard).
 4. The per-hook-script smoke set: ONE happy-path run per hook script (python3-only tool path) plus ONE fail-closed
    no-tool check per chart — not per script.
 
@@ -145,7 +151,9 @@ Rules for keeping the suite honest:
 ## Chart dependencies — the guard that broke run 39966995703
 
 Vendored `charts/<name>/charts/*.tgz` and `Chart.lock` are **gitignored**. Any chart with a `dependencies:` block
-requires `helm dependency build` before `helm lint`, `helm template`, or `helm package`.
+requires `helm dependency build` before `helm lint`, `helm template`, or `helm package`. The six charts that consume
+`common` (all of them hook-carrying) pin it from OCI, so they all require that build before local `helm template`/`helm
+package` — registry login per the verification-commands section applies to every one of them.
 
 CRITICAL: verify `helm package` from a CLEAN checkout — never just the working tree. Simulate with
 `git archive HEAD charts/<name> | tar -x` into a temp dir, then package there. Gitignored vendored deps in the working
