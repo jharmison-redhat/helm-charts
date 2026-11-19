@@ -31,14 +31,67 @@ REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 
-def run_helm(args, env_overrides=None, cwd=None, render_quiet=False):
-    """Run helm with check=True; all helm output goes to stderr, except a
-    quiet render check whose stdout is discarded."""
+def run_helm(args, env_overrides=None, cwd=None, capture_stdout=False):
+    """Run helm with check=True; helm stdout goes to stderr, except a
+    capturing run whose decoded stdout is returned."""
     env = os.environ.copy()
     if env_overrides:
         env.update(env_overrides)
-    stdout = subprocess.DEVNULL if render_quiet else sys.stderr
-    subprocess.run(["helm", *args], check=True, env=env, cwd=cwd, stdout=stdout)
+    if capture_stdout:
+        result = subprocess.run(["helm", *args], check=True, env=env, cwd=cwd,
+                                stdout=subprocess.PIPE)
+        return result.stdout.decode()
+    subprocess.run(["helm", *args], check=True, env=env, cwd=cwd,
+                   stdout=sys.stderr)
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """Safe loader that rejects duplicate mapping keys."""
+
+
+def _no_duplicate_keys(loader, node, deep=False):
+    mapping = {}
+    for k_node, v_node in node.value:
+        key = loader.construct_object(k_node, deep=True)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", k_node.start_mark)
+        mapping[key] = loader.construct_object(v_node, deep=True)
+    return mapping
+
+
+_StrictLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicate_keys)
+
+
+def _parse_rendered_docs(chart_name, rendered):
+    """Strictly parse ``helm template`` output into YAML documents.
+
+    Rejects unparseable documents and duplicate mapping keys with a
+    chart-named diagnostic carrying the failing document and line; a render
+    producing no documents is a defect.
+    """
+    docs = []
+    try:
+        for doc in yaml.load_all(rendered, Loader=_StrictLoader):
+            docs.append(doc)
+    except yaml.YAMLError as exc:
+        index = len(docs) + 1
+        mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark",
+                                                             None)
+        where = f"document {index}"
+        if mark is not None:
+            where += f", line {mark.line + 1}"
+        print(f"chart_ci: ERROR: rendered output of chart '{chart_name}' is "
+              f"not valid YAML ({where}): {exc}", file=sys.stderr)
+        raise SystemExit(1)
+    docs = [doc for doc in docs if doc is not None]
+    if not docs:
+        print(f"chart_ci: ERROR: rendered output of chart '{chart_name}' "
+              f"contains no documents; a chart that renders nothing is a "
+              f"defect", file=sys.stderr)
+        raise SystemExit(1)
+    return docs
 
 
 def prepare_local(chart_dir, cache=None, stack=None):
@@ -154,7 +207,8 @@ def build_registry(chart_dir):
 
 
 def lint(chart_dir):
-    """helm lint plus a render check on the given directory."""
+    """helm lint plus a render check on the given directory, then a strict
+    parse of the rendered output."""
     run_helm(["lint", chart_dir], cwd=REPO_ROOT)
     render_args = ["template", chart_dir]
     # A chart-local ci-values.yaml exists solely so this default-values CI
@@ -164,7 +218,9 @@ def lint(chart_dir):
     ci_values = os.path.join(chart_dir, "ci-values.yaml")
     if os.path.isfile(ci_values):
         render_args.extend(["-f", ci_values])
-    run_helm(render_args, cwd=REPO_ROOT, render_quiet=True)
+    rendered = run_helm(render_args, cwd=REPO_ROOT, capture_stdout=True)
+    chart_name = chart_metadata.load_chart(chart_dir)["name"]
+    _parse_rendered_docs(chart_name, rendered)
 
 
 def _work_root():

@@ -1,0 +1,7 @@
+# CI-only placeholder values: exercise a real render in chart CI.
+# Never referenced by installs; excluded from packaged charts via .helmignore.
+operators:
+  cloudnative-pg:
+    enabled: true
+    channel: stable-v1
+    catalog: certified-operators

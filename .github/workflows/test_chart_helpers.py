@@ -174,7 +174,10 @@ class LintAndBuildTest(unittest.TestCase):
     def setUp(self):
         self.helm_ctx = mock.patch.object(chart_ci.subprocess, "run")
         self.helm = self.helm_ctx.start()
-        self.helm.return_value = subprocess.CompletedProcess([], 0)
+        # The template run's stdout is captured for the strict-parse gate.
+        self.helm.return_value = subprocess.CompletedProcess(
+            [], 0, stdout=b"---\napiVersion: v1\nkind: ConfigMap\n"
+                          b"metadata:\n  name: stub\n")
         self.addCleanup(self.helm_ctx.stop)
 
     def chart(self, deps=None):
@@ -227,6 +230,60 @@ class LintAndBuildTest(unittest.TestCase):
         self.helm.side_effect = subprocess.CalledProcessError(1, "helm")
         with self.assertRaises(subprocess.CalledProcessError):
             chart_ci.lint(d)
+
+
+class RenderedOutputGateTest(unittest.TestCase):
+    """lint() strictly parses the captured helm template stdout."""
+
+    def setUp(self):
+        self.helm_ctx = mock.patch.object(chart_ci.subprocess, "run")
+        self.helm = self.helm_ctx.start()
+        self.addCleanup(self.helm_ctx.stop)
+        self.stderr = io.StringIO()
+        err_ctx = mock.patch("sys.stderr", new=self.stderr)
+        err_ctx.start()
+        self.addCleanup(err_ctx.stop)
+
+    def run_lint(self, rendered):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, chart_metadata.CHART_FILE), "w") as f:
+            f.write("name: linty\nversion: 1.0.0\n")
+
+        def helm(args, **kwargs):
+            if args and args[1] == "template":
+                return subprocess.CompletedProcess(
+                    args, 0, stdout=rendered.encode())
+            return subprocess.CompletedProcess(args, 0)
+
+        self.helm.side_effect = helm
+        chart_ci.lint(d)
+
+    def test_valid_multi_doc_passes(self):
+        self.run_lint(
+            "---\napiVersion: v1\nkind: ConfigMap\n"
+            "metadata:\n  name: one\n"
+            "---\napiVersion: v1\nkind: Secret\n"
+            "metadata:\n  name: two\n")
+
+    def test_invalid_document_fails_with_chart_name_and_line(self):
+        with self.assertRaises(SystemExit):
+            self.run_lint("kind: A\n  bad: indent\n")
+        message = self.stderr.getvalue()
+        self.assertIn("chart 'linty'", message)
+        self.assertIn("document 1", message)
+        self.assertIn("line 2", message)
+
+    def test_duplicate_keys_fail(self):
+        with self.assertRaises(SystemExit):
+            self.run_lint("---\na: 1\na: 2\n")
+        message = self.stderr.getvalue()
+        self.assertIn("chart 'linty'", message)
+        self.assertIn("duplicate key", message)
+
+    def test_empty_output_fails(self):
+        with self.assertRaises(SystemExit):
+            self.run_lint("\n---\n")
+        self.assertIn("contains no documents", self.stderr.getvalue())
 
 
 class UrllibTransportTest(unittest.TestCase):
