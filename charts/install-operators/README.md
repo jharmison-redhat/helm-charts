@@ -90,7 +90,10 @@ ensured by hook, never release-owned, and uninstall never removes them. When `in
 non-root — the platform's restricted SCCs assign the namespace's range UID to the UID-less hook pods, which carry a
 restricted-compatible securityContext — so hardened namespaces work, in the release namespace and in each operator
 namespace alike. The chart cannot be installed into the `default` namespace: that namespace's configuration assigns no
-SCC, so the UID-less non-root proof falls through to the stock image's root user and the hook pods are rejected.
+SCC, so the UID-less non-root proof falls through to the stock image's root user and the hook pods are rejected. Every
+hook Job in this repo's charts runs the shared `global.toolsImage`, which defaults to the image served by the cluster's
+internal registry (`image-registry.openshift-image-registry.svc:5000/openshift/tools:latest`) — override it via
+`global.toolsImage` on clusters where that image is not present, disconnected clusters for example.
 Co-locating the release with an operators' namespace suits single-namespace topologies (for example
 `helm install <name> charts/install-operators -n openshift-storage`); otherwise use any existing namespace. Installing
 into a namespace created by `--create-namespace` or pre-created manually takes the ensure hook's merge path: the chart's

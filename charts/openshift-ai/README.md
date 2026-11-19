@@ -196,6 +196,11 @@ patched Deployments in place after the same restore.
 Operand configuration hooks
 ---------------------------
 
+The `DataScienceCluster` is the counterpoint to the hook-converged objects below: the chart renders and owns it as
+release content. The operator never creates the `DataScienceCluster` itself, so a release manifest of it collides with
+nothing; it is a fixed-name cluster singleton, so exactly one release of this chart deploys per cluster; and release
+ownership is what gives gitops consumers DSC health/status tracking.
+
 Five product objects can never be release manifests of this chart: `OdhDashboardConfig`, `MLflow`, the `Auth` singleton,
 the `DSCInitialization/default-dsci` singleton, and the `odh-segment-key-config` ConfigMap. The first four have custom
 resource definitions that come into existence only after the rhods-operator reconciles the `DataScienceCluster` (and
