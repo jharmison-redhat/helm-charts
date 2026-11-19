@@ -7,3 +7,5 @@ description: >
 type: application
 version: 0.3.3
 appVersion: 0.3.3
+annotations:
+  license: ISC

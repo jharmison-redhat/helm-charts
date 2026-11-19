@@ -4,3 +4,5 @@ description: A chart to install Operators on OpenShift from OLM v0, including Ma
 type: application
 version: 0.3.2
 appVersion: 0.3.2
+annotations:
+  license: ISC
