@@ -6,6 +6,19 @@ global:
 # chart values; default matches the kuadrant-operator namespace used there).
 operatorNamespace: kuadrant-system
 
+# Bounded waits for the restart hook, in seconds: the per-operator CSV
+# readiness deadline, the poll interval between readiness probes, and the
+# `oc rollout status` timeout for the operator deployment. The restart Job's
+# activeDeadlineSeconds covers the script's worst case — four operators
+# waiting up to the CSV deadline each, then the rollout timeout, plus a 30s
+# margin (a retry chain that exhausts backoffLimit can hit the deadline; a
+# wedged pod is killed by it either way). The hook's oc reads also carry a
+# 10s request timeout so a hung API call cannot outlast the poll loop.
+restart:
+  csvReadyTimeoutSeconds: 120
+  csvReadyPollIntervalSeconds: 5
+  rolloutTimeoutSeconds: 300
+
 kuadrant:
   create: true
   namespace: kuadrant-system
@@ -14,6 +27,9 @@ kuadrant:
       enable: true
 
 authorino:
+  # Applies only when kuadrant.create is true — a hands-off chart (an
+  # existing RHCL deployment already managing the stack) never overwrites
+  # the Authorino custom resource.
   overwrite: true
   serviceTls: true
   spec:

@@ -1,10 +1,14 @@
-"""Focused tests for the kuadrant chart's hook guard surface: every hook
-Job container carries the guard-without-pin securityContext and no
-unguarded hook Job renders for any values combination.
+"""Render contracts for the kuadrant chart plus the restart hook script's
+smoke set.
 
 Render tests run the chart through ``helm template`` (kuadrant has no chart
 dependencies, so no stubs or registry access are needed). The restart hook
 Job renders when ``kuadrant.create`` is true (the default).
+
+Per the repo's unit-test policy the script-execution layer is a minimal
+smoke set: one happy-path run of the rendered restart script and bounded-
+timeout fail-closed checks, against a fake ``oc`` on a restricted PATH —
+state-machine behavior is proven by live deploys, not fixture simulation.
 """
 
 import os
@@ -43,6 +47,141 @@ class HookGuardTests(ChartFixture):
         self.assertEqual(
             support.hook_jobs(self.render({"kuadrant": {"create": False}})),
             [])
+
+    def test_restart_job_wires_the_wait_knobs(self):
+        # The three wait tunables render as env on the restart Job (the
+        # script keeps ${VAR:-default} fallbacks for direct runs) and the
+        # Job's activeDeadlineSeconds bounds the whole run: the script waits
+        # up to the CSV budget per operator across four operators, then the
+        # rollout timeout, plus a 30s margin.
+        job = self.pick(self.by_kind(self.render()), "Job",
+                        "restart-kuadrant-operator")
+        env = {e["name"]: e["value"] for e in
+               job["spec"]["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(env, {
+            "CSV_READY_TIMEOUT_SECONDS": "120",
+            "CSV_READY_POLL_INTERVAL_SECONDS": "5",
+            "ROLLOUT_TIMEOUT_SECONDS": "300"})
+        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 810)
+
+
+# Fake oc for the restart-script smoke runs: serves the canned
+# installedCSV for a Subscription get and the canned phase for a CSV get,
+# and records every invocation so tests can assert the exact oc call
+# surface (including the rollout --timeout).
+FAKE_OC_RESTART = """\
+#!/bin/bash
+echo "$@" >> "$OC_LOG"
+case "$1" in
+  get)
+    if [[ "$*" == *subscription* ]]; then
+      printf '%s' "$OC_INSTALLED_CSV"
+    else
+      printf '%s' "$OC_CSV_PHASE"
+    fi
+    ;;
+  delete) exit 0 ;;
+  rollout) exit 0 ;;
+  *)
+    echo "unexpected oc invocation: $*" >&2
+    exit 64
+    ;;
+esac
+"""
+
+
+class RestartScriptSmokeTests(ChartFixture, support.FakeOcScriptFixture):
+    """Executes the rendered restart script against a fake oc: a restricted
+    PATH built solely from symlinks in an isolated bin directory (sleep and
+    the fake oc), the rendered ConfigMap staged as the entry script
+    (mirroring the single ConfigMap mount), and an explicit minimal child
+    environment. Timeouts are shrunk via the script's environment overrides
+    so the bounded-wait failure path is cheap to exercise."""
+
+    work_prefix = "kuadrant-smoke-"
+    bin_tools = ["sleep"]
+    fake_oc_script = FAKE_OC_RESTART
+    scripts = {}
+
+    def stage_rendered_script(self, values=None):
+        by_kind = self.by_kind(self.render(values))
+        self.assertEqual(len(by_kind["ConfigMap"]), 1)
+        self.scripts = by_kind["ConfigMap"][0]["data"]
+        self.stage_scripts()
+
+    def run_script(self, installed_csv="rhcl-operator.v1.2.3",
+                   csv_phase="Succeeded", env_extra=None):
+        env = {
+            "PATH": self.build_bin_dir(include_python=False),
+            "HOME": self.work,
+            "TMPDIR": self.work,
+            "OC_LOG": os.path.join(self.work, "commands.log"),
+            "OC_INSTALLED_CSV": installed_csv,
+            "OC_CSV_PHASE": csv_phase,
+            "CSV_READY_TIMEOUT_SECONDS": "2",
+            "CSV_READY_POLL_INTERVAL_SECONDS": "1",
+        }
+        if env_extra:
+            env.update(env_extra)
+        return self.run_child(
+            os.path.join(self.work, "restart-kuadrant-operator.sh"), env)
+
+    def test_happy_path_smoke(self):
+        self.stage_rendered_script()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.log()
+        # Every operator's readiness is probed on the actual installedCSV of
+        # its Subscription, then confirmed on the CSV's own phase.
+        for operator in ("authorino", "dns", "limitador", "rhcl"):
+            self.assertIn(
+                "-ojsonpath={.items[0].status.installedCSV}", log)
+            self.assertIn(
+                f"operators.coreos.com/{operator}-operator.kuadrant-system",
+                log)
+        self.assertIn(
+            "delete pod -n kuadrant-system "
+            "-l app=kuadrant,control-plane=controller-manager", log)
+        # The rollout status carries a bounded --timeout.
+        self.assertIn(
+            "rollout status -n kuadrant-system "
+            "deployment/kuadrant-operator-controller-manager "
+            "--timeout=300s", log)
+
+    def test_csv_never_ready_times_out_fail_closed(self):
+        self.stage_rendered_script()
+        result = self.run_script(csv_phase="Failed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Timed out", result.stderr)
+        self.assertIn("authorino", result.stderr)
+        # The pod delete and rollout never ran: the wait gates them.
+        self.assertNotIn("delete pod", self.log())
+        self.assertNotIn("rollout status", self.log())
+
+    def test_subscription_absent_times_out_fail_closed(self):
+        self.stage_rendered_script()
+        result = self.run_script(installed_csv="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Timed out", result.stderr)
+
+    def test_no_oc_fails_closed(self):
+        self.stage_rendered_script()
+        bin_dir = self.build_bin_dir(include_python=False, include_oc=False)
+        env = {
+            "PATH": bin_dir,
+            "HOME": self.work,
+            "TMPDIR": self.work,
+            "OC_LOG": os.path.join(self.work, "commands.log"),
+            "CSV_READY_TIMEOUT_SECONDS": "1",
+            "CSV_READY_POLL_INTERVAL_SECONDS": "1",
+        }
+        result = self.run_child(
+            os.path.join(self.work, "restart-kuadrant-operator.sh"), env)
+        self.assertNotEqual(result.returncode, 0)
+        # No oc on PATH means oc was never invoked, so no call log exists
+        # and the pod delete / rollout never ran.
+        self.assertFalse(
+            os.path.exists(os.path.join(self.work, "commands.log")))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,14 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation
 spec:
   backoffLimit: 4
+  # Bounds the whole hook run: the script waits up to the CSV deadline per
+  # operator across the four operators it restarts, then spends the rollout
+  # timeout, plus a 30s margin for the pod delete and rollout calls themselves
+  # (see the restart values block; the operator list lives in the script, so
+  # its length is the constant here). A retry chain that exhausts backoffLimit
+  # can hit this deadline; a wedged pod is killed by it either way.
+  activeDeadlineSeconds: {{ add (mul 4 .Values.restart.csvReadyTimeoutSeconds)
+    .Values.restart.rolloutTimeoutSeconds 30 }}
   template:
     spec:
       serviceAccountName: restart-kuadrant-operator
@@ -23,6 +31,13 @@ spec:
           securityContext:
             {{- include "kuadrant.hookSecurityContext" . | nindent 12 }}
           command: ["/app/restart-kuadrant-operator.sh"]
+          env:
+            - name: CSV_READY_TIMEOUT_SECONDS
+              value: {{ .Values.restart.csvReadyTimeoutSeconds | quote }}
+            - name: CSV_READY_POLL_INTERVAL_SECONDS
+              value: {{ .Values.restart.csvReadyPollIntervalSeconds | quote }}
+            - name: ROLLOUT_TIMEOUT_SECONDS
+              value: {{ .Values.restart.rolloutTimeoutSeconds | quote }}
           args: []
           volumeMounts:
             - name: restart-kuadrant-operator-script
