@@ -18,15 +18,16 @@ metadata:
   labels:
     {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
 rules:
-  # get/patch only, resource-name-scoped to the three operator-created
-  # singletons this chart converges — the chart never creates or deletes
-  # them, so no create/delete verbs exist here. The cluster scope of the
-  # permission covers the Auth and DSCInitialization singletons (both
-  # cluster-scoped, no namespace) and the product namespace the segment-key
-  # ConfigMap lives in (a Role in redhat-ods-applications cannot be used
-  # because that namespace does not exist until the operator creates it —
-  # the same first-install-independence boundary as the replicaSurface
-  # ClusterRole).
+  # get/patch only, resource-name-scoped to the four operator-created
+  # platform configuration surfaces this chart converges — the chart never
+  # deletes them, so no delete verb exists here except on the WVA ConfigMap
+  # below (the walk-back of a chart-created instance only). The cluster
+  # scope of the permission covers the Auth and DSCInitialization singletons
+  # (both cluster-scoped, no namespace) and the product namespace the
+  # segment-key and WVA ConfigMaps live in (a Role in redhat-ods-applications
+  # cannot be used because that namespace does not exist until the operator
+  # creates it — the same first-install-independence boundary as the
+  # replicaSurface ClusterRole).
   - apiGroups:
       - services.platform.opendatahub.io
     resources:
@@ -54,6 +55,28 @@ rules:
     verbs:
       - get
       - patch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - workload-variant-autoscaler-saturation-scaling-config
+    verbs:
+      - get
+      - patch
+      - delete
+  # create is the one grant RBAC cannot scope by name: the WVA ConfigMap is
+  # created under the chart-created proof annotation only when the operator
+  # has not deployed it yet. Gated with the payload keys — an install without
+  # configured wvaOverrides carries no create grant at all.
+  {{- if .Values.wvaOverrides }}
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create
+  {{- end }}
   - apiGroups:
       - apiextensions.k8s.io
     resources:
@@ -92,12 +115,36 @@ data:
     {{- .Files.Get "files/lib/wait-for.sh" | nindent 4 }}
   converge-operator-configs.sh: |-
     {{- .Files.Get "files/operator-configs/converge-operator-configs.sh" | nindent 4 }}
+  set-chart-created-cr.sh: |-
+    {{- .Files.Get "files/lib/set-chart-created-cr.sh" | nindent 4 }}
+  delete-chart-created-cr.sh: |-
+    {{- .Files.Get "files/lib/delete-chart-created-cr.sh" | nindent 4 }}
   auth-patch.json: |-
     {{- dict "spec" (dict "adminGroups" (list "rhods-admins") "allowedGroups" .Values.userGroups) | toJson | nindent 4 }}
   dsci-patch.json: |-
     {{- dict "spec" (.Values.dataScienceClusterInitialization | default dict) | toJson | nindent 4 }}
   segment-key-patch.json: |-
     {{- dict "data" (dict "segmentKeyEnabled" $telemetry) | toJson | nindent 4 }}
+  {{- if .Values.wvaOverrides }}
+  {{- $wvaData := dict -}}
+  {{- range $name, $override := .Values.wvaOverrides }}
+  {{- /* Each value carries a trailing newline so compute_wva_patch's
+      exact-string data comparison is idempotent: block-scalar values (how
+      the WVA operator's bundle writes them, and how objects created in
+      place by other writers read back) end with one, so a converged object
+      byte-compares equal instead of being re-patched on every hook run. */ -}}
+  {{- $_ := set $wvaData $name (printf "%s\n" (toYaml $override)) }}
+  {{- end }}
+  wva-create.json: |-
+    {{- dict "apiVersion" "v1" "kind" "ConfigMap"
+        "metadata" (dict
+          "name" "workload-variant-autoscaler-saturation-scaling-config"
+          "namespace" "redhat-ods-applications"
+          "annotations" (dict "openshift-ai/chart-created" "true"))
+        "data" $wvaData | toJson | nindent 4 }}
+  wva-patch.json: |-
+    {{- dict "data" $wvaData | toJson | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -131,6 +178,52 @@ spec:
           env:
             - name: WAIT_TIMEOUT
               value: {{ $wait | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}
+            defaultMode: 493
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-delete
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "openshift-ai.hookSurface.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 0
+  # The delete has no wait phase — one bounded get/delete round-trip — so a
+  # fixed deadline sits far above the expected few-second run while still
+  # terminating a wedged pod.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "openshift-ai.hookSurface.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      restartPolicy: Never
+      containers:
+        - name: delete-wva-config
+          image: {{ .Values.global.toolsImage }}
+          securityContext:
+            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "/config/delete-chart-created-cr.sh"]
+          env:
+            - name: RESOURCE
+              value: configmap/workload-variant-autoscaler-saturation-scaling-config
+            - name: OBJECT_NAME
+              value: workload-variant-autoscaler-saturation-scaling-config
+            - name: OBJECT_NAMESPACE
+              value: redhat-ods-applications
           volumeMounts:
             - name: config
               mountPath: /config

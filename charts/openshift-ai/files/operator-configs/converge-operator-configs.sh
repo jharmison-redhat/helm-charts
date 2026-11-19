@@ -1,16 +1,23 @@
 #!/bin/bash
-# Converges the three operator-created platform configuration surfaces by
+# Converges the four operator-created platform configuration surfaces by
 # value as a Helm post-install/post-upgrade hook: the Auth cluster singleton
 # (services.platform.opendatahub.io/v1alpha1, name "auth", no namespace), the
-# operator-created DSCInitialization/default-dsci cluster singleton, and the
-# odh-segment-key-config ConfigMap in redhat-ods-applications. No object is
-# chart-created — the rhods-operator's DSCInitialization controller creates
-# the Auth singleton, the operator creates the DSCInitialization singleton at
-# startup (before any DataScienceCluster exists), and the dashboard deploys
-# with the segment-key ConfigMap — so the chart never renders them as release
-# manifests, never deletes them, and records no proof annotation: this hook
-# converges the chart-managed fields by value on every install/upgrade and
-# nothing else.
+# operator-created DSCInitialization/default-dsci cluster singleton, the
+# odh-segment-key-config ConfigMap in redhat-ods-applications, and the
+# workload-variant-autoscaler-saturation-scaling-config ConfigMap in
+# redhat-ods-applications (value-gated: only when wvaOverrides is
+# configured). No object is chart-created — the rhods-operator's
+# DSCInitialization controller creates the Auth singleton, the operator
+# creates the DSCInitialization singleton at startup (before any
+# DataScienceCluster exists), and the dashboard deploys with the segment-key
+# ConfigMap — so the chart never renders them as release manifests and never
+# deletes them, recording no proof annotation: this hook converges the
+# chart-managed fields by value on every install/upgrade and nothing else.
+# The WVA ConfigMap is normally deployed by the WVA operator's bundle too;
+# when it is absent (the WVA component is not deployed yet) the hook creates
+# it under the chart-created proof annotation so the matching pre-delete hook
+# walks it back on uninstall, while an operator-deployed instance (no proof)
+# is only ever converged by value.
 #
 # Reconcile fight (documented in the chart README): the operator's
 # reconciles and the dashboard's own cluster-settings writes can rewrite
@@ -24,6 +31,9 @@ set -euo pipefail
 
 source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
 source "${BASH_SOURCE[0]%/*}/wait-for.sh"
+# The operand set-hook lib supplies the WVA path's create-under-proof tail
+# (sourced, not executed — only the function definitions and defaults run).
+source "${BASH_SOURCE[0]%/*}/set-chart-created-cr.sh"
 
 AUTH_CRD="auths.services.platform.opendatahub.io"
 AUTH_RESOURCE="${AUTH_CRD}/auth"
@@ -40,6 +50,12 @@ SEGMENT_RESOURCE="configmap/odh-segment-key-config"
 SEGMENT_OBJECT="ConfigMap redhat-ods-applications/odh-segment-key-config"
 SEGMENT_NAMESPACE="redhat-ods-applications"
 export SEGMENT_PATCH="${SEGMENT_PATCH:-/config/segment-key-patch.json}"
+WVA_RESOURCE="configmap/workload-variant-autoscaler-saturation-scaling-config"
+WVA_OBJECT="ConfigMap redhat-ods-applications/workload-variant-autoscaler-saturation-scaling-config"
+WVA_NAMESPACE="redhat-ods-applications"
+export WVA_CREATE="${WVA_CREATE:-/config/wva-create.json}"
+export WVA_PATCH="${WVA_PATCH:-/config/wva-patch.json}"
+export PROOF_ANNOTATION="${PROOF_ANNOTATION:-openshift-ai/chart-created}"
 export WAIT_TIMEOUT="${WAIT_TIMEOUT:-240}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 
@@ -57,8 +73,10 @@ for payload in "$AUTH_PATCH" "$DSCI_PATCH" "$SEGMENT_PATCH"; do
 done
 
 # Waits until a resource type (CRD) is established, against the script-wide
-# deadline computed below.
-check_crd_established() {
+# deadline computed below. The distinct names keep these clear of the sourced
+# operand set-hook lib's same-named helpers (which read the CRD from
+# CRD_NAME instead of an argument).
+poll_crd_established() {
   local crd="$1" rc=0 established
   established=$(oc get "crd/$crd" \
     -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' \
@@ -73,10 +91,10 @@ check_crd_established() {
   return 3
 }
 
-wait_for_crd() {
+wait_for_crd_established() {
   local crd="$1"
   if ! wait_for "$DEADLINE" "$POLL_INTERVAL" "" \
-        check_crd_established "$crd"; then
+        poll_crd_established "$crd"; then
     echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for the $crd custom resource definition to be established; the rhods-operator must install and reconcile the owning component first (check the operator state and the DataScienceCluster reconciliation, then re-run this hook)" >&2
     exit 1
   fi
@@ -221,6 +239,44 @@ PYEOF
   esac
 }
 
+# Computes the WVA saturation-scaling merge patch from the live ConfigMap
+# JSON in $1: the desired data keys applied when any differs from the live
+# data, nothing when the live data already carries the desired values. Only
+# the DESIRED subset of the live data is compared — data keys the WVA
+# operator or a user set are neither matched nor patched (the merge patch
+# itself preserves unmanaged live keys).
+compute_wva_patch() {
+  case "$JSON_TOOL" in
+    jq)
+      jq -c --slurpfile desired "$WVA_PATCH" '
+        ($desired[0].data // {}) as $des
+        | if ((.data // {}) | with_entries(.key as $k | select($des | has($k)))) == $des
+          then empty
+          else {metadata: {resourceVersion: .metadata.resourceVersion},
+                data: $des}
+          end' "$1"
+      ;;
+    python3)
+      python3 - "$1" <<'PYEOF'
+import json, os, sys
+
+with open(sys.argv[1]) as f:
+    doc = json.load(f)
+with open(os.environ["WVA_PATCH"]) as f:
+    desired = json.load(f).get("data") or {}
+
+live = doc.get("data") or {}
+if {k: live[k] for k in desired if k in live} == desired:
+    raise SystemExit(0)
+print(json.dumps({
+    "metadata": {"resourceVersion": doc["metadata"]["resourceVersion"]},
+    "data": desired,
+}))
+PYEOF
+      ;;
+  esac
+}
+
 converge_object() {
   local resource="$1" compute="$2" patch_subject="$3" object="$4" namespace="$5"
   local write_rc=0
@@ -245,6 +301,30 @@ converge_object() {
   esac
 }
 
+# Converges the WVA ConfigMap by value, treating absence as the caller's
+# create signal rather than a mid-run failure: returns 0 once converged (at
+# the desired values or after a successful patch) and 2 when the object is
+# absent.
+converge_wva() {
+  local write_rc=0
+  conditional_write "$WVA_RESOURCE" compute_wva_patch \
+    "saturation-scaling data" "$WVA_OBJECT" "$WVA_NAMESPACE" || write_rc=$?
+  case $write_rc in
+    0)
+      echo "Converged $WVA_OBJECT to the configured values"
+      ;;
+    3)
+      echo "$WVA_OBJECT already matches the configured values; no changes needed"
+      ;;
+    2)
+      return 2
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+}
+
 # Auth and DSCInitialization are cluster-scoped and carry no namespace.
 # One deadline shared by every wait phase below (CRD establishment, the Auth
 # object, the DSCInitialization object, the segment-key ConfigMap): the Job's
@@ -252,7 +332,7 @@ converge_object() {
 # from one budget rather than each starting a full WAIT_TIMEOUT of its own.
 DEADLINE=$(( $(date +%s) + WAIT_TIMEOUT ))
 
-wait_for_crd "$AUTH_CRD"
+wait_for_crd_established "$AUTH_CRD"
 wait_for_object "$AUTH_RESOURCE" "$AUTH_OBJECT"
 converge_object "$AUTH_RESOURCE" compute_auth_patch "Auth spec" \
   "$AUTH_OBJECT" ""
@@ -266,3 +346,31 @@ converge_object "$DSCI_RESOURCE" compute_dsci_patch "DSCInitialization spec" \
 wait_for_object "$SEGMENT_RESOURCE" "$SEGMENT_OBJECT" -n "$SEGMENT_NAMESPACE"
 converge_object "$SEGMENT_RESOURCE" compute_segment_patch "segmentKeyEnabled" \
   "$SEGMENT_OBJECT" "$SEGMENT_NAMESPACE"
+
+# The WVA saturation-scaling section is value-gated: the payload keys render
+# into this ConfigMap only when wvaOverrides is configured. Unlike the three
+# surfaces above, the ConfigMap is not waited for — when it is absent (the
+# WVA component has not deployed yet) it is created under the chart-created
+# proof annotation so the matching pre-delete hook walks it back on
+# uninstall; an operator-deployed instance carries no proof and is never
+# deleted.
+if [ -s "$WVA_PATCH" ]; then
+  if [ ! -s "$WVA_CREATE" ]; then
+    echo "ERROR: the payload file is missing or empty at $WVA_CREATE; the ConfigMap delivery is broken" >&2
+    exit 1
+  fi
+  wva_rc=0
+  converge_wva || wva_rc=$?
+  if [ "$wva_rc" -eq 2 ]; then
+    # Reuses the operand set-hook lib's create-under-proof tail. CRD_NAME is
+    # unset, so the lib's CRD wait is skipped — a core ConfigMap needs no
+    # CRD, and this surface is deliberately not waited for.
+    RESOURCE="$WVA_RESOURCE"
+    OBJECT_NAME="$WVA_OBJECT"
+    OBJECT_NAMESPACE="$WVA_NAMESPACE"
+    CREATE_PAYLOAD="$WVA_CREATE"
+    create_under_proof converge_wva
+  elif [ "$wva_rc" -ne 0 ]; then
+    exit 1
+  fi
+fi

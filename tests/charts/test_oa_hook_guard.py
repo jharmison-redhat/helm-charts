@@ -35,12 +35,12 @@ class HookGuardTests(ChartFixture):
         # The per-family counts lock the assertion to the full hook-Job
         # inventory; the replica and tenant surface names carry release/
         # namespace hashes, so families are matched by fragment.
-        self.assertEqual(len(jobs), 10, names)
+        self.assertEqual(len(jobs), 11, names)
         for fragment, count in (("replicas", 2), ("maas-tenant-config", 1),
                                 ("create-maas-db-config", 1),
                                 ("update-secret-minio", 1),
                                 ("dashboard-config", 2), ("mlflow-", 2),
-                                ("operator-configs", 1)):
+                                ("operator-configs", 2)):
             self.assertEqual(
                 sum(1 for n in names if fragment in n), count, names)
         for job in jobs:

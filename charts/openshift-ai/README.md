@@ -215,15 +215,22 @@ established (or the operator-created object to appear), then a read-modify-write
   hook is gated by `mlflow.create` — the delete Job and its supporting resources render unconditionally, so an upgrade
   that disables management (`--set mlflow.create=false`) after the chart created the operand still removes it on
   uninstall.
-- **operator-configs** (`Auth/auth` + `DSCInitialization/default-dsci` + ConfigMap `odh-segment-key-config`): all three
-  objects are operator-created — the rhods-operator's DSCInitialization controller creates the cluster-scoped `Auth`
-  singleton (`auth`, no namespace), the operator creates the cluster-scoped `DSCInitialization/default-dsci` singleton
-  at startup (before any `DataScienceCluster` exists), and the segment-key ConfigMap deploys with the dashboard — so the
-  chart renders none of them, creates none, and deletes none. The hook waits bounded for each object to appear, then
-  converges the chart-managed fields by value: `spec.adminGroups`/`spec.allowedGroups` on the Auth singleton
-  (adminGroups pinned to `rhods-admins`, allowedGroups from `userGroups`), the `dataScienceClusterInitialization` spec
-  fields on the DSCInitialization singleton (whole-block passthrough — by default the `spec.monitoring` block), and
-  `data.segmentKeyEnabled` from `enableUserTelemetry` on the ConfigMap.
+- **operator-configs** (`Auth/auth` + `DSCInitialization/default-dsci` + ConfigMap `odh-segment-key-config` + ConfigMap
+  `workload-variant-autoscaler-saturation-scaling-config`): all four objects are operator-created — the rhods-operator's
+  DSCInitialization controller creates the cluster-scoped `Auth` singleton (`auth`, no namespace), the operator creates
+  the cluster-scoped `DSCInitialization/default-dsci` singleton at startup (before any `DataScienceCluster` exists), the
+  segment-key ConfigMap deploys with the dashboard, and the WVA operator's bundle deploys the saturation-scaling
+  ConfigMap — so the chart renders none of them as release manifests and uninstalls delete no operator-owned object. The
+  only exception is proof-gated: when the hook itself creates the absent WVA ConfigMap under the chart-created proof
+  annotation, the family's `pre-delete` hook deletes that chart-created instance on uninstall. Three surfaces (Auth,
+  DSCInitialization, segment-key ConfigMap) converge by value only: the hook waits bounded for each object to appear,
+  then patches the chart-managed fields — `spec.adminGroups`/`spec.allowedGroups` on the Auth singleton (adminGroups
+  pinned to `rhods-admins`, allowedGroups from `userGroups`), the `dataScienceClusterInitialization` spec fields on the
+  DSCInitialization singleton (whole-block passthrough — by default the `spec.monitoring` block), and
+  `data.segmentKeyEnabled` from `enableUserTelemetry` on the segment-key ConfigMap. The WVA ConfigMap is the remaining
+  outlier: it is not waited for, and an operator-deployed instance carries no proof and is only ever converged by value.
+  When it is present, its `wvaOverrides` data keys are converged by value (each entry becomes a data key carrying the
+  value as YAML text); the section is value-gated and skips entirely without configured overrides.
 
 Patch semantics for all three families: fields the chart's payload carries are set by value on every install/upgrade;
 fields it omits are left untouched; an explicit `null` inside the configured values (`dashboardConfig`, `mlflow.spec`,
@@ -231,9 +238,11 @@ fields it omits are left untouched; an explicit `null` inside the configured val
 patch.
 
 RBAC is resource-name-scoped per object (get/patch; delete for the pre-delete hooks; CRD `get` for the bounded waits).
-The one exception is `create` on `odhdashboardconfigs` and `mlflows`: RBAC cannot scope `create` by name, so each of
-those grants lives in its own unscoped rule — broader than the rest of the surface. They exist because the set hooks
-must create the objects when no default exists yet, and they are called out here per the chart's ownership discipline.
+The one exception is `create` on `odhdashboardconfigs`, `mlflows`, and — when `wvaOverrides` is configured — core
+`configmaps`: RBAC cannot scope `create` by name, so each of those grants lives in its own unscoped rule — broader than
+the rest of the surface. They exist because the set hooks must create the objects when no default exists yet, and they
+are called out here per the chart's ownership discipline; the core-`configmaps` grant renders only when the WVA section
+is configured, so an install without `wvaOverrides` carries no unscoped create at all.
 
 Reconcile-fight caveats. These are explicitly configured fields, so the chart converges them by value without the
 foreign-value STOP other hook surfaces apply — and the operator can write the same fields back at any time: the platform
@@ -254,8 +263,11 @@ Uninstall contract:
 - `OdhDashboardConfig` and `MLflow` are deleted on uninstall only when the chart-created proof annotation proves the set
   hook created them. An object the chart merely converged (dashboard-default or otherwise pre-existing) persists,
   retaining the last-converged spec values.
-- The `Auth` singleton, the `DSCInitialization/default-dsci` singleton, and `odh-segment-key-config` are never deleted
-  and carry no proof annotation: the operator owns all three objects, and they persist with the last-converged values.
+- The `Auth` singleton, the `DSCInitialization/default-dsci` singleton, and `odh-segment-key-config` are never deleted:
+  the operator owns all three, and they persist with the last-converged values. The WVA saturation-scaling ConfigMap is
+  the exception: the operator owns an instance it deployed itself (it carries no proof annotation and persists with the
+  last-converged values), while an instance the set hook created (absent at hook-run time, under the proof annotation)
+  is deleted on uninstall.
 - The `DataScienceCluster` release manifest is deleted by Helm on uninstall; the operator's component teardown governs
   everything it created.
 
@@ -370,6 +382,12 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
   `odh-segment-key-config` ConfigMap; must be a boolean (validated at render time, since the payload stringifies the
   value and a null or string would render invalid text); the dashboard's own tracking toggle rewrites the same key
   between hook runs
+- `wvaOverrides` — optional data-key overrides converged by the operator-configs hook onto the operator-shipped
+  `workload-variant-autoscaler-saturation-scaling-config` ConfigMap in `redhat-ods-applications` (never a release
+  manifest): each entry becomes a data key carrying the value as YAML text. The section is value-gated — without
+  configured overrides the hook skips it entirely; with them, an absent ConfigMap (WVA component not deployed yet) is
+  created under the chart-created proof annotation and walked back on uninstall, while an operator-deployed instance is
+  only ever converged. The WVA operator can rewrite the same keys between hook runs
 - `userGroups` — allowed groups converged onto the operator-created `Auth` singleton by the operator-configs hook
 - `genAiStudioConfig.aiAssetCustomEndpoints` — custom-endpoint config for the Gen AI Studio asset surface
   (`externalProviders`/`clusterDomains`); commented example in `values.yaml`

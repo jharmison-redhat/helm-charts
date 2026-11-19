@@ -21,40 +21,35 @@
 # spec fields the desired payload does not carry; an explicit null in the
 # desired spec removes a field.
 #
-# Required environment: CRD_NAME, RESOURCE (as an oc get type/name target),
+# The script is also sourced as a library by converge-operator-configs.sh,
+# whose WVA ConfigMap path reuses create-under-proof (create → concurrent-
+# create convergence → disappeared-again handling) for a core ConfigMap; its
+# converge is data-keyed rather than spec-keyed, so it calls the tail with
+# its own converge function. When sourced, only the function definitions and
+# defaults below run — the environment contract and the flow itself are the
+# entry point's, guarded on direct execution.
+#
+# Entry-point environment: RESOURCE (as an oc get type/name target),
 # OBJECT_NAME, OBJECT_NAMESPACE, CREATE_PAYLOAD and SPEC_PAYLOAD (paths to
-# the rendered JSON payloads in this script's ConfigMap).
+# the rendered JSON payloads in this script's ConfigMap), all required.
+# CRD_NAME is required for direct (Job) entry: the hook first waits bounded
+# for that custom resource definition to be established, because the
+# operator's component controllers create it only after the DataScienceCluster
+# (or the owning component) is reconciled. The sourced WVA path leaves it
+# unset and skips the wait — a core ConfigMap needs no CRD.
 set -euo pipefail
 
 source "${BASH_SOURCE[0]%/*}/hook-preamble.sh"
 source "${BASH_SOURCE[0]%/*}/wait-for.sh"
 
-: "${CRD_NAME:?CRD_NAME is required}"
-: "${RESOURCE:?RESOURCE is required}"
-: "${OBJECT_NAME:?OBJECT_NAME is required}"
-: "${OBJECT_NAMESPACE:?OBJECT_NAMESPACE is required}"
-: "${CREATE_PAYLOAD:?CREATE_PAYLOAD is required}"
-: "${SPEC_PAYLOAD:?SPEC_PAYLOAD is required}"
 export PROOF_ANNOTATION="${PROOF_ANNOTATION:-openshift-ai/chart-created}"
 export WAIT_TIMEOUT="${WAIT_TIMEOUT:-240}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 
-require_oc "cannot configure $OBJECT_NAME"
-select_json_tool "cannot configure $OBJECT_NAME"
-
-workdir=$(mktemp -d) || exit 1
-trap 'rm -rf "$workdir"' EXIT
-
-for payload in "$CREATE_PAYLOAD" "$SPEC_PAYLOAD"; do
-  if [ ! -s "$payload" ]; then
-    echo "ERROR: the payload file is missing or empty at $payload; the ConfigMap delivery is broken" >&2
-    exit 1
-  fi
-done
-
 # Waits bounded for the CRD to be established, against the script-wide
-# deadline computed below: the operator's component controllers create it
-# only after the DataScienceCluster (or the owning component) is reconciled.
+# deadline computed by the entry point: the operator's component controllers
+# create it only after the DataScienceCluster (or the owning component) is
+# reconciled. Skipped entirely when CRD_NAME is unset.
 check_crd_established() {
   local rc=0 established
   established=$(oc get "crd/$CRD_NAME" \
@@ -71,6 +66,7 @@ check_crd_established() {
 }
 
 wait_for_crd() {
+  [ -n "${CRD_NAME:-}" ] || return 0
   if ! wait_for "$DEADLINE" "$POLL_INTERVAL" "" check_crd_established; then
     echo "ERROR: timed out after ${WAIT_TIMEOUT}s waiting for the $CRD_NAME custom resource definition to be established; the rhods-operator must install and reconcile the owning component first (check the operator state and the DataScienceCluster reconciliation, then re-run this hook)" >&2
     exit 1
@@ -140,35 +136,70 @@ converge() {
   esac
 }
 
-# One deadline shared by every wait phase below (the CRD wait): the Job's
-# activeDeadlineSeconds is WAIT_TIMEOUT + 30, so waits draw from one
-# script-wide budget rather than each starting a full WAIT_TIMEOUT of its
-# own.
-DEADLINE=$(( $(date +%s) + WAIT_TIMEOUT ))
-
-wait_for_crd
-
-if converge; then
-  exit 0
-fi
-
-# The object does not exist: create it under the chart-created proof
-# annotation so the pre-delete hook can mirror release ownership.
-create_rc=0
-create_object "$OBJECT_NAME" -f "$CREATE_PAYLOAD" -n "$OBJECT_NAMESPACE" \
-  || create_rc=$?
-if [ "$create_rc" -eq 0 ]; then
-  echo "Created $OBJECT_NAME (recorded in the ${PROOF_ANNOTATION} annotation)"
-  exit 0
-fi
-if [ "$create_rc" -eq 3 ]; then
-  # A concurrent actor created the object between the converge probe and the
-  # create. It carries no chart proof, so uninstall leaves it in place.
-  echo "$OBJECT_NAME was created concurrently; converging it by value"
-  if ! converge; then
-    echo "ERROR: $OBJECT_NAME was created concurrently and disappeared again before convergence; re-run this hook" >&2
-    exit 1
+# The create-under-proof tail shared by this script's flow and the sourced
+# WVA path: creates $OBJECT_NAME from $CREATE_PAYLOAD after the caller's
+# converge probe reported it absent. $1 names the converge function to call
+# when a concurrent actor created the object between the probe and the
+# create — it carries no chart proof, so uninstall leaves it in place, and
+# it is converged by value on the same terms as any pre-existing object.
+# Returns 0 once created or converged; every other failure exits.
+create_under_proof() {
+  local converge_fn="$1" create_rc=0
+  create_object "$OBJECT_NAME" -f "$CREATE_PAYLOAD" -n "$OBJECT_NAMESPACE" \
+    || create_rc=$?
+  if [ "$create_rc" -eq 0 ]; then
+    echo "Created $OBJECT_NAME (recorded in the ${PROOF_ANNOTATION} annotation)"
+    return 0
   fi
-  exit 0
+  if [ "$create_rc" -eq 3 ]; then
+    echo "$OBJECT_NAME was created concurrently; converging it by value"
+    if ! "$converge_fn"; then
+      echo "ERROR: $OBJECT_NAME was created concurrently and disappeared again before convergence; re-run this hook" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  exit 1
+}
+
+set_chart_created_cr() {
+  wait_for_crd
+  if converge; then
+    return 0
+  fi
+
+  # The object does not exist: create it under the chart-created proof
+  # annotation so the pre-delete hook can mirror release ownership.
+  create_under_proof converge
+}
+
+# Entry point: only direct execution runs the environment contract and the
+# flow; a source pulls in the functions and defaults alone.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  : "${RESOURCE:?RESOURCE is required}"
+  : "${OBJECT_NAME:?OBJECT_NAME is required}"
+  : "${OBJECT_NAMESPACE:?OBJECT_NAMESPACE is required}"
+  : "${CRD_NAME:?CRD_NAME is required}"
+  : "${CREATE_PAYLOAD:?CREATE_PAYLOAD is required}"
+  : "${SPEC_PAYLOAD:?SPEC_PAYLOAD is required}"
+
+  require_oc "cannot configure $OBJECT_NAME"
+  select_json_tool "cannot configure $OBJECT_NAME"
+
+  workdir=$(mktemp -d) || exit 1
+  trap 'rm -rf "$workdir"' EXIT
+
+  for payload in "$CREATE_PAYLOAD" "$SPEC_PAYLOAD"; do
+    if [ ! -s "$payload" ]; then
+      echo "ERROR: the payload file is missing or empty at $payload; the ConfigMap delivery is broken" >&2
+      exit 1
+    fi
+  done
+
+  # One deadline shared by the CRD wait below: the Job's
+  # activeDeadlineSeconds is WAIT_TIMEOUT + 30, so waits draw from one
+  # script-wide budget rather than starting a full WAIT_TIMEOUT of its own.
+  DEADLINE=$(( $(date +%s) + WAIT_TIMEOUT ))
+
+  set_chart_created_cr
 fi
-exit 1

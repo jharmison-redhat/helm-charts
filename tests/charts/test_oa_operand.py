@@ -13,10 +13,10 @@ from oa_support import ChartFixture
 
 # Fake oc for the operand hook-script smoke runs: reports the CRD wait as
 # Established, serves a canned object for get (or NotFound under
-# OC_OBJECT_ABSENT, or separate Auth/DSCI payloads for the cluster-scoped
-# singletons), captures the created payload, records every --patch= payload,
-# and accepts delete. Invocations are logged so tests can assert the exact
-# oc call surface.
+# OC_OBJECT_ABSENT, or separate Auth/DSCI/WVA payloads for the cluster-scoped
+# singletons and the WVA ConfigMap), captures the created payload, records
+# every --patch= payload, and accepts delete. Invocations are logged so
+# tests can assert the exact oc call surface.
 FAKE_OC_OPERAND = """\
 #!/bin/bash
 echo "$@" >> "$OC_LOG"
@@ -25,6 +25,24 @@ if [[ "$1" == "get" && "$2" == crd/* ]]; then
   exit 0
 fi
 if [[ "$1" == "get" ]]; then
+  # Namespaced gets carry "-n <ns>" before the resource, so the WVA target
+  # is matched across all arguments rather than at a fixed position.
+  wva_target=""
+  for a in "$@"; do
+    if [[ "$a" == *workload-variant-autoscaler-saturation-scaling-config* ]]; then
+      wva_target="$a"
+    fi
+  done
+  if [[ -n "$wva_target" ]]; then
+    if [ -n "$OC_WVA_ABSENT" ]; then
+      echo "Error from server (NotFound): $wva_target not found" >&2
+      exit 1
+    fi
+    if [ -n "$OC_WVA_FILE" ]; then
+      cat "$OC_WVA_FILE"
+      exit 0
+    fi
+  fi
   if [ -n "$OC_OBJECT_ABSENT" ]; then
     echo "Error from server (NotFound): $2 not found" >&2
     exit 1
@@ -81,11 +99,12 @@ class _OperandScriptFixture(ChartFixture, support.FakeOcScriptFixture):
         self.object_file = os.path.join(self.work, "object.json")
         self.auth_file = os.path.join(self.work, "auth.json")
         self.dsci_file = os.path.join(self.work, "dsci.json")
+        self.wva_file = os.path.join(self.work, "wva.json")
         self.patch_log = os.path.join(self.work, "patches.log")
         self.create_capture = os.path.join(self.work, "created.json")
 
-    def stage_cm(self):
-        by_kind = self.by_kind(self.render())
+    def stage_cm(self, values=None):
+        by_kind = self.by_kind(self.render(values))
         cms = [d for d in by_kind["ConfigMap"]
                if self.FAMILY_FRAGMENT in d["metadata"]["name"]
                and "hook-preamble.sh" in (d.get("data") or {})]
@@ -137,15 +156,18 @@ class OperandHookRenderTests(ChartFixture):
         self.assertNotIn("Auth", by_kind)
         self.assertNotIn("MLflow", by_kind)
         self.assertNotIn("DSCInitialization", by_kind)
-        self.assertEqual([d for d in by_kind.get("ConfigMap", [])
-                          if d["metadata"]["name"] == "odh-segment-key-config"],
-                         [])
+        for name in ("odh-segment-key-config",
+                     "workload-variant-autoscaler-saturation-scaling-config"):
+            self.assertEqual([d for d in by_kind.get("ConfigMap", [])
+                              if d["metadata"]["name"] == name], [])
 
     def test_hook_jobs(self):
         # The chart-created families carry a set Job AND a pre-delete proof
         # -gated delete Job; the operator-configs family converges by value
-        # only, so it carries a single set Job.
-        expected_jobs = {"operator-configs": 1, "dashboard-config": 2,
+        # and creates the WVA ConfigMap only when absent, so its pre-delete
+        # hook walks back only a chart-created instance (proof-gated) while
+        # operator-created surfaces are never deleted.
+        expected_jobs = {"operator-configs": 2, "dashboard-config": 2,
                          "mlflow-": 2}
         by_kind = self.by_kind(self.render())
         for fragment, count in expected_jobs.items():
@@ -203,10 +225,16 @@ class OperandHookRenderTests(ChartFixture):
 
     def test_operator_configs_rbac(self):
         # The operator-created singletons are never created or deleted by
-        # this chart: get/patch only, resource-name-scoped.
-        by_kind = self.by_kind(self.render())
-        rules = self.family(by_kind, "operator-configs")["ClusterRole"][0][
-            "rules"]
+        # this chart: get/patch only, resource-name-scoped. The WVA
+        # ConfigMap additionally carries delete (its proof-gated walk-back —
+        # unconditional, since the upgrade-after-create case needs it). The
+        # unscoped create grant renders only when wvaOverrides is
+        # configured: create is the one verb RBAC cannot scope by name,
+        # spent on creating the ConfigMap when the operator has not
+        # deployed it yet, and an install without configured overrides
+        # carries no create grant at all.
+        rules = self.family(self.by_kind(self.render()),
+                            "operator-configs")["ClusterRole"][0]["rules"]
         self.assertEqual(rules, [
             {"apiGroups": ["services.platform.opendatahub.io"],
              "resources": ["auths"], "resourceNames": ["auth"],
@@ -218,11 +246,22 @@ class OperandHookRenderTests(ChartFixture):
             {"apiGroups": [""], "resources": ["configmaps"],
              "resourceNames": ["odh-segment-key-config"],
              "verbs": ["get", "patch"]},
+            {"apiGroups": [""], "resources": ["configmaps"],
+             "resourceNames":
+                 ["workload-variant-autoscaler-saturation-scaling-config"],
+             "verbs": ["get", "patch", "delete"]},
             {"apiGroups": ["apiextensions.k8s.io"],
              "resources": ["customresourcedefinitions"],
              "resourceNames": ["auths.services.platform.opendatahub.io"],
              "verbs": ["get"]},
         ])
+        values = self.managed_maas() | {
+            "wvaOverrides": {"scaleUp": {"pollIntervalSeconds": 30}}}
+        rules = self.family(self.by_kind(self.render(values)),
+                            "operator-configs")["ClusterRole"][0]["rules"]
+        self.assertIn(
+            {"apiGroups": [""], "resources": ["configmaps"],
+             "verbs": ["create"]}, rules)
 
     def test_dashboard_config_payloads(self):
         by_kind = self.by_kind(self.render())
@@ -305,7 +344,7 @@ class OperandHookRenderTests(ChartFixture):
         self.assertEqual(len(self.family(by_kind,
                                          "dashboard-config")["Job"]), 2)
         self.assertEqual(len(self.family(by_kind,
-                                         "operator-configs")["Job"]), 1)
+                                         "operator-configs")["Job"]), 2)
 
     def test_operator_configs_payloads(self):
         by_kind = self.by_kind(self.render())
@@ -320,10 +359,16 @@ class OperandHookRenderTests(ChartFixture):
                 "metrics": {"storage": {"size": "5Gi", "retention": "1d"}}}}})
         self.assertEqual(json.loads(cm["data"]["segment-key-patch.json"]),
                          {"data": {"segmentKeyEnabled": "false"}})
+        # The WVA saturation-scaling payloads are value-gated: with no
+        # configured overrides the ConfigMap carries none of them, so the
+        # converge script's WVA section never runs.
+        self.assertNotIn("wva-create.json", cm["data"])
+        self.assertNotIn("wva-patch.json", cm["data"])
 
         values = self.managed_maas() | {
             "userGroups": ["my-admins", "other-group"],
             "enableUserTelemetry": True,
+            "wvaOverrides": {"scaleUp": {"pollIntervalSeconds": 30}},
             "dataScienceClusterInitialization": {
                 "monitoring": {"managementState": "Removed",
                                "metrics": None,
@@ -346,6 +391,24 @@ class OperandHookRenderTests(ChartFixture):
                 "traces": None}}})
         self.assertEqual(json.loads(cm["data"]["segment-key-patch.json"]),
                          {"data": {"segmentKeyEnabled": "true"}})
+        # Each wvaOverrides entry becomes a ConfigMap data key carrying the
+        # value as YAML text with a trailing newline: block-scalar values
+        # (how the WVA operator's bundle writes them, and how objects
+        # created in place by other writers read back) end with one, so
+        # compute_wva_patch's exact-string comparison is idempotent instead
+        # of re-patching on every hook run. The create payload is the full
+        # ConfigMap under the chart-created proof annotation, the patch
+        # payload only the desired data.
+        self.assertEqual(json.loads(cm["data"]["wva-create.json"]), {
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {
+                "name":
+                    "workload-variant-autoscaler-saturation-scaling-config",
+                "namespace": "redhat-ods-applications",
+                "annotations": {"openshift-ai/chart-created": "true"}},
+            "data": {"scaleUp": "pollIntervalSeconds: 30\n"}})
+        self.assertEqual(json.loads(cm["data"]["wva-patch.json"]),
+                         {"data": {"scaleUp": "pollIntervalSeconds: 30\n"}})
 
         # Emptying the values block empties the desired spec: the converge
         # is a no-op rather than an attempt to patch anything.
@@ -629,3 +692,71 @@ class OperandConvergeScriptTests(_OperandScriptFixture):
                 self.assertEqual(argv[argv.index("-n") + 1],
                                  "redhat-ods-applications", line)
         self.assertGreater(namespaced, 0)
+
+    def test_wva_create_and_converge_smoke(self):
+        # The value-gated WVA saturation-scaling section: with wvaOverrides
+        # configured, an absent ConfigMap is created under the chart-created
+        # proof annotation (the pre-delete hook walks it back on uninstall;
+        # an operator-deployed instance carries no proof and is never
+        # deleted), and a present one is converged by desired-subset data
+        # comparison.
+        self.FAMILY_FRAGMENT = "operator-configs"
+        self.stage_cm(self.managed_maas() | {
+            "wvaOverrides": {"scaleUp": {"pollIntervalSeconds": 30}}})
+        with open(self.auth_file, "w") as f:
+            json.dump({"metadata": {"name": "auth",
+                                    "resourceVersion": "50"},
+                       "spec": {"adminGroups": ["rhods-admins"],
+                                "allowedGroups": ["old-group"]}}, f)
+        with open(self.dsci_file, "w") as f:
+            json.dump({"metadata": {"name": "default-dsci",
+                                    "resourceVersion": "52"},
+                       "spec": {"monitoring": {
+                           "managementState": "Managed"}}}, f)
+        with open(self.object_file, "w") as f:
+            json.dump({"metadata": {"name": "odh-segment-key-config",
+                                    "namespace": "redhat-ods-applications",
+                                    "resourceVersion": "51"},
+                       "data": {"segmentKeyEnabled": "true"}}, f)
+        env_extra = {
+            "AUTH_PATCH": os.path.join(self.work, "auth-patch.json"),
+            "DSCI_PATCH": os.path.join(self.work, "dsci-patch.json"),
+            "SEGMENT_PATCH": os.path.join(self.work, "segment-key-patch.json"),
+            "WVA_CREATE": os.path.join(self.work, "wva-create.json"),
+            "WVA_PATCH": os.path.join(self.work, "wva-patch.json"),
+            "OC_WVA_FILE": self.wva_file,
+        }
+        # Create path: the ConfigMap is absent (the WVA component has not
+        # deployed it yet).
+        result = self.run_script("converge-operator-configs.sh",
+                                 env_extra | {"OC_WVA_ABSENT": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Created", result.stdout)
+        created = self.captured_create()
+        self.assertEqual(created["kind"], "ConfigMap")
+        self.assertEqual(created["metadata"]["annotations"],
+                         {"openshift-ai/chart-created": "true"})
+        self.assertEqual(created["data"],
+                         {"scaleUp": "pollIntervalSeconds: 30\n"})
+        # The absent ConfigMap is never patched — only the three
+        # operator-created surfaces above converge.
+        self.assertEqual(len(self.patches()), 3)
+
+        # Converge path: the ConfigMap exists with drifted data. The patch
+        # log accumulates across both runs, so it is reset first.
+        open(self.patch_log, "w").close()
+        with open(self.wva_file, "w") as f:
+            json.dump({"metadata": {
+                            "name":
+                                "workload-variant-autoscaler-saturation-scaling-config",
+                            "namespace": "redhat-ods-applications",
+                            "resourceVersion": "53"},
+                       "data": {"scaleUp": "pollIntervalSeconds: 60"}}, f)
+        result = self.run_script("converge-operator-configs.sh", env_extra)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Converged", result.stdout)
+        patches = self.patches()
+        self.assertEqual(len(patches), 4)
+        self.assertEqual(patches[3], {
+            "metadata": {"resourceVersion": "53"},
+            "data": {"scaleUp": "pollIntervalSeconds: 30\n"}})

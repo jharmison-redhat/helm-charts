@@ -54,6 +54,14 @@ gateways:
 
 enableUserTelemetry: false
 
+# Optional saturation-scaling overrides for the workload-variant-autoscaler
+# (WVA): each key becomes a data key on the operator-shipped
+# workload-variant-autoscaler-saturation-scaling-config ConfigMap in
+# redhat-ods-applications, carrying the value as YAML text. Converged by the
+# operator-configs hook (never a release manifest); the WVA operator can
+# rewrite the same keys between hook runs
+wvaOverrides: {}
+
 # Bounded wall-clock wait (seconds) shared by the operand configuration hook
 # Jobs (dashboard config, MLflow, operator-created configs) for custom
 # resource definition establishment and operator-created object appearance;
