@@ -132,14 +132,7 @@ timing values must be positive integers.
 {{- fail "maasTenantConfig.spec must be a non-empty map when enabled — enabling without values cannot configure the default-tenant object" -}}
 {{- end -}}
 {{- range $k := list "waitTimeoutSeconds" "pollIntervalSeconds" -}}
-{{- $v := dig $k nil $cfg -}}
-{{- $n := int $v -}}
-{{- if not (or (kindIs "int" $v) (and (kindIs "float64" $v) (eq $v (mulf (floor $v) 1.0)))) -}}
-{{- fail (printf "maasTenantConfig.%s must be an integer (got %s)" $k (kindOf $v)) -}}
-{{- end -}}
-{{- if le $n 0 -}}
-{{- fail (printf "maasTenantConfig.%s must be positive (got %v)" $k $v) -}}
-{{- end -}}
+{{- $w := include "openshift-ai.waitSeconds.validated" (dict "field" (printf "maasTenantConfig.%s" $k) "value" (dig $k nil $cfg)) -}}
 {{- end -}}
 {{- end -}}
 
