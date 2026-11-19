@@ -3,7 +3,7 @@ name: postgres-cluster
 description: >
   A helm chart to deploy and manage a PostgreSQL cluster with CloudNativePG
 type: application
-version: 0.1.0
-appVersion: 0.1.0
+version: 0.1.1
+appVersion: 0.1.1
 annotations:
   license: ISC

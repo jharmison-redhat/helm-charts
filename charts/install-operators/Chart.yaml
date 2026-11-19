@@ -2,7 +2,7 @@ apiVersion: v2
 name: install-operators
 description: A chart to install Operators on OpenShift from OLM v0, including Manual InstallPlan approvals
 type: application
-version: 0.3.2
-appVersion: 0.3.2
+version: 0.3.3
+appVersion: 0.3.3
 annotations:
   license: ISC

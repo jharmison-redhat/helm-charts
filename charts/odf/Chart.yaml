@@ -4,7 +4,7 @@ name: odf
 description: >
   A helm chart to deploy OpenShift Data Foundation
 type: application
-version: 0.3.2
-appVersion: 0.3.2
+version: 0.3.3
+appVersion: 0.3.3
 annotations:
   license: ISC
