@@ -1,6 +1,6 @@
 ---
-# The enableCephTools/createStorageSystem/storageDeviceSets/disks/
-# monDataDirHostPath/multiCloudGateway keys form two mutually exclusive modes
+# The enableCephTools/storageDeviceSets/disks/monDataDirHostPath/
+# multiCloudGateway keys form two mutually exclusive modes
 # enforced at render time (see the README's "Configuration modes"):
 # - standalone MCGW (multiCloudGateway.reconcileStrategy: standalone): every
 #   Ceph key must be empty or false.
@@ -10,7 +10,6 @@
 # Ceph toolbox); the operator-managed OCSInitialization CR is never rendered
 # or patched by this chart.
 enableCephTools: true
-createStorageSystem: false
 storageDeviceSets: []
 # REQUIRED in full Ceph+MCGW mode when disks is the only capacity source —
 # host path on the labeled nodes for Ceph monitor data.

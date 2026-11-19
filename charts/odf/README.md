@@ -2,9 +2,8 @@ odf
 ===
 
 A chart to deploy OpenShift Data Foundation: it renders the `StorageCluster` operand (named `ocs-storagecluster` — a
-fixed singleton name, one per cluster) along with the optional `StorageSystem`, Ceph/NooBaa visibility RBAC,
-console-plugin enablement, and storage-node labeling applied by hook Jobs. The `odf-operator` itself is NOT installed by
-this chart — see Prerequisites.
+fixed singleton name, one per cluster) with Ceph/NooBaa visibility RBAC, console-plugin enablement, and storage-node
+labeling applied by hook Jobs. The `odf-operator` itself is NOT installed by this chart — see Prerequisites.
 
 Configuration modes
 -------------------
@@ -12,9 +11,9 @@ Configuration modes
 The chart supports and validates two mutually exclusive configurations. The values combination is checked at render
 time; incoherent values fail with a diagnostic naming the mode.
 
-- **Standalone MCGW** (`multiCloudGateway.reconcileStrategy: standalone`) — NooBaa-only: no Ceph capacity, no Ceph
-  tooling, no `StorageSystem`. This is the **recommended** object-storage deployment for MaaS workloads. Requires
-  `storageDeviceSets`, `disks`, and `monDataDirHostPath` empty, and `createStorageSystem`/`enableCephTools` false.
+- **Standalone MCGW** (`multiCloudGateway.reconcileStrategy: standalone`) — NooBaa-only: no Ceph capacity and no Ceph
+  tooling. This is the **recommended** object-storage deployment for MaaS workloads. Requires `storageDeviceSets`,
+  `disks`, and `monDataDirHostPath` empty, and `enableCephTools` false.
 - **Full Ceph+MCGW** (reconcileStrategy unset or not `standalone`) — Ceph block/file/object storage plus NooBaa.
   Requires Ceph capacity: either `storageDeviceSets` or hostPath `disks` (with `monDataDirHostPath`) must be provided.
 
@@ -112,7 +111,7 @@ a node dropped from `disks` in an earlier revision keeps its label and proof ann
 `disks` removes the hook surface entirely so nothing walks back (remove any residual labels manually). The walk-back
 targets are the configured node names because discovering chart-labeled nodes would require cluster-wide list permission
 the chart deliberately does not hold. The `OCSInitialization` CR is never touched (see Prerequisites); the release-owned
-`StorageCluster`/`StorageSystem` and the console-plugin surface are removed with the release.
+`StorageCluster` and the console-plugin surface are removed with the release.
 
 Standalone tiering limitations
 ------------------------------
@@ -163,7 +162,7 @@ Supply the mode-specific values with `-f` — one of the example files above (st
 render fails with a mode-naming diagnostic when the values combination is incoherent. The release namespace is free —
 every namespaced object this chart renders pins `namespace: openshift-storage` outright (the StorageCluster is the
 namespaced anchor that must live there, and the hook Jobs, their ConfigMaps, and their ServiceAccounts pin it too; the
-StorageSystem and the ClusterRole/ClusterRoleBindings are cluster-scoped and carry no namespace), so any release
+ClusterRole/ClusterRoleBindings are cluster-scoped and carry no namespace), so any release
 namespace works. `openshift-storage` itself is a natural choice and pre-exists through the operator install. The hook
 Jobs run as non-root — the platform's restricted SCCs assign the namespace's range UID to the UID-less hook pods, which
 carry a restricted-compatible securityContext — so hardened namespaces work. The chart cannot be installed into the
@@ -193,7 +192,6 @@ Real defaults live in `values.yaml`. Notable keys:
 
 - `enableCephTools` — sets the `StorageCluster`'s `spec.enableCephTools` (the Ceph toolbox; default `true`; must be
   `false` in standalone MCGW mode)
-- `createStorageSystem` — renders the `StorageSystem` CR (default `false`)
 - `storageDeviceSets` — Ceph OSD device sets passed through to the `StorageCluster`
 - `disks` — storage nodes to label for ODF (`{node: <name>}` entries), applied by hook Jobs per the Storage-node
   labeling section

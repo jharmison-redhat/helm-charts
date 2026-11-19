@@ -102,14 +102,13 @@ class ChartFixture(support.ChartFixture):
 
 class DefaultRenderTests(ChartFixture):
     """One representative render of the chart's core object inventory:
-    StorageCluster and StorageSystem as release manifests, the Node-label
-    hook surface gated on the disks list, and every object pinning
+    StorageCluster as the release manifest, the Node-label hook surface
+    gated on the disks list, and every object pinning
     openshift-storage (the release namespace is free — proven by rendering
     into a deliberately foreign release namespace)."""
 
     def test_default_render_inventory(self):
-        values = {"enableConsolePlugin": True, "createStorageSystem": True,
-                  **DISKS_VALUES}
+        values = {"enableConsolePlugin": True, **DISKS_VALUES}
         by_kind = self.by_kind(self.render(values, namespace="foreign-ns"))
         # Platform-owned objects never render: Nodes pre-exist on every
         # cluster and OCSInitialization is created and managed by the
@@ -119,11 +118,6 @@ class DefaultRenderTests(ChartFixture):
         cluster = self.pick(by_kind, "StorageCluster", "ocs-storagecluster")
         self.assertIs(cluster["spec"]["enableCephTools"], True)
         self.assertEqual(cluster["metadata"]["namespace"], "openshift-storage")
-        system = self.pick(by_kind, "StorageSystem",
-                           "ocs-storagecluster-storagesystem")
-        # Both the object's placement and its cross-reference to the
-        # StorageCluster pin the canonical namespace
-        self.assertEqual(system["spec"]["namespace"], "openshift-storage")
         # The disks-configured hook surface renders in full.
         for name in ("label-storage-nodes", "label-storage-nodes-set",
                      "label-storage-nodes-remove"):

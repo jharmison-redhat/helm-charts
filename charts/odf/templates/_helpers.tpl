@@ -4,10 +4,10 @@ StorageCluster renders unconditionally, so invoking this from its template
 gates every render of the chart.
 
 Standalone MCG mode (multiCloudGateway.reconcileStrategy: standalone) runs
-NooBaa without Ceph: no device sets, no disks, no Ceph tooling, no
-StorageSystem, no monitor host path. Full Ceph+MCGW mode (reconcileStrategy
-unset or not standalone) reconciles Ceph capacity from storageDeviceSets or
-hostPath disks (with monDataDirHostPath when disks are the only capacity).
+NooBaa without Ceph: no device sets, no disks, no Ceph tooling, no monitor
+host path. Full Ceph+MCGW mode (reconcileStrategy unset or not standalone)
+reconciles Ceph capacity from storageDeviceSets or hostPath disks (with
+monDataDirHostPath when disks are the only capacity).
 */}}
 {{- define "odf.validateModes" -}}
 {{- $mcg := .Values.multiCloudGateway | default dict -}}
@@ -24,9 +24,6 @@ hostPath disks (with monDataDirHostPath when disks are the only capacity).
 {{- end -}}
 {{- if ne (trim $monPath) "" -}}
 {{- fail "standalone MCG mode (multiCloudGateway.reconcileStrategy: standalone) runs NooBaa without Ceph — monDataDirHostPath is a Ceph monitor path and must be empty in this mode; remove it or use full Ceph+MCGW mode" -}}
-{{- end -}}
-{{- if .Values.createStorageSystem -}}
-{{- fail "standalone MCG mode (multiCloudGateway.reconcileStrategy: standalone) has no Ceph StorageCluster to manage — createStorageSystem must be false (the default) in this mode" -}}
 {{- end -}}
 {{- if .Values.enableCephTools -}}
 {{- fail "standalone MCG mode (multiCloudGateway.reconcileStrategy: standalone) has no Ceph cluster for the tools to manage — enableCephTools must be false in this mode" -}}
