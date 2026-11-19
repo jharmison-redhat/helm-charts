@@ -9,7 +9,9 @@ operand umbrella. CI lives in `.github/workflows/` and is split across two workf
 `.github/workflows/chart_versions.py` (registry-tag publish gate), and `.github/workflows/chart_metadata.py` (shared
 safe-YAML metadata validation); `.github/workflows/requirements.txt` pins PyYAML. The unit-test suites are
 `.github/workflows/test_chart_helpers.py` (workflow helpers) and every `tests/charts/test_*.py` (chart render tests,
-discovered from `tests/charts`, sharing the fixtures in `tests/charts/support.py`). `lint-chart.yml` runs on pull
+discovered from `tests/charts`, sharing the fixtures in `tests/charts/support.py`). The openshift-ai tests additionally
+share a chart-local harness module, `tests/charts/oa_support.py`, which unittest discovery skips by its non-`test_`
+name. `lint-chart.yml` runs on pull
 requests touching the charts and examples it validates (`charts/**`, `examples/**`) plus the helpers, test suites
 (`tests/charts/**`), and requirements it runs, plus manual dispatch, and lints every chart and the umbrella against
 locally resolved sub-charts; `publish-chart.yml` remains push-to-main and publishes only charts whose `version:` has no
