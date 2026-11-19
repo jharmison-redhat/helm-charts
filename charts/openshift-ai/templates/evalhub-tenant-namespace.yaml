@@ -9,6 +9,7 @@ metadata:
   labels:
     evalhub.trustyai.opendatahub.io/tenant: "true"
     opendatahub.io/dashboard: "true"
+    opendatahub.io/generated-namespace: "true"
 {{- end }}
 {{- end }}
 {{- end }}

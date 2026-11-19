@@ -336,6 +336,22 @@ credentials. A successful patch does not wait for all MaaS workloads to become R
 disablement, value removal, or uninstall: an explicit `null` inside `spec` removes a field, omission does not reset it.
 Helm rollback does not revert this side effect.
 
+EvalHub namespace layout
+------------------------
+
+The EvalHub operand renders in `redhat-ods-applications` by chart design. The tenant namespace (default
+`evalhub-tenant`) carries two labels, each satisfying a separate contract:
+
+- `evalhub.trustyai.opendatahub.io/tenant: "true"` — the TrustyAI Operator's tenant marker: its presence provisions the
+  tenant's job ServiceAccounts, RoleBindings, and service-CA ConfigMap
+- `opendatahub.io/generated-namespace: "true"` — the NetworkPolicy workaround the RHOAI 3.5 Evaluating AI systems
+  documentation (§2.3 and §2.28) prescribes for an EvalHub server in `redhat-ods-applications`: that namespace carries
+  NetworkPolicies restricting cross-namespace traffic, and the evaluation Job's sidecar can only reach the server from a
+  namespace carrying this label (the documentation's preferred alternative is a dedicated server namespace, which this
+  chart does not parameterize)
+
+The Evaluating AI systems chapter of the RHOAI 3.5 documentation is the authority for this layout.
+
 EvalHub tenant credential job
 -----------------------------
 
