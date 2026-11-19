@@ -106,12 +106,6 @@ class ChartFixture(unittest.TestCase):
         """Returns the CompletedProcess; callers must check ``returncode``."""
         return self.helm_template(values, namespace)
 
-    def render_stdout(self, values=None, namespace=None):
-        """Asserts success and returns the raw rendered stream."""
-        result = self.helm_template(values, namespace)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout
-
     def render(self, values=None, namespace=None):
         """Renders the values; asserts success and returns all docs."""
         result = self.render_raw(values, namespace)

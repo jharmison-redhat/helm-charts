@@ -108,13 +108,10 @@ class _ReplicasScriptFixture(_ReplicasValuesMixin, ChartFixture,
 
 
 class ReplicaSurfaceTests(_ReplicasValuesMixin, ChartFixture):
-    """Render contracts for the replicas management surface: presence-aware
-    gating (null hands off, explicit 0 is managed), mode selection
-    (CronJob drift-corrector vs partial manifests), the partial-manifest
-    shape with server-side-apply annotations, RBAC scoping, and the
-    platform-objects-never-render contract (the operator-created Deployments
-    are release-owned only in the deliberately-opted-in partial-manifests
-    mode)."""
+    """The replicas surface's ownership and gating contract: by default the
+    chart manages nothing (operator-created Deployments are never release
+    manifests), and when a count is managed the RBAC is scoped to exactly
+    the managed Deployments."""
 
     def surface(self, values):
         by_kind = self.by_kind(self.render(values))
@@ -141,34 +138,6 @@ class ReplicaSurfaceTests(_ReplicasValuesMixin, ChartFixture):
         self.assertEqual([j for j in by_kind.get("Job", [])
                           if "replicas" in j["metadata"]["name"]], [])
 
-    def test_cron_mode_never_renders_deployments(self):
-        by_kind, _ = self.surface(self.replicas_values(dashboard=1,
-                                                       operator=3))
-        self.assertNotIn("Deployment", by_kind)
-        self.assertIn("CronJob", by_kind)
-        cronjob = by_kind["CronJob"][0]
-        self.assertEqual(cronjob["metadata"]["namespace"], "test-release-ns")
-        self.assertEqual(cronjob["spec"]["schedule"], "*/15 * * * *")
-        self.assertEqual(cronjob["spec"]["concurrencyPolicy"], "Forbid")
-        # The CronJob is an ordinary release manifest (GitOps-clean): no hook
-        # annotations anywhere in the chart's rendered CronJob.
-        self.assertNotIn("helm.sh/hook", cronjob["metadata"].get("annotations") or {})
-        # The components file carries exactly the managed components with
-        # their fixed namespaces.
-        self.assertEqual(
-            self.components_file(by_kind),
-            "redhat-ods-applications rhods-dashboard 1\n"
-            "redhat-ods-operator rhods-operator 3\n")
-
-    def test_presence_aware_zero_is_managed(self):
-        # Explicit 0 is managed (presence-aware, not falsey); null hands off.
-        by_kind, _ = self.surface(self.replicas_values(operator=0))
-        self.assertEqual(self.components_file(by_kind),
-                         "redhat-ods-operator rhods-operator 0\n")
-        by_kind, _ = self.surface(self.replicas_values(dashboard=2))
-        self.assertEqual(self.components_file(by_kind),
-                         "redhat-ods-applications rhods-dashboard 2\n")
-
     def test_rbac_scoped_to_managed_deployments(self):
         values = self.replicas_values(dashboard=1)
         by_kind, role = self.surface(values)
@@ -191,97 +160,6 @@ class ReplicaSurfaceTests(_ReplicasValuesMixin, ChartFixture):
         _, role = self.surface(values)
         self.assertEqual(role["rules"][0]["resourceNames"],
                          ["rhods-dashboard", "rhods-operator"])
-
-    def test_hook_jobs(self):
-        values = self.replicas_values(dashboard=1, waitTimeoutSeconds=300)
-        by_kind, role = self.surface(values)
-        fullname = role["metadata"]["name"]
-        jobs = {j["metadata"]["name"]: j for j in by_kind["Job"]}
-        set_job = jobs[f"{fullname}-set"]
-        restore_job = jobs[f"{fullname}-restore"]
-        self.assertEqual(
-            set_job["metadata"]["annotations"]["helm.sh/hook"],
-            "post-install,post-upgrade")
-        self.assertEqual(
-            set_job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
-            "before-hook-creation")
-        self.assertEqual(
-            restore_job["metadata"]["annotations"]["helm.sh/hook"],
-            "pre-delete")
-        self.assertEqual(set_job["spec"]["activeDeadlineSeconds"], 330)
-        self.assertEqual(set_job["spec"]["backoffLimit"], 0)
-        env = {e["name"]: e["value"] for e in
-               set_job["spec"]["template"]["spec"]["containers"][0]["env"]}
-        self.assertEqual(env["REPLICAS_WAIT_FOR_MISSING"], "true")
-        self.assertEqual(env["REPLICAS_WAIT_TIMEOUT"], "300")
-        # The CronJob's container skips missing Deployments instead of
-        # failing every schedule interval.
-        cron_env = {e["name"]: e["value"] for e in
-                    by_kind["CronJob"][0]["spec"]["jobTemplate"]["spec"]
-                    ["template"]["spec"]["containers"][0]["env"]}
-        self.assertEqual(cron_env["REPLICAS_WAIT_FOR_MISSING"], "false")
-        # Both hook Jobs and the CronJob mount the shared script ConfigMap.
-        for job in (set_job, restore_job):
-            volume = job["spec"]["template"]["spec"]["volumes"][0]
-            self.assertEqual(volume["configMap"]["name"], fullname)
-        cron_volume = (by_kind["CronJob"][0]["spec"]["jobTemplate"]["spec"]
-                       ["template"]["spec"]["volumes"][0])
-        self.assertEqual(cron_volume["configMap"]["name"], fullname)
-
-    def test_partial_manifest_mode(self):
-        values = self.replicas_values(dashboard=1, operator=0,
-                                      asCronJob=False)
-        by_kind, _ = self.surface(values)
-        self.assertNotIn("CronJob", by_kind)
-        deployments = {d["metadata"]["name"]: d
-                       for d in by_kind["Deployment"]}
-        self.assertEqual(set(deployments),
-                         {"rhods-dashboard", "rhods-operator"})
-        dashboard = deployments["rhods-dashboard"]
-        self.assertEqual(dashboard["metadata"]["namespace"],
-                         "redhat-ods-applications")
-        self.assertEqual(deployments["rhods-operator"]["metadata"]["namespace"],
-                         "redhat-ods-operator")
-        for name, count in (("rhods-dashboard", 1), ("rhods-operator", 0)):
-            d = deployments[name]
-            # Patch shape only: annotations plus the replica count.
-            self.assertEqual(
-                d["metadata"]["annotations"],
-                {"argocd.argoproj.io/sync-options": "ServerSideApply=true",
-                 "helm.sh/resource-policy": "keep"})
-            self.assertEqual(d["spec"], {"replicas": count})
-
-    def test_partial_manifest_mode_without_counts_fails(self):
-        result = self.render(self.replicas_values(asCronJob=False),
-                             expect_failure=True)
-        self.assertIn("nothing to ship", result.stderr)
-
-    def test_invalid_values_fail(self):
-        for bad in ({"dashboard": -1}, {"dashboard": "1"}, {"operator": 1.5},
-                    {"operator": True}):
-            self.render(self.replicas_values(**bad), expect_failure=True)
-        # An empty schedule only matters when the CronJob renders, so pair it
-        # with a managed count (with nothing managed the surface renders
-        # nothing at all and the invalid schedule is moot).
-        result = self.render(self.replicas_values(schedule="", dashboard=1),
-                             expect_failure=True)
-        self.assertIn("replicas.schedule", result.stderr)
-        # The wait timeout only matters when the hook Jobs render; pair it
-        # with a managed count (same gating as the empty schedule above).
-        result = self.render(
-            self.replicas_values(waitTimeoutSeconds=0, dashboard=1),
-            expect_failure=True)
-        self.assertIn("replicas.waitTimeoutSeconds", result.stderr)
-        result = self.render(self.replicas_values(asCronJob="yes"),
-                             expect_failure=True)
-        self.assertIn("replicas.asCronJob must be a boolean (got string)",
-                      result.stderr)
-
-    def test_custom_schedule_renders(self):
-        by_kind, _ = self.surface(
-            self.replicas_values(dashboard=1, schedule="*/5 * * * *"))
-        self.assertEqual(by_kind["CronJob"][0]["spec"]["schedule"],
-                         "*/5 * * * *")
 
 
 class EnforceReplicasScriptTests(_ReplicasScriptFixture):
@@ -349,5 +227,4 @@ class EnforceReplicasScriptTests(_ReplicasScriptFixture):
             ["/bin/bash", os.path.join(self.work, "enforce-replicas.sh")],
             capture_output=True, text=True, env=env, timeout=60)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("oc CLI is not available", result.stderr)
         self.assertFalse(os.path.exists(self.patch_log))

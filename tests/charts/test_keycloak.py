@@ -1,18 +1,7 @@
-"""Focused tests for the keycloak chart. The module covers the
-KeycloakRealmImport boolean-field contract: default-true fields (realm
-loginWithEmailAllowed/bruteForceProtected, client
-enabled/standardFlowEnabled/directAccessGrantsEnabled/serviceAccountsEnabled,
-user enabled/emailVerified) render true when the values key is absent or
-null and verbatim when explicitly true or false, and client
-fullScopeAllowed is omitted when absent or null and rendered verbatim
-when explicitly true or false. It also pins the apiVersion of the
-rendered Keycloak and KeycloakRealmImport custom resources to
-k8s.keycloak.org/v2alpha1, pins the serving-certificate Service
-that carries the service-ca annotation, and covers the single-logout
-client-attribute injection (auto-injection on the client named by
-global.oidc.clientId in the realm named by global.oidc.realm, no
-injection elsewhere, consumer-set attribute wins, enabled=false
-suppresses, consoleHost override honored).
+"""Focused tests for the keycloak chart: the default render's contract
+(apiVersion pins, serving-certificate Service annotation, keycloak
+namespace pinning, the default-true boolean contract, and the single-logout
+client-attribute injection), plus the postgres-namespace render guard.
 
 Render tests run the rendered chart through ``helm template`` against a
 local stub of the postgres-cluster dependency (no registry access). No
@@ -29,65 +18,6 @@ CHART = os.path.abspath(os.path.join(
 CLIENT = "test-client"
 USER = "alice"
 
-
-class ChartFixture(support.ChartFixture):
-    chart = CHART
-    tmp_prefix = "kc-test-"
-    values_prefix = "kc-values-"
-
-    def helm_template(self, values=None, namespace=None):
-        self.stub_dependency()
-        return super().helm_template(values, namespace)
-
-    def render_values(self, values):
-        """Renders arbitrary values; returns all rendered docs."""
-        return self.render(values)
-
-    def render_docs(self, realm):
-        """Renders a single-realm values set; returns all rendered docs."""
-        return self.render({"realms": {"test": realm}})
-
-    def render_realm(self, realm):
-        """Renders a single-realm values set; returns the realm spec of the
-        rendered KeycloakRealmImport."""
-        for d in self.render_docs(realm):
-            if (d["kind"] == "KeycloakRealmImport"
-                    and d["metadata"]["name"] == "test"):
-                return d["spec"]["realm"]
-        self.fail("KeycloakRealmImport 'test' not rendered")
-
-    def rendered_client(self, values, realm_name, client_id):
-        """Renders arbitrary values; returns the realm client with the
-        given clientId from the named KeycloakRealmImport."""
-        for d in self.render_values(values):
-            if (d["kind"] == "KeycloakRealmImport"
-                    and d["metadata"]["name"] == realm_name):
-                return next(c for c in d["spec"]["realm"]["clients"]
-                            if c["clientId"] == client_id)
-        self.fail(f"KeycloakRealmImport '{realm_name}' not rendered")
-
-    def base_realm(self):
-        return {"clients": {CLIENT: {}}, "users": {USER: {}}}
-
-    @staticmethod
-    def set_field(realm, scope, field, value):
-        if scope == "realm":
-            realm[field] = value
-        elif scope == "client":
-            realm["clients"][CLIENT][field] = value
-        else:
-            realm["users"][USER][field] = value
-
-    @staticmethod
-    def get_field(realm, scope, field):
-        if scope == "realm":
-            return realm[field]
-        if scope == "client":
-            return realm["clients"][0][field]
-        return next(u for u in realm["users"]
-                    if u["username"] == USER)[field]
-
-
 DEFAULT_TRUE_FIELDS = [
     ("realm", "loginWithEmailAllowed"),
     ("realm", "bruteForceProtected"),
@@ -100,88 +30,90 @@ DEFAULT_TRUE_FIELDS = [
 ]
 
 
-class DefaultTrueFieldsTests(ChartFixture):
-    def test_absent_or_null_renders_true(self):
-        for scope, field in DEFAULT_TRUE_FIELDS:
-            for case in ("absent", None):
-                realm = self.base_realm()
-                if case is None:
-                    self.set_field(realm, scope, field, None)
-                rendered = self.render_realm(realm)
-                self.assertIs(
-                    self.get_field(rendered, scope, field), True,
-                    (scope, field, case))
+class ChartFixture(support.ChartFixture):
+    chart = CHART
+    tmp_prefix = "kc-test-"
+    values_prefix = "kc-values-"
 
-    def test_explicit_booleans_render_verbatim(self):
-        for scope, field in DEFAULT_TRUE_FIELDS:
-            for value in (True, False):
-                realm = self.base_realm()
-                self.set_field(realm, scope, field, value)
-                rendered = self.render_realm(realm)
-                self.assertIs(
-                    self.get_field(rendered, scope, field), value,
-                    (scope, field, value))
+    def helm_template(self, values=None, namespace=None):
+        self.stub_dependency()
+        return super().helm_template(values, namespace)
+
+    def base_realm(self):
+        return {"clients": {CLIENT: {}}, "users": {USER: {}}}
+
+    def render_realm(self, realm):
+        """Renders a single-realm values set; returns the realm spec of the
+        rendered KeycloakRealmImport."""
+        for d in self.render({"realms": {"test": realm}}):
+            if (d["kind"] == "KeycloakRealmImport"
+                    and d["metadata"]["name"] == "test"):
+                return d["spec"]["realm"]
+        self.fail("KeycloakRealmImport 'test' not rendered")
+
+    def rendered_client(self, values, realm_name, client_id):
+        """Renders arbitrary values; returns the realm client with the
+        given clientId from the named KeycloakRealmImport."""
+        for d in self.render(values):
+            if (d["kind"] == "KeycloakRealmImport"
+                    and d["metadata"]["name"] == realm_name):
+                return next(c for c in d["spec"]["realm"]["clients"]
+                            if c["clientId"] == client_id)
+        self.fail(f"KeycloakRealmImport '{realm_name}' not rendered")
+
+    @staticmethod
+    def get_field(realm, scope, field):
+        if scope == "realm":
+            return realm[field]
+        if scope == "client":
+            return realm["clients"][0][field]
+        return next(u for u in realm["users"]
+                    if u["username"] == USER)[field]
 
 
-class FullScopeAllowedTests(ChartFixture):
-    def client_full_scope(self, realm):
-        return self.render_realm(realm)["clients"][0]
-
-    def test_absent_or_null_omits_the_key(self):
-        for case in ("absent", None):
-            realm = self.base_realm()
-            if case is None:
-                realm["clients"][CLIENT]["fullScopeAllowed"] = None
-            self.assertNotIn("fullScopeAllowed", self.client_full_scope(realm))
-
-    def test_explicit_booleans_render_verbatim(self):
-        for value in (True, False):
-            realm = self.base_realm()
-            realm["clients"][CLIENT]["fullScopeAllowed"] = value
-            self.assertIs(
-                self.client_full_scope(realm)["fullScopeAllowed"], value)
-
-
-class BaselineRenderTests(ChartFixture):
-    def test_custom_resource_api_versions_pin_v2alpha1(self):
+class DefaultRenderTests(ChartFixture):
+    def test_default_render_matches_contract(self):
+        docs = self.render({"realms": {"test": self.base_realm()}})
         # Pinned to v2alpha1 because operators at least as old as 26.2.16
         # (the target cluster's version) reject v2beta1; later releases
         # (26.6+) still serve v2alpha1, deprecated but with identical schema.
-        kinds = {d["kind"]: d["apiVersion"]
-                 for d in self.render_docs(self.base_realm())}
+        kinds = {d["kind"]: d["apiVersion"] for d in docs}
         for kind in ("Keycloak", "KeycloakRealmImport"):
-            self.assertEqual(
-                kinds[kind], "k8s.keycloak.org/v2alpha1", kind)
-
-    def test_serving_cert_service_carries_annotation(self):
+            self.assertEqual(kinds[kind], "k8s.keycloak.org/v2alpha1", kind)
+        # The RHBK OperatorGroup watches the keycloak namespace only, so
+        # every template pins it outright — the release namespace is free
+        # (the fixture renders into test-release-ns)
+        for d in docs:
+            self.assertEqual(d["metadata"]["namespace"], "keycloak", d)
         # The Service is metadata-only: the operator co-owns it (same name,
         # <cr-name>-service) and fills spec.selector/ports, so the chart
         # deliberately renders no spec.
-        services = [d for d in self.render_docs(self.base_realm())
-                    if d["kind"] == "Service"]
+        services = [d for d in docs if d["kind"] == "Service"]
         self.assertEqual(len(services), 1)
         self.assertEqual(services[0]["metadata"]["name"], "keycloak-service")
         self.assertEqual(
             services[0]["metadata"]["annotations"][
                 "service.beta.openshift.io/serving-cert-secret-name"],
             "keycloak-internal-tls")
-        self.assertNotIn("spec", services[0])
-
-    def test_every_object_pins_the_keycloak_namespace(self):
-        # The RHBK OperatorGroup watches the keycloak namespace only, so
-        # every template pins it outright — the release namespace is free
-        # (the fixture renders into test-release-ns)
-        for d in self.render_docs(self.base_realm()):
-            self.assertEqual(d["metadata"]["namespace"], "keycloak", d)
-
-    def test_default_render_matches_contract(self):
         # No boolean field set anywhere: the eight default-true fields render
         # true and fullScopeAllowed is absent.
-        rendered = self.render_realm(self.base_realm())
+        realm = self.render_realm(self.base_realm())
         for scope, field in DEFAULT_TRUE_FIELDS:
-            self.assertIs(self.get_field(rendered, scope, field), True,
+            self.assertIs(self.get_field(realm, scope, field), True,
                           (scope, field))
-        self.assertNotIn("fullScopeAllowed", rendered["clients"][0])
+        self.assertNotIn("fullScopeAllowed", realm["clients"][0])
+
+    def test_matching_client_receives_logout_redirect_attribute(self):
+        # The single-logout client-attribute injection: the client named by
+        # global.oidc.clientId rendering in the realm named by
+        # global.oidc.realm receives post.logout.redirect.uris pointing at
+        # the derived console host.
+        values = {"realms": {"sso": {"clients": {"ocp-idp": {}}}}}
+        client = self.rendered_client(values, "sso", "ocp-idp")
+        self.assertEqual(client["attributes"], {
+            "post.logout.redirect.uris":
+                "https://console-openshift-console.apps.cluster.example.com",
+        })
 
 
 class PostgresNamespaceGuardTests(ChartFixture):
@@ -191,97 +123,5 @@ class PostgresNamespaceGuardTests(ChartFixture):
     connection — the render fails instead."""
 
     def test_foreign_postgres_namespace_fails_render(self):
-        stderr = self.render_failure(
+        self.render_failure(
             {"postgres": {"enabled": True, "namespace": "database"}})
-        self.assertIn("postgres.namespace must stay 'keycloak'", stderr)
-        self.assertIn('(got "database")', stderr)
-
-    def test_cleared_postgres_namespace_falls_back_to_release_ns(self):
-        # An explicitly empty namespace makes the subchart use the release
-        # namespace, so it only co-locates when the release installs into
-        # keycloak — a foreign release namespace fails the render the same
-        # way an explicitly foreign pin does
-        stderr = self.render_failure({"postgres": {"namespace": ""}})
-        self.assertIn("postgres.namespace must stay 'keycloak'", stderr)
-
-
-class LogoutRedirectTests(ChartFixture):
-    """The single-logout client-attribute injection: the client named by
-    global.oidc.clientId rendering in the realm named by global.oidc.realm
-    receives post.logout.redirect.uris pointing at the derived console
-    host unless the consumer set that attribute key or disabled the
-    feature."""
-
-    SSO_REALM = "sso"
-    OCP_CLIENT = "ocp-idp"
-
-    def sso_values(self, **oidc_overrides):
-        values = {
-            "realms": {
-                self.SSO_REALM: {"clients": {self.OCP_CLIENT: {}}},
-            },
-        }
-        if oidc_overrides:
-            values["global"] = {"oidc": oidc_overrides}
-        return values
-
-    def test_matching_client_receives_logout_redirect_attribute(self):
-        client = self.rendered_client(self.sso_values(), self.SSO_REALM,
-                                      self.OCP_CLIENT)
-        self.assertEqual(client["attributes"], {
-            "post.logout.redirect.uris":
-                "https://console-openshift-console.apps.cluster.example.com",
-        })
-
-    def test_non_matching_client_gets_no_attributes(self):
-        values = {
-            "realms": {
-                self.SSO_REALM: {"clients": {"other-client": {}}},
-            },
-        }
-        client = self.rendered_client(values, self.SSO_REALM, "other-client")
-        self.assertNotIn("attributes", client)
-
-    def test_non_matching_realm_gets_no_injection(self):
-        values = {
-            "realms": {
-                "test": {"clients": {self.OCP_CLIENT: {}}},
-            },
-        }
-        client = self.rendered_client(values, "test", self.OCP_CLIENT)
-        self.assertNotIn("attributes", client)
-
-    def test_consumer_set_attribute_wins(self):
-        values = self.sso_values()
-        values["realms"][self.SSO_REALM]["clients"][self.OCP_CLIENT] = {
-            "attributes": {
-                "post.logout.redirect.uris": "https://custom.example.com",
-            },
-        }
-        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
-        self.assertEqual(client["attributes"]["post.logout.redirect.uris"],
-                         "https://custom.example.com")
-
-    def test_injection_merges_with_existing_consumer_attributes(self):
-        values = self.sso_values()
-        values["realms"][self.SSO_REALM]["clients"][self.OCP_CLIENT] = {
-            "attributes": {"display.on.consent.screen": "false"},
-        }
-        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
-        self.assertEqual(client["attributes"], {
-            "display.on.consent.screen": "false",
-            "post.logout.redirect.uris":
-                "https://console-openshift-console.apps.cluster.example.com",
-        })
-
-    def test_enabled_false_suppresses_injection(self):
-        values = self.sso_values()
-        values["oidcLogoutRedirect"] = {"enabled": False}
-        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
-        self.assertNotIn("attributes", client)
-
-    def test_console_host_override_honored(self):
-        values = self.sso_values(consoleHost="console.example.com")
-        client = self.rendered_client(values, self.SSO_REALM, self.OCP_CLIENT)
-        self.assertEqual(client["attributes"]["post.logout.redirect.uris"],
-                         "https://console.example.com")

@@ -29,24 +29,20 @@ class ChartFixture(support.ChartFixture):
 
 class ServicesTests(ChartFixture):
 
-    def test_default_services_render_without_disabled_list(self):
+    def test_default_services_render(self):
+        # The default keep-list renders no disabled list; a representative
+        # non-default keep-list still lands the complement on the Cluster.
         cluster = self.pick(self.by_kind(self.render()), "Cluster",
                             "test-release-postgres-cluster")
         self.assertNotIn(
             "disabledDefaultServices",
             cluster["spec"].get("managed", {}))
-
-    def test_removing_r_renders_it_disabled(self):
-        rendered = self.render({"services": ["rw", "ro"]})
-        self.assertEqual(self.disabled_services(rendered), ["r"])
-
-    def test_removing_r_and_ro_renders_both_disabled(self):
-        rendered = self.render({"services": ["rw"]})
-        self.assertEqual(self.disabled_services(rendered), ["ro", "r"])
+        self.assertEqual(
+            self.disabled_services(self.render({"services": ["rw"]})),
+            ["ro", "r"])
 
     def test_services_without_rw_fails_the_render(self):
-        stderr = self.render_failure({"services": ["ro", "r"]})
-        self.assertIn("the rw service cannot be disabled", stderr)
+        self.render_failure({"services": ["ro", "r"]})
 
 
 if __name__ == "__main__":

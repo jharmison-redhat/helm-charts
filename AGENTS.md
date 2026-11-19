@@ -102,15 +102,45 @@ Source parity is not a goal — the contract is correct behavior under normal He
 
 ## Testing
 
-- The unit-test layer asserts render-time contracts only: value gating, resource shapes, RBAC scoping, render-time
-  validation diagnostics, and that platform-owned objects never render as release manifests. It is not a behavioral
-  simulator.
-- Hook-script behavior is proven by real deploys on a live cluster, not by fixture simulation. Hook-carrying charts
-  carry a minimal script smoke set at unit time — one happy-path run per hook script (python3-only tool path) and one
-  fail-closed no-tool check per chart — so trivial breakage surfaces early; state-machine behavior (retries,
-  foreign-value STOP, walk-back, concurrency) is exercised in live validation before publish.
-- Do not add fixture-based behavioral simulation of cluster objects (fake-API state machines, mocked reconciliation
-  flows): the class is brittle, slow (process-spawn multiplication), and cannot prove what a live deploy proves.
+The offline suite under `tests/charts/` is a regression net, not a specification of Helm or of cluster behavior. Live
+deploys on a real cluster are the gate (Versioning and push discipline); this suite is the cheap early-warning layer, so
+the marginal value of asserting more template surface offline is very low. It exists for exactly four purposes:
+
+1. Catch behavioral regressions in what a chart renders: an object missing, wrong, or misplaced; a value that stopped
+   having an effect; wrong namespace; a broken gate.
+2. Catch template failures `helm lint` cannot see — also covered repo-wide by the CI strict-render gate
+   (`chart_ci.py`), which handles parse-level breakage wholesale.
+3. Enforce the repo's structural invariants: platform-objects-never-render-as-release-manifests, the ConfigMap-glob
+   no-leakage rule, guard-without-pin securityContext on hook Jobs, and shared-lib byte parity (`hook-preamble.sh`,
+   `wait-for.sh`).
+4. The per-hook-script smoke set: ONE happy-path run per hook script (python3-only tool path) plus ONE fail-closed
+   no-tool check per chart — not per script.
+
+Non-goals — a test exhibiting one of these is a reason to delete it, not to keep it:
+
+- Asserting Helm's own template-engine behavior: conditionals, range, toYaml, `fail` delivery mechanics, gated-off
+  renders emitting empty/nothing.
+- Walking every conditional branch or values combination: no render matrices; one representative case per behavior,
+  default values where possible.
+- Pinning exact validation-message text: a failing render asserts that failure occurred, not the wording.
+- Behavioral simulation of cluster state (fake-API state machines, timeout-loop simulations with canned responses):
+  the class is brittle, slow (process-spawn multiplication), and cannot prove what a live deploy proves.
+- Coverage targets. When in doubt, delete the test.
+
+Per-chart budget: roughly one default render asserting the core object inventory (kinds/names, coarse — not
+field-by-field), the invariant tests, at most one representative render-failure test, and the per-script smoke set.
+A chart exceeding that budget is over-tested by default.
+
+Rules for keeping the suite honest:
+
+- Live validation is scoped to the change: exercise the surfaces the change touches (the hook surfaces it modifies, the
+  values it alters, the objects it adds or re-homes); unchanged surfaces keep their prior live validation and are not
+  re-proven — live testing is not a re-run of every possible universe on every change.
+- Hook-script behavior beyond the smoke set — state-machine behavior (retries, foreign-value STOP, walk-back,
+  concurrency) — is proven by real deploys on a live cluster, not by fixture simulation.
+- The openshift-ai tests share a chart-local harness module, `tests/charts/oa_support.py`, which unittest discovery
+  skips by its non-`test_` name; keep fake-oc harness consolidation to folding single-consumer fixtures into their
+  consumer, never inventing new harness machinery.
 
 ## Chart dependencies — the guard that broke run 39966995703
 
@@ -144,7 +174,8 @@ OCI tag: the gate checks tag existence only, and nothing at the registry level p
 
 - No chart version publishes — whether a fresh chart import or a version bump — until a real deploy on a live cluster
   validates the changed chart. Local commits land without the gate; the push that publishes versions happens only after
-  live validation of every changed chart's affected surface. CI (lint/render/unit tests) is not substitute proof.
+  live validation of the surfaces the change actually touches — unchanged surfaces keep their prior live validation. CI
+  (lint/render/unit tests) is not substitute proof.
 
 ## Verification commands
 

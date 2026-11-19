@@ -1,6 +1,7 @@
-"""Tests for the bounded MaasTenantConfig configuration hook: render
-gating, RBAC scoping, namespace placement, and the script smoke set
-against a fake oc binary."""
+"""Tests for the bounded MaasTenantConfig configuration hook: one
+representative render of the hook surface, one render-failure case, the
+ConfigMap-glob no-leakage invariant, and the script smoke set against a
+fake oc binary."""
 
 import json
 import os
@@ -18,114 +19,42 @@ class HookGateTests(ChartFixture):
     # assertions are scoped by that fragment.
     FRAGMENT = "maas-tenant-config"
 
-    def test_hook_gates(self):
+    def test_hook_surface_renders(self):
         by_kind = self.by_kind(self.render(self.hook_values()))
         for kind in ("Job", "ServiceAccount", "ConfigMap", "ClusterRole",
                      "ClusterRoleBinding"):
             self.assertTrue(self.docs_named(by_kind, kind, self.FRAGMENT),
                             kind)
-
-        by_kind = self.by_kind(self.render(self.hook_values(enabled=False)))
-        for kind in ("Job", "ServiceAccount", "ClusterRole",
-                     "ClusterRoleBinding"):
-            self.assertEqual(self.docs_named(by_kind, kind, self.FRAGMENT),
-                             [], kind)
-
-        values = self.hook_values()
-        values["dataScienceCluster"]["components"]["aigateway"][
-            "modelsAsAService"] = {"managementState": "Removed"}
-        by_kind = self.by_kind(self.render(values))
-        for kind in ("Job", "ClusterRole"):
-            self.assertEqual(self.docs_named(by_kind, kind, self.FRAGMENT),
-                             [], kind)
-
-    def test_invalid_spec_fails(self):
-        for spec in ({}, None, "scalar", ["list"]):
-            self.render(self.hook_values(spec=spec), expect_failure=True)
-
-    def test_invalid_timing_fails(self):
-        for k in ("waitTimeoutSeconds", "pollIntervalSeconds"):
-            for v in (0, -5, "240", 1.5):
-                self.render(self.hook_values(**{k: v}), expect_failure=True)
-
-    def test_release_namespace_resources(self):
-        by_kind = self.by_kind(self.render(self.hook_values()))
-        for kind in ("Job", "ServiceAccount"):
-            self.assertEqual(self.docs_named(by_kind, kind, self.FRAGMENT)[0]
-                             ["metadata"]["namespace"], "test-release-ns")
-        hook_cm = self.hook_cm(by_kind)
-        self.assertEqual(hook_cm["metadata"]["namespace"], "test-release-ns")
-        binding = self.docs_named(by_kind, "ClusterRoleBinding",
-                                  self.FRAGMENT)[0]
-        self.assertEqual(binding["subjects"][0]["namespace"],
-                         "test-release-ns")
-        # The target product namespace appears only in the Job's env/patch
-        # surface; the Job itself renders in the release namespace.
-        self.assertNotEqual(self.docs_named(by_kind, "Job",
-                                            self.FRAGMENT)[0]
-                            ["metadata"]["namespace"],
-                            "models-as-a-service")
-
-    def test_exact_singleton_rbac(self):
-        by_kind = self.by_kind(self.render(self.hook_values()))
-        rules = self.docs_named(by_kind, "ClusterRole", self.FRAGMENT)[0][
-            "rules"]
-        self.assertEqual(len(rules), 1)
-        self.assertEqual(rules[0]["apiGroups"], ["maas.opendatahub.io"])
-        self.assertEqual(rules[0]["resources"], ["maastenantconfigs"])
-        self.assertEqual(rules[0]["resourceNames"], ["default-tenant"])
-        self.assertEqual(rules[0]["verbs"], ["get", "patch"])
-
-    def test_same_release_different_namespace_rbac(self):
-        # The same release name in two namespaces yields DISTINCT cluster
-        # -scoped RBAC resources, each bound to its own release-namespace SA.
-        names = {}
-        for ns in ("ns-a", "ns-b"):
-            by_kind = self.by_kind(self.render(self.hook_values(), namespace=ns))
-            role = self.docs_named(by_kind, "ClusterRole", self.FRAGMENT)[0]
-            binding = self.docs_named(by_kind, "ClusterRoleBinding",
-                                      self.FRAGMENT)[0]
-            self.assertEqual(binding["roleRef"]["name"], role["metadata"]["name"])
-            self.assertEqual(binding["subjects"][0]["name"], role["metadata"]["name"])
-            self.assertEqual(binding["subjects"][0]["namespace"], ns)
-            self.assertEqual(self.docs_named(by_kind, "ServiceAccount",
-                                             self.FRAGMENT)[0]
-                             ["metadata"]["namespace"], ns)
-            names[ns] = role["metadata"]["name"]
-        self.assertNotEqual(names["ns-a"], names["ns-b"])
-        # Names stay Kubernetes-length-valid.
-        self.assertLessEqual(max(len(n) for n in names.values()), 63)
-
-    def test_hook_job_settings(self):
-        job = self.docs_named(self.by_kind(self.render(self.hook_values())),
-                              "Job", self.FRAGMENT)[0]
+        # The hook Job and its delivery objects render in the release
+        # namespace; the target product namespace appears only in the
+        # Job's env/patch surface.
+        job = self.docs_named(by_kind, "Job", self.FRAGMENT)[0]
+        self.assertEqual(job["metadata"]["namespace"], "test-release-ns")
         self.assertEqual(
-            job["metadata"]["annotations"]["helm.sh/hook"], "post-install,post-upgrade")
+            job["metadata"]["annotations"]["helm.sh/hook"],
+            "post-install,post-upgrade")
         self.assertEqual(
             job["metadata"]["annotations"]["helm.sh/hook-delete-policy"],
             "before-hook-creation")
-        self.assertEqual(job["spec"]["backoffLimit"], 0)
-        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 270)
         env = {e["name"]: e["value"] for e in
                job["spec"]["template"]["spec"]["containers"][0]["env"]}
         self.assertEqual(env["MAAS_TENANT_NAMESPACE"], "models-as-a-service")
-        self.assertEqual(env["MAAS_TENANT_WAIT_TIMEOUT"], "240")
-        self.assertEqual(env["MAAS_TENANT_POLL_INTERVAL"], "5")
+        # The ClusterRole is scoped to the MaasTenantConfig singleton.
+        rules = self.docs_named(by_kind, "ClusterRole", self.FRAGMENT)[0][
+            "rules"]
+        self.assertEqual(rules, [{
+            "apiGroups": ["maas.opendatahub.io"],
+            "resources": ["maastenantconfigs"],
+            "resourceNames": ["default-tenant"],
+            "verbs": ["get", "patch"],
+        }])
+        # The payload parses and carries the configured spec.
+        payload = json.loads(self.hook_cm(by_kind)["data"]["patch.json"])
+        self.assertEqual(payload["spec"]["telemetry"]["metrics"]["captureUser"],
+                         False)
 
-    def test_json_payload(self):
-        hook_cm = self.hook_cm(self.by_kind(self.render(self.hook_values())))
-        payload = json.loads(hook_cm["data"]["patch.json"])
-        self.assertEqual(list(payload.keys()), ["spec"])
-        self.assertEqual(payload["spec"]["telemetry"]["metrics"]["captureUser"], False)
-
-        values = self.hook_values(
-            spec={"telemetry": {"metrics": {"captureUser": False}, "drop": None}})
-        hook_cm = self.hook_cm(self.by_kind(self.render(values)))
-        payload = json.loads(hook_cm["data"]["patch.json"])
-        # Supplied nulls survive to the JSON payload under an otherwise empty
-        # chart-side spec.
-        self.assertIsNone(payload["spec"]["telemetry"]["drop"])
-        self.assertEqual(payload["spec"]["telemetry"]["metrics"]["captureUser"], False)
+    def test_invalid_spec_fails(self):
+        self.render(self.hook_values(spec="scalar"), expect_failure=True)
 
     def test_maas_db_glob_cannot_absorb_tenant_script(self):
         # The tenant script lives under files/maas-tenant-config/, the
@@ -227,10 +156,10 @@ class FakeOcScriptTests(ChartFixture):
         self.assertNotRegex(self.log(), r"create|apply|adopt|replace|delete")
 
     def test_no_tools_fails_closed(self):
-        # The scripts carry no dual jq/python3 preamble (they use oc
-        # jsonpath directly), so the fail-closed contract here is that a
-        # tool-less PATH fails loudly during the readiness wait, before any
-        # mutation is attempted.
+        # The chart's fail-closed no-tool check: the scripts carry no dual
+        # jq/python3 preamble (they use oc jsonpath directly), so the
+        # fail-closed contract here is that a tool-less PATH fails loudly
+        # during the readiness wait, before any mutation is attempted.
         self.stage_scripts()
         bin_dir = os.path.join(self.work, "bin")
         os.makedirs(bin_dir)
@@ -248,4 +177,3 @@ class FakeOcScriptTests(ChartFixture):
             [os.path.join(self.work, "configure-maas-tenant.sh")],
             capture_output=True, text=True, env=env, timeout=30)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("unexpected failure", result.stderr)

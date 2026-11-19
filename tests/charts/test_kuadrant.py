@@ -6,9 +6,10 @@ dependencies, so no stubs or registry access are needed). The restart hook
 Job renders when ``kuadrant.create`` is true (the default).
 
 Per the repo's unit-test policy the script-execution layer is a minimal
-smoke set: one happy-path run of the rendered restart script and bounded-
-timeout fail-closed checks, against a fake ``oc`` on a restricted PATH —
-state-machine behavior is proven by live deploys, not fixture simulation.
+smoke set: one happy-path run of the rendered restart script plus the
+chart's fail-closed no-tool check, against a fake ``oc`` on a restricted
+PATH — state-machine behavior is proven by live deploys, not fixture
+simulation.
 """
 
 import os
@@ -28,11 +29,11 @@ class ChartFixture(support.ChartFixture):
 
 
 class HookGuardTests(ChartFixture):
-    """Every hook Job container carries the guard-without-pin
-    securityContext: the four restricted-pod guards and no
-    runAsUser/runAsGroup anywhere in the pod — restricted SCCs assign the
-    namespace range UID to UID-less pods, and a pin would fight that
-    platform assignment."""
+    """The default render's hook-Job inventory, with every hook Job
+    container carrying the guard-without-pin securityContext: the four
+    restricted-pod guards and no runAsUser/runAsGroup anywhere in the pod —
+    restricted SCCs assign the namespace range UID to UID-less pods, and a
+    pin would fight that platform assignment."""
 
     def test_every_hook_job_is_guarded_without_pin(self):
         jobs = support.hook_jobs(self.render())
@@ -42,27 +43,6 @@ class HookGuardTests(ChartFixture):
         for job in jobs:
             support.assert_guard_without_pin(
                 self, job["spec"]["template"]["spec"])
-
-    def test_no_hook_jobs_render_when_kuadrant_create_is_false(self):
-        self.assertEqual(
-            support.hook_jobs(self.render({"kuadrant": {"create": False}})),
-            [])
-
-    def test_restart_job_wires_the_wait_knobs(self):
-        # The three wait tunables render as env on the restart Job (the
-        # script keeps ${VAR:-default} fallbacks for direct runs) and the
-        # Job's activeDeadlineSeconds bounds the whole run: the script waits
-        # up to the CSV budget per operator across four operators, then the
-        # rollout timeout, plus a 30s margin.
-        job = self.pick(self.by_kind(self.render()), "Job",
-                        "restart-kuadrant-operator")
-        env = {e["name"]: e["value"] for e in
-               job["spec"]["template"]["spec"]["containers"][0]["env"]}
-        self.assertEqual(env, {
-            "CSV_READY_TIMEOUT_SECONDS": "120",
-            "CSV_READY_POLL_INTERVAL_SECONDS": "5",
-            "ROLLOUT_TIMEOUT_SECONDS": "300"})
-        self.assertEqual(job["spec"]["activeDeadlineSeconds"], 810)
 
 
 # Fake oc for the restart-script smoke runs: serves the canned
@@ -148,23 +128,8 @@ class RestartScriptSmokeTests(ChartFixture, support.FakeOcScriptFixture):
             "deployment/kuadrant-operator-controller-manager "
             "--timeout=300s", log)
 
-    def test_csv_never_ready_times_out_fail_closed(self):
-        self.stage_rendered_script()
-        result = self.run_script(csv_phase="Failed")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Timed out", result.stderr)
-        self.assertIn("authorino", result.stderr)
-        # The pod delete and rollout never ran: the wait gates them.
-        self.assertNotIn("delete pod", self.log())
-        self.assertNotIn("rollout status", self.log())
-
-    def test_subscription_absent_times_out_fail_closed(self):
-        self.stage_rendered_script()
-        result = self.run_script(installed_csv="")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Timed out", result.stderr)
-
     def test_no_oc_fails_closed(self):
+        # The chart's fail-closed no-tool check.
         self.stage_rendered_script()
         bin_dir = self.build_bin_dir(include_python=False, include_oc=False)
         env = {

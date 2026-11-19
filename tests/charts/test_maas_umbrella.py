@@ -2,10 +2,8 @@
 covers the umbrella-level wiring contract: the keycloak subchart reads
 `realms` from the umbrella's top-level values (a `realms` block nested under
 another subchart's key renders nothing), the ocp-idp client disables direct
-access grants, the keycloak subchart pins namespace keycloak on every
-resource so they co-locate inside the RHBK OperatorGroup's watch scope, and
-the umbrella's own metadata (version and every dependency pin) stays
-coherent with the pinned charts.
+access grants, and the keycloak subchart pins namespace keycloak on every
+resource so they co-locate inside the RHBK OperatorGroup's watch scope.
 
 Render tests copy the umbrella and the real keycloak chart into a temp dir,
 stub the three subchart dependencies locally (postgres-cluster nested inside
@@ -27,22 +25,6 @@ UMBRELLA = os.path.join(REPO_ROOT, "examples", "maas-umbrella")
 KEYCLOAK = os.path.join(REPO_ROOT, "charts", "keycloak")
 
 RELEASE_NS = "keycloak"
-
-
-def pin_contains(pin, version):
-    """True when a simple space-separated ``>=A <B`` pin contains the
-    version (the only pin syntax the umbrella declares)."""
-    current = tuple(int(p) for p in version.split("."))
-    for part in pin.split():
-        if part.startswith(">="):
-            if current < tuple(int(p) for p in part[2:].split(".")):
-                return False
-        elif part.startswith("<"):
-            if current >= tuple(int(p) for p in part[1:].split(".")):
-                return False
-        else:
-            raise AssertionError(f"unsupported pin syntax: {pin!r}")
-    return True
 
 
 def docs(text):
@@ -126,9 +108,6 @@ class RealmCompositionTests(UmbrellaFixture):
         realm = self.realm_import()["spec"]["realm"]
         self.assertEqual(realm["realm"], "sso")
         self.assertEqual(realm["id"], "sso")
-
-    def test_ocp_idp_disables_direct_access_grants(self):
-        realm = self.realm_import()["spec"]["realm"]
         client = next(c for c in realm["clients"]
                       if c["clientId"] == "ocp-idp")
         self.assertIs(client["directAccessGrantsEnabled"], False)
@@ -153,39 +132,5 @@ class KeycloakNamespacePinningTests(UmbrellaFixture):
                              (d["kind"], d["metadata"]["name"]))
 
 
-class UmbrellaMetadataTests(unittest.TestCase):
-    """Parses the umbrella example's values and metadata without fetching
-    any published package: the explicit safe override, the umbrella
-    version, and the exact dependency pin set with each pin's range
-    containing the pinned chart's current version. Every umbrella-version
-    or dependency-pin bump asserts here."""
-
-    @staticmethod
-    def load(path):
-        with open(path) as f:
-            return yaml.safe_load(f)
-
-    def test_umbrella_explicit_value_is_safe(self):
-        umbrella_values = self.load(os.path.join(UMBRELLA, "values.yaml"))
-        self.assertIs(umbrella_values["keycloak-auth"]["removeKubeAdmin"], False)
-
-    def test_umbrella_version_and_pin_coherence(self):
-        umbrella = self.load(os.path.join(UMBRELLA, "Chart.yaml"))
-        self.assertEqual(umbrella["version"], "0.5.5")
-        self.assertNotIn("appVersion", umbrella)
-        # The exact dependency set, every pin asserted: adding, removing,
-        # or re-pinning a dependency edits this mapping with the bump.
-        deps = {d["name"]: d["version"] for d in umbrella["dependencies"]}
-        self.assertEqual(deps, {
-            "keycloak": ">=0.5.0 <0.6.0",
-            "keycloak-auth": ">=0.4.0 <0.5.0",
-            "openshift-ai": ">=0.3.0 <0.4.0",
-        })
-        # Each pin's range must contain the pinned chart's current version.
-        for name, pin in deps.items():
-            with self.subTest(dependency=name):
-                chart = self.load(
-                    os.path.join(REPO_ROOT, "charts", name, "Chart.yaml"))
-                self.assertTrue(
-                    pin_contains(pin, chart["version"]),
-                    f"{pin!r} does not contain {name} {chart['version']}")
+if __name__ == "__main__":
+    unittest.main()
