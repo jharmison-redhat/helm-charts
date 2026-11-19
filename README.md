@@ -22,3 +22,6 @@ Charts that deploy operands of OLM-managed operators (for example `keycloak` and
 operators to be installed first — OLM makes the custom resources available only after the operator install, so a
 helm-native install cannot order the two in one release. Deploy the `install-operators` chart first, then the operand
 chart; `examples/maas-umbrella` documents the full two-install flow.
+
+A failed install — for example when a hook Job fails — leaves the release in a failed state. Re-running
+`helm upgrade --install` with the same release name and arguments retries and completes the install.

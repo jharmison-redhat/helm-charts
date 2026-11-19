@@ -127,8 +127,8 @@ Prerequisites
 
 The `odf-operator` is NOT installed by this chart. It must already be installed before this chart is deployed — the
 chart renders the `StorageCluster` CR directly, and a plain `helm install` fails on the missing CRDs otherwise. Use the
-`install-operators` chart for the operator install (see the `examples/maas-umbrella` README for the full two-install
-flow):
+`install-operators` chart for the operator install; in the entry below, its ensure-namespaces hook creates the
+operator's `namespace` when absent (see the `examples/maas-umbrella` README for the full two-install flow):
 
 ```yaml
 # install-operators values
@@ -143,9 +143,9 @@ operators:
         - openshift-storage
 ```
 
-The `openshift-storage` namespace must also exist before this chart is deployed — create it before install; the chart
-does not render it. Wait for the operator deployments (and therefore the CRDs) to be ready before the first install of
-this chart.
+The `openshift-storage` namespace must also exist before this chart is deployed — the chart does not render it. The
+two-install flow above creates it via install-operators' ensure-namespaces hook; otherwise, create it by hand. Wait for
+the operator deployments (and therefore the CRDs) to be ready before the first install of this chart.
 
 The operator auto-creates and manages the `OCSInitialization` CR (`ocsinit`, in the operator's namespace) — the chart
 never renders, patches, or deletes it. The Ceph toolbox toggle (`enableCephTools`) is applied to the release-owned

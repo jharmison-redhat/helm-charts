@@ -167,4 +167,5 @@ replacement administrator and confirm that access works. The removal Job deletes
 `kube-system` with a delete-only Role; a successful run means the API accepted the deletion request, not that a login
 was verified. This hook runs in `kube-system`, which is PSA-privileged and bypasses SCC assignment — so unlike the
 release-namespace hook Jobs, it carries no restricted-pod securityContext and runs as the image's default user by
-design.
+design. The hook Job survives `helm uninstall` because hook resources are tracked outside the release manifest; its
+RBAC is ordinary release content and is removed with the release.

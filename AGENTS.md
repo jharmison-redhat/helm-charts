@@ -11,11 +11,10 @@ safe-YAML metadata validation); `.github/workflows/requirements.txt` pins PyYAML
 `.github/workflows/test_chart_helpers.py` (workflow helpers) and every `tests/charts/test_*.py` (chart render tests,
 discovered from `tests/charts`, sharing the fixtures in `tests/charts/support.py`). The openshift-ai tests additionally
 share a chart-local harness module, `tests/charts/oa_support.py`, which unittest discovery skips by its non-`test_`
-name. `lint-chart.yml` runs on pull
-requests touching the charts and examples it validates (`charts/**`, `examples/**`) plus the helpers, test suites
-(`tests/charts/**`), and requirements it runs, plus manual dispatch, and lints every chart and the umbrella against
-locally resolved sub-charts; `publish-chart.yml` remains push-to-main and publishes only charts whose `version:` has no
-registry tag yet.
+name. `lint-chart.yml` runs on pull requests touching the charts and examples it validates (`charts/**`,
+`examples/**`) plus the helpers, test suites (`tests/charts/**`), and requirements it runs, plus manual dispatch,
+and lints every chart and the umbrella against locally resolved sub-charts; `publish-chart.yml` remains push-to-main
+and publishes only charts whose `version:` has no registry tag yet.
 
 ## Porting discipline
 
@@ -79,7 +78,9 @@ Source parity is not a goal — the contract is correct behavior under normal He
   the image's root user. Never pin `runAsUser`/`runAsGroup` in hook pods: platform assignment is the mechanism. The
   keycloak-auth `remove-kubeadmin` hook is the sanctioned exception: its fixed namespace `kube-system` is PSA-privileged
   and bypasses SCC assignment entirely (no range-UID injection), so the guards would make the opt-in surface unrunnable
-  — it carries no securityContext and runs as the stock image's default user in the platform-privileged namespace.
+  — it carries no securityContext and runs as the stock image's default user in the platform-privileged namespace; the
+  Job survives `helm uninstall` because hook resources are tracked outside the release manifest, while its RBAC is
+  ordinary release content and is removed with the release.
 - When the release namespace is genuinely free, the README says so; when hooks are hardcoded to a fixed object
   namespace, the non-root contract applies there too and the README says where.
 - When a chart has a canonical object namespace (operator watch scopes, platform namespaces its objects require), the
@@ -138,6 +139,8 @@ SemVer bump per functional change, `version:` and `appVersion` in lockstep. A ch
 tag is absent from ghcr; a bump whose publish failed is retried by the next push that touches `charts/**` (or a manual
 dispatch). `workflow_dispatch` publishes missing tags only and there is no force/republish input. Use stacked commits
 with dedicated push points: a publish bump must land together with any dependent's pin bump in the same push.
+Re-publishing an existing chart version — for example a manual `helm push` outside the gate — silently overwrites the
+OCI tag: the gate checks tag existence only, and nothing at the registry level prevents an overwrite.
 
 - No chart version publishes — whether a fresh chart import or a version bump — until a real deploy on a live cluster
   validates the changed chart. Local commits land without the gate; the push that publishes versions happens only after
