@@ -16,6 +16,9 @@ import unittest
 
 import yaml
 
+REPO_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
 
 def docs(text):
     """All non-null documents in a multi-document YAML stream."""
@@ -65,7 +68,10 @@ class ChartFixture(unittest.TestCase):
     ``tmp_prefix``, ``values_prefix``, and ``release_namespace``. The
     chart's vendored ``charts/`` directory and ``Chart.lock`` are excluded
     from the copy; charts with an intra-repo dependency override
-    ``helm_template`` to call ``stub_dependency()`` first.
+    ``helm_template`` to stage it first: ``stub_dependency()`` when only
+    the dependency's existence is needed (no named templates exercised),
+    ``stage_real_dependency()`` when the dependency supplies named
+    templates the consumer renders.
     """
 
     chart = None
@@ -87,6 +93,16 @@ class ChartFixture(unittest.TestCase):
         os.makedirs(dep, exist_ok=True)
         with open(os.path.join(dep, "Chart.yaml"), "w") as f:
             f.write("apiVersion: v2\nname: postgres-cluster\nversion: 0.1.0\n")
+
+    def stage_real_dependency(self, name):
+        """Stages the real tracked ``charts/<name>`` — payload templates
+        included — so ``helm template`` resolves the dependency offline;
+        a bare stub leaves the dependency's named templates undefined."""
+        shutil.copytree(
+            os.path.join(REPO_ROOT, "charts", name),
+            os.path.join(self.dir, "charts", name),
+            ignore=shutil.ignore_patterns("charts", "Chart.lock"),
+            dirs_exist_ok=True)
 
     def values_file(self, values):
         fd, path = tempfile.mkstemp(prefix=self.values_prefix, suffix=".yaml")

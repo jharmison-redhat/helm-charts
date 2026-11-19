@@ -71,8 +71,12 @@ metadata:
   labels:
     {{- include "install-operators.labels" $ | nindent 4 }}
 data:
+  {{- /* The common payload templates read no template context, so the range
+  item is inert here — passing it costs nothing and keeps the call site
+  shaped like every other delivery line. Go-template comment: a YAML comment
+  here would flow through into the rendered manifest. */}}
   hook-preamble.sh: |-
-    {{- $.Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
   subscription-set.sh: |-
     {{- $.Files.Get "files/subscription-set.sh" | nindent 4 }}
   subscription-remove.sh: |-

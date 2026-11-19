@@ -2,7 +2,12 @@ apiVersion: v2
 name: install-operators
 description: A chart to install Operators on OpenShift from OLM v0, including Manual InstallPlan approvals
 type: application
-version: 0.3.3
-appVersion: 0.3.3
+version: 0.3.4
+appVersion: 0.3.4
+
+dependencies:
+  - name: common
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.1.0 <0.2.0"
 annotations:
   license: ISC

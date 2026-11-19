@@ -4,7 +4,12 @@ name: odf
 description: >
   A helm chart to deploy OpenShift Data Foundation
 type: application
-version: 0.3.3
-appVersion: 0.3.3
+version: 0.3.4
+appVersion: 0.3.4
+
+dependencies:
+  - name: common
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.1.0 <0.2.0"
 annotations:
   license: ISC

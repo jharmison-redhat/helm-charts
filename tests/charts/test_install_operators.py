@@ -39,6 +39,10 @@ HOOK_OPERATOR = {
 
 
 class ChartFixture(support.ChartFixture):
+    def setUp(self):
+        super().setUp()
+        self.stage_real_dependency("common")
+
     chart = CHART
     tmp_prefix = "io-test-"
     values_prefix = "io-values-"

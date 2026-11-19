@@ -30,6 +30,7 @@ class ChartFixture(support.ChartFixture):
         """Renders the chart with the stub dependency; returns the docs, or
         the failed result when the render is expected to fail."""
         self.stub_dependency()
+        self.stage_real_dependency("common")
         result = self.helm_template(values, namespace)
         if expect_failure:
             self.assertNotEqual(result.returncode, 0)

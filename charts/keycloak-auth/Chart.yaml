@@ -4,7 +4,12 @@ description: >
   A helm chart to configure OpenShift authentication against a Keycloak instance
   deployed with the Red Hat Build of Keycloak operator
 type: application
-version: 0.4.5
-appVersion: 0.4.5
+version: 0.4.6
+appVersion: 0.4.6
+
+dependencies:
+  - name: common
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.1.0 <0.2.0"
 annotations:
   license: ISC

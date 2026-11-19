@@ -11,7 +11,7 @@ metadata:
   namespace: cert-manager
 data:
   hook-preamble.sh: |-
-    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
   trust-bundle.sh: |-
     {{- .Files.Get "files/lib/trust-bundle.sh" | nindent 4 }}
   trust-ca-set.sh: |-

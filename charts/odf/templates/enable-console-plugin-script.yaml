@@ -14,5 +14,5 @@ data:
   enable-console-plugin.sh: |
 {{ .Files.Get "files/enable-console-plugin.sh" | trim | indent 4 | replace "\n    \n" "\n  \n" }}
   hook-preamble.sh: |-
-    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
 {{- end }}

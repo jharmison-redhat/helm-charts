@@ -69,6 +69,10 @@ def autoscaler_values(min_replicas=None, max_replicas=None, **extra):
 
 
 class ChartFixture(support.ChartFixture):
+    def setUp(self):
+        super().setUp()
+        self.stage_real_dependency("common")
+
     chart = CHART
     tmp_prefix = "ca-test-"
     values_prefix = "ca-values-"

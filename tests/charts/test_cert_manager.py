@@ -78,6 +78,10 @@ def history_annotation(*payloads):
 
 
 class ChartFixture(support.ChartFixture):
+    def setUp(self):
+        super().setUp()
+        self.stage_real_dependency("common")
+
     chart = CHART
     tmp_prefix = "cm-test-"
     values_prefix = "cm-values-"

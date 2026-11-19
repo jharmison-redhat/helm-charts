@@ -7,7 +7,8 @@ operator. It configures the platform's cluster-scoped OAuth object with an `Open
 the web console's logout redirect so a console logout ends the Keycloak SSO session, and can remove the `kubeadmin`
 Secret when explicitly opted in.
 
-This chart has no chart dependencies and renders standalone. It is designed to be consumed alongside the `keycloak`
+This chart has no user-facing chart dependencies and renders standalone, with its hook-script payloads delivered from
+the repository's `common` library chart (no values surface). It is designed to be consumed alongside the `keycloak`
 chart (which deploys the Keycloak instance and realm import): an umbrella consumer composes both and provides the OIDC
 values once under `global.oidc` — both charts read `global.oidc.{realm,clientId,secret}` through global propagation.
 Standalone consumers set `global.oidc.*` directly: `realm` must match a keycloak chart `realms` map key and `clientId`

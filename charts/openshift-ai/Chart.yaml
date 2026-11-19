@@ -3,10 +3,13 @@ name: openshift-ai
 description: >
   A chart to deploy OpenShift AI and manage DataScienceClusters
 type: application
-version: 0.3.2
-appVersion: 0.3.2
+version: 0.3.3
+appVersion: 0.3.3
 
 dependencies:
+  - name: common
+    repository: oci://ghcr.io/jharmison-redhat/helm-charts
+    version: ">=0.1.0 <0.2.0"
   - name: postgres-cluster
     repository: oci://ghcr.io/jharmison-redhat/helm-charts
     version: ">=0.1.0 <0.2.0"

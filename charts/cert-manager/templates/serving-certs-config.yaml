@@ -14,7 +14,7 @@ metadata:
   namespace: cert-manager
 data:
   hook-preamble.sh: |-
-    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
   {{- if .Values.certificates.router.managed }}
   configure-router-cert.sh: |-
     {{- .Files.Get "files/configure-router-cert.sh" | nindent 4 }}

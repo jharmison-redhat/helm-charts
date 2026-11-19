@@ -11,9 +11,9 @@ metadata:
     {{- include "openshift-ai.replicaSurface.labels" . | nindent 4 }}
 data:
   hook-preamble.sh: |-
-    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
   wait-for.sh: |-
-    {{- .Files.Get "files/lib/wait-for.sh" | nindent 4 }}
+    {{- include "common.wait-for" . | nindent 4 }}
   enforce-replicas.sh: |-
     {{- .Files.Get "files/replicas/enforce-replicas.sh" | nindent 4 }}
   restore-replicas.sh: |-

@@ -80,7 +80,7 @@ empty so unrelated values files never trip it.
 {{- if not .Values.operators }}
 {{- $stray := list }}
 {{- range $key, $_ := .Values }}
-{{- if not (has $key (list "global" "operators" "nameOverride"
+{{- if not (has $key (list "global" "common" "operators" "nameOverride"
     "fullnameOverride")) }}
 {{- $stray = append $stray $key }}
 {{- end }}

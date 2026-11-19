@@ -84,7 +84,7 @@ metadata:
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 data:
   hook-preamble.sh: |-
-    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
   ensure-namespaces.sh: |-
     {{- .Files.Get "files/ensure-namespaces.sh" | nindent 4 }}
   namespaces.json: {{ $namespaces | toJson | quote }}

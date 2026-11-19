@@ -7,9 +7,9 @@ metadata:
   namespace: openshift-storage
 data:
   hook-preamble.sh: |-
-    {{- .Files.Get "files/lib/hook-preamble.sh" | nindent 4 }}
+    {{- include "common.hook-preamble" . | nindent 4 }}
   wait-for.sh: |-
-    {{- .Files.Get "files/lib/wait-for.sh" | nindent 4 }}
+    {{- include "common.wait-for" . | nindent 4 }}
   label-storage-nodes-set.sh: |-
     {{- .Files.Get "files/label-storage-nodes-set.sh" | nindent 4 }}
   label-storage-nodes-remove.sh: |-

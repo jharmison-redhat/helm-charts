@@ -86,6 +86,10 @@ fi
 
 
 class ChartFixture(support.ChartFixture):
+    def setUp(self):
+        super().setUp()
+        self.stage_real_dependency("common")
+
     chart = CHART
     tmp_prefix = "odf-test-"
     values_prefix = "odf-values-"
