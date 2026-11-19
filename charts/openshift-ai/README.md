@@ -442,7 +442,10 @@ Real defaults live in `values.yaml` and are overridable by the consumer. Notable
 - `mlflow.create` / `evalhub.create` — `mlflow.create` defaults to `true`: the MLflow set hook manages the operand by
   default (the MLflow object is created/converged by a hook, never a release manifest), and setting it to `false` stops
   the set hook while the matching pre-delete proof-gated plumbing renders unconditionally; `evalhub.create` (default
-  `false`) gates the EvalHub release manifest with free-form `spec` passthrough
+  `false`) gates the EvalHub release manifest with free-form `spec` passthrough. The EvalHub surface needs TrustyAI CRDs
+  that establish only after the same install's `DataScienceCluster` reconciles, so a fresh install with `evalhub.create:
+  true` fails atomically: install first with `evalhub.create: false`, then enable it on a follow-up
+  `helm upgrade --install` (the documented recovery for a failed install).
 - `evalhub.tenant.waitTimeoutSeconds` — bounded wall-clock wait (default 240) for the product-created
   `ds-pipeline-s3-dspa` secret before the `update-secret-minio` credential Job fails; the Job's `activeDeadlineSeconds`
   is this value plus 30. Must be a positive integer (validated at render time)
