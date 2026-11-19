@@ -1,0 +1,96 @@
+{{- with .Values.evalhub }}
+{{- if .create }}
+{{- with .tenant }}
+{{- if .create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-jobs-dspa-api
+  namespace: {{ .namespace }}
+rules:
+- apiGroups: ["datasciencepipelinesapplications.opendatahub.io"]
+  resources: ["datasciencepipelinesapplications/api"]
+  verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-evaluator
+  namespace: {{ .namespace }}
+rules:
+  - apiGroups: [trustyai.opendatahub.io]
+    resources: [evaluations, collections, providers]
+    verbs: [get, list, create, update, delete]
+  - apiGroups: [mlflow.kubeflow.org]
+    resources: [experiments]
+    verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-jobs-dspa-api
+  namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-jobs-dspa-api
+subjects:
+- kind: ServiceAccount
+  name: evalhub-redhat-ods-applications-job
+  namespace: {{ .namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-jobs-pipeline-management
+  namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ds-pipeline-dspa
+subjects:
+- kind: ServiceAccount
+  name: evalhub-redhat-ods-applications-job
+  namespace: {{ .namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: patch-secret
+  namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- kind: ServiceAccount
+  name: patch-secret
+  namespace: {{ .namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-evaluator-binding
+  namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-evaluator
+subjects:
+  {{- toYaml .subjects | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: edit-binding
+  namespace: {{ .namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+  {{- toYaml .subjects | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
