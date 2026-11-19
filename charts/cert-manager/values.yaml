@@ -43,69 +43,6 @@ ca:
   # tlsKey: <PEM key>
 
 acme: {}
-# One ClusterIssuer renders per key. Each entry requires `server` and
-# `email`; every solver requires `type: dns` (with `dnsConfig`) or
-# `type: http` (with `ingressClassName`) — rendering fails otherwise.
-# The EAB HMAC key must be un-padded base64url.
-# zerossl:
-#   server: https://acme.zerossl.com/v2/DV90
-#   email: <put your email here>
-#   externalAccountBinding:
-#     keyID: <put your ZeroSSL EAB key here>
-#     keySecretRef:
-#       name: acme-zerossl-eabsecret
-#       key: secret
-#   solvers:
-#     - type: dns
-#       dnsConfig:
-#         route53:
-#           accessKeyID: <put your AWS Access Key ID here>
-#           hostedZoneID: <put your Hosted Zone ID here>
-#           region: us-east-2
-#           secretAccessKeySecretRef:
-#             key: secret-access-key
-#             name: acme-zerossl-route53-creds
-#       dnsZones:
-#         - <put your baseDomain here>
-#   secrets:
-#     - name: route53-creds
-#       stringData:
-#         secret-access-key: <put your actual key here>
-#     - name: eabsecret
-#       stringData:
-#         secret: <put your actual HMAC key here>
-# letsencrypt:
-#   server: https://acme-v02.api.letsencrypt.org/directory
-#   email: <your email address here>
-#   solvers:
-#     - type: dns
-#       dnsConfig:
-#         route53:
-#           accessKeyID: <put your AWS Access Key ID here>
-#           hostedZoneID: <put your Hosted Zone ID here>
-#           region: us-west-2
-#           secretAccessKeySecretRef:
-#             key: secret-access-key
-#             name: acme-letsencrypt-route53-creds
-#       dnsZones:
-#         - <put your baseDomain here>
-#   secrets:
-#     - name: route53-creds
-#       stringData:
-#         secret-access-key: <put your actual key here>
-# To pre-provision the ACME account key instead of letting cert-manager
-# generate one, add these keys to the `letsencrypt` block above — a second
-# `letsencrypt:` key here would fail YAML validation. Set
-# disableAccountKeyGeneration: true only with the pre-provisioned account
-# key in the referenced Secret (the chart renders it as
-# acme-<name>-privatekey, expecting the key under `tls.key`), provided via
-# a secrets entry named `privatekey` with a `tls.key` data key:
-# letsencrypt:
-#   disableAccountKeyGeneration: true
-#   secrets:
-#     - name: privatekey
-#       data:
-#         tls.key: <base64-encoded PEM account key>
 
 # Stock OpenShift clusters keep their platform-issued certificates unless a
 # service opts in; `managed` defaults to false so installing this chart does

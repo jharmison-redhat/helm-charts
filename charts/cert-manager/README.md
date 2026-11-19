@@ -406,3 +406,20 @@ certificates:
   router:
     managed: true
 ```
+
+To pre-provision the ACME account key instead of letting cert-manager generate one, set
+`disableAccountKeyGeneration: true` and add the following keys to an existing `acme.letsencrypt` block — a `secrets`
+entry named `privatekey` carrying the account key under `tls.key` — rather than repeating the key, since a second
+`letsencrypt:` entry would fail YAML validation. The chart renders that entry as the `acme-<name>-privatekey` Secret the
+issuer's `privateKeySecretRef` points at, so `disableAccountKeyGeneration` is valid only when the pre-provisioned key is
+in place:
+
+```yaml
+acme:
+  letsencrypt:
+    disableAccountKeyGeneration: true
+    secrets:
+      - name: privatekey
+        data:
+          tls.key: <base64-encoded PEM account key>
+```
