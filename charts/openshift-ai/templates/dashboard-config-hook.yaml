@@ -111,7 +111,7 @@ spec:
         - name: set-dashboard-config
           image: {{ .Values.global.toolsImage }}
           securityContext:
-            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/set-chart-created-cr.sh"]
           env:
@@ -165,7 +165,7 @@ spec:
         - name: delete-dashboard-config
           image: {{ .Values.global.toolsImage }}
           securityContext:
-            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/delete-chart-created-cr.sh"]
           env:

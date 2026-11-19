@@ -151,7 +151,7 @@ Rules for keeping the suite honest:
 ## Chart dependencies — the guard that broke run 39966995703
 
 Vendored `charts/<name>/charts/*.tgz` and `Chart.lock` are **gitignored**. Any chart with a `dependencies:` block
-requires `helm dependency build` before `helm lint`, `helm template`, or `helm package`. The six charts that consume
+requires `helm dependency build` before `helm lint`, `helm template`, or `helm package`. The seven charts that consume
 `common` (all of them hook-carrying) pin it from OCI, so they all require that build before local `helm template`/`helm
 package` — registry login per the verification-commands section applies to every one of them.
 

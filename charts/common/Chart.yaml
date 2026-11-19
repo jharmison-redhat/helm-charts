@@ -2,8 +2,8 @@
 apiVersion: v2
 name: common
 description: >
-  A library chart carrying the shared hook-script payloads used by the
-  collection's hook-carrying charts
+  A library chart carrying the collection's shared hook-surface templates
+  used by the hook-carrying charts
 type: library
 version: 0.1.0
 appVersion: 0.1.0

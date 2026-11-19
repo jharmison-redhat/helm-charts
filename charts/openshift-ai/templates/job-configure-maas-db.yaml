@@ -22,7 +22,7 @@ spec:
         - name: create-maas-db-config
           image: {{ $.Values.global.toolsImage }}
           securityContext:
-            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           workingDir: /app
           command: ["/app/create-maas-db-config.sh"]

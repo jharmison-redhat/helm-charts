@@ -27,7 +27,7 @@ spec:
         - name: label-storage-nodes
           image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
           securityContext:
-            {{- include "odf.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           env:
             - name: NODE_WAIT_TIMEOUT
               value: "300"
@@ -61,7 +61,7 @@ spec:
         - name: label-storage-nodes
           image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
           securityContext:
-            {{- include "odf.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           command: ["/bin/bash"]
           args:
             - /app/label-storage-nodes-remove.sh

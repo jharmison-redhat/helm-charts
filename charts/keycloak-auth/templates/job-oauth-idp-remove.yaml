@@ -31,7 +31,7 @@ spec:
           value: {{ .Values.oauth.idpName | quote }}
         command: ["/mnt/oauth-idp-remove.sh"]
         securityContext:
-          {{- include "keycloak-auth.hookSecurityContext" . | nindent 10 }}
+          {{- include "common.hook-security-context" . | nindent 10 }}
         volumeMounts:
         - name: oauth-idp-config
           mountPath: /mnt

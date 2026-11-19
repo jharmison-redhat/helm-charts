@@ -30,7 +30,7 @@ spec:
           value: {{ .Values.ca.trustTimeoutSeconds | default 120 | quote }}
         command: ["/mnt/trust-ca-set.sh"]
         securityContext:
-          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
+          {{- include "common.hook-security-context" . | nindent 10 }}
         volumeMounts:
         - name: trust-ca-config
           mountPath: /mnt

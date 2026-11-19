@@ -1,9 +1,10 @@
 """Render contracts for the kuadrant chart plus the restart hook script's
 smoke set.
 
-Render tests run the chart through ``helm template`` (kuadrant has no chart
-dependencies, so no stubs or registry access are needed). The restart hook
-Job renders when ``kuadrant.create`` is true (the default).
+Render tests run the chart through ``helm template``; the ``common``
+dependency is staged from the real tracked chart so its named templates
+resolve offline. The restart hook Job renders when ``kuadrant.create``
+is true (the default).
 
 Per the repo's unit-test policy the script-execution layer is a minimal
 smoke set: one happy-path run of the rendered restart script plus the
@@ -26,6 +27,10 @@ class ChartFixture(support.ChartFixture):
     chart = CHART
     tmp_prefix = "kuadrant-test-"
     values_prefix = "kuadrant-values-"
+
+    def setUp(self):
+        super().setUp()
+        self.stage_real_dependency("common")
 
 
 class DefaultRenderTests(ChartFixture):

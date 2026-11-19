@@ -110,7 +110,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/mnt/ensure-namespaces.sh"]
           securityContext:
-            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           volumeMounts:
             - name: ensure-operator-namespaces-script
               mountPath: /mnt

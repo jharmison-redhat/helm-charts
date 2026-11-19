@@ -28,7 +28,7 @@ spec:
         imagePullPolicy: IfNotPresent
         command: ["/mnt/logout-redirect-set.sh"]
         securityContext:
-          {{- include "keycloak-auth.hookSecurityContext" . | nindent 10 }}
+          {{- include "common.hook-security-context" . | nindent 10 }}
         volumeMounts:
         - name: logout-redirect-config
           mountPath: /mnt

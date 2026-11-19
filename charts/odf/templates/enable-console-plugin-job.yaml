@@ -16,7 +16,7 @@ spec:
         - name: enable-plugin
           image: 'image-registry.openshift-image-registry.svc:5000/openshift/tools:latest'
           securityContext:
-            {{- include "odf.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           env:
             - name: PLUGIN_NAME
               value: odf-console

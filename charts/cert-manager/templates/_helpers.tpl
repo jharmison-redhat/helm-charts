@@ -57,19 +57,3 @@ whose values each concern governs:
 {{- fail (printf "certificates.clusterIssuer %q does not name a rendered ClusterIssuer — managed platform certificates issue from it; set it to one of: %s" $issuer (join ", " $valid)) -}}
 {{- end -}}
 {{- end -}}
-
-{{/*
-SecurityContext carried by every hook Job container: the restricted
-hardening guards with no runAsUser/runAsGroup pin. UID-less pods match the
-restricted SCCs, which assign the namespace's range UID at admission; a pin
-would fight that platform assignment and break portability.
-*/}}
-{{- define "cert-manager.hookSecurityContext" -}}
-runAsNonRoot: true
-allowPrivilegeEscalation: false
-capabilities:
-  drop:
-    - ALL
-seccompProfile:
-  type: RuntimeDefault
-{{- end }}

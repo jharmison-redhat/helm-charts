@@ -5,9 +5,9 @@ the pin-sync test mechanically enforces the one-push rule (a consumer
 that renders a ``common.*`` include must declare the dependency, and any
 declared pin's range must admit the current ``common`` version, so a
 ``common`` release cannot leave consumers pinned out of range), the
-strays test prevents silent reintroduction of per-chart payload copies,
-and the payload guard keeps Go-template actions out of the delivered
-script bytes.
+strays tests prevent silent reintroduction of per-chart payload copies
+and of per-chart hookSecurityContext defines, and the payload guard keeps
+Go-template actions out of the delivered bytes.
 """
 
 import glob
@@ -24,6 +24,8 @@ from support import REPO_ROOT
 STRAY_LIB_FILES = ("hook-preamble.sh", "wait-for.sh")
 
 INCLUDE_PATTERN = re.compile(r'include\s+"common\.[^"]+"')
+
+STRAY_DEFINE_PATTERN = re.compile(r'define\s+"[^"]*\.hookSecurityContext"')
 
 
 def common_version():
@@ -103,10 +105,24 @@ class CommonLibraryInvariantsTests(unittest.TestCase):
             "per-chart payload copies reintroduced; the payloads live "
             "only in charts/common/templates")
 
+    def test_no_stray_hook_security_context_defines(self):
+        strays = []
+        for helpers in sorted(glob.glob(os.path.join(
+                REPO_ROOT, "charts", "*", "templates", "_helpers.tpl"))):
+            with open(helpers) as f:
+                if STRAY_DEFINE_PATTERN.search(f.read()):
+                    strays.append(helpers)
+        self.assertEqual(
+            strays, [],
+            "per-chart hookSecurityContext defines reintroduced; the "
+            "shared fragment lives only in charts/common/templates as "
+            "common.hook-security-context")
+
     def test_payloads_contain_no_template_actions(self):
         # Scanned strictly between the define and end wrappers: the
         # non-emitting header comments above the defines legitimately
-        # contain literal {{ text.
+        # contain literal {{ text, and the end wrapper may trim the
+        # payload's trailing newline ({{- end }}) or preserve it.
         for template in sorted(glob.glob(os.path.join(
                 REPO_ROOT, "charts", "common", "templates", "_*.tpl"))):
             with open(template) as f:
@@ -114,7 +130,8 @@ class CommonLibraryInvariantsTests(unittest.TestCase):
             define = next(i for i, line in enumerate(lines)
                           if "{{- define" in line)
             end = next(i for i, line in enumerate(lines)
-                       if i > define and line.strip() == "{{ end }}")
+                       if i > define
+                       and line.strip() in ("{{ end }}", "{{- end }}"))
             payload = lines[define + 1:end]
             for number, line in enumerate(payload, start=define + 2):
                 with self.subTest(template=os.path.basename(template),

@@ -25,7 +25,7 @@ spec:
         imagePullPolicy: IfNotPresent
         command: ["/mnt/configure-api-cert.sh"]
         securityContext:
-          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
+          {{- include "common.hook-security-context" . | nindent 10 }}
         volumeMounts:
         - name: serving-certs-config
           mountPath: /mnt

@@ -58,19 +58,3 @@ part of the chart's render gate; it no-ops on an empty disks list.
 {{- $names = append $names $node -}}
 {{- end -}}
 {{- end -}}
-
-{{/*
-SecurityContext carried by every hook Job container: the restricted
-hardening guards with no runAsUser/runAsGroup pin. UID-less pods match the
-restricted SCCs, which assign the namespace's range UID at admission; a pin
-would fight that platform assignment and break portability.
-*/}}
-{{- define "odf.hookSecurityContext" -}}
-runAsNonRoot: true
-allowPrivilegeEscalation: false
-capabilities:
-  drop:
-    - ALL
-seccompProfile:
-  type: RuntimeDefault
-{{- end }}

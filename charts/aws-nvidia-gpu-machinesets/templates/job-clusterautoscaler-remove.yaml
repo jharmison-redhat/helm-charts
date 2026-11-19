@@ -24,7 +24,7 @@ spec:
         imagePullPolicy: IfNotPresent
         command: ["/mnt/clusterautoscaler-remove.sh"]
         securityContext:
-          {{- include "aws-nvidia-gpu-machinesets.hookSecurityContext" . | nindent 10 }}
+          {{- include "common.hook-security-context" . | nindent 10 }}
         volumeMounts:
         - name: clusterautoscaler-config
           mountPath: /mnt

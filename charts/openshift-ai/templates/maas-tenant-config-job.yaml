@@ -29,7 +29,7 @@ spec:
         - name: configure-maas-tenant
           image: {{ $.Values.global.toolsImage }}
           securityContext:
-            {{- include "openshift-ai.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "/config/configure-maas-tenant.sh"]
           env:

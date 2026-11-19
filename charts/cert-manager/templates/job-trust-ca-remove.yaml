@@ -24,7 +24,7 @@ spec:
         imagePullPolicy: IfNotPresent
         command: ["/mnt/trust-ca-remove.sh"]
         securityContext:
-          {{- include "cert-manager.hookSecurityContext" . | nindent 10 }}
+          {{- include "common.hook-security-context" . | nindent 10 }}
         volumeMounts:
         - name: trust-ca-config
           mountPath: /mnt

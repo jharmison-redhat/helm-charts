@@ -105,7 +105,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/mnt/subscription-set.sh"]
           securityContext:
-            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           volumeMounts:
             - name: subscription-script
               mountPath: /mnt
@@ -137,7 +137,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["/mnt/subscription-remove.sh"]
           securityContext:
-            {{- include "install-operators.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           volumeMounts:
             - name: subscription-script
               mountPath: /mnt

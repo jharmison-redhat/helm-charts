@@ -74,19 +74,3 @@
 {{- fail (printf "autoscaling.maxReplicas (%d) is lower than the number of entries in aws.azs (%d) — the MachineAutoscaler CRD enforces maxReplicas >= 1 per zone, and the exact-sum distribution would render maxReplicas: 0 zones the API server rejects; set autoscaling.maxReplicas to at least %d, or reduce aws.azs" $maxReplicas $azCount $azCount) -}}
 {{- end -}}
 {{- end -}}
-
-{{/*
-SecurityContext carried by every hook Job container: the restricted
-hardening guards with no runAsUser/runAsGroup pin. UID-less pods match the
-restricted SCCs, which assign the namespace's range UID at admission; a pin
-would fight that platform assignment and break portability.
-*/}}
-{{- define "aws-nvidia-gpu-machinesets.hookSecurityContext" -}}
-runAsNonRoot: true
-allowPrivilegeEscalation: false
-capabilities:
-  drop:
-    - ALL
-seccompProfile:
-  type: RuntimeDefault
-{{- end }}

@@ -29,7 +29,7 @@ spec:
           imagePullPolicy: IfNotPresent
           workingDir: /app
           securityContext:
-            {{- include "kuadrant.hookSecurityContext" . | nindent 12 }}
+            {{- include "common.hook-security-context" . | nindent 12 }}
           command: ["/app/restart-kuadrant-operator.sh"]
           env:
             - name: CSV_READY_TIMEOUT_SECONDS
